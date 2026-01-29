@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useCurrency } from '../context/CurrencyContext'
+import { formatPrice, formatChange } from '../utils/currency'
 
 function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock }) {
   const [query, setQuery] = useState('')
@@ -7,9 +7,15 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock })
   const [searching, setSearching] = useState(false)
   const [adding, setAdding] = useState(false)
   const [showDropdown, setShowDropdown] = useState(false)
+  const [, forceUpdate] = useState(0)
   const searchRef = useRef(null)
   const debounceRef = useRef(null)
-  const { formatPrice, formatChange } = useCurrency()
+
+  useEffect(() => {
+    const handleCurrencyChange = () => forceUpdate(n => n + 1)
+    window.addEventListener('currencyChanged', handleCurrencyChange)
+    return () => window.removeEventListener('currencyChanged', handleCurrencyChange)
+  }, [])
 
   useEffect(() => {
     const handleClickOutside = (e) => {

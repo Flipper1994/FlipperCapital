@@ -14,6 +14,7 @@ function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [user, setUser] = useState(null)
   const [token, setToken] = useState(localStorage.getItem('authToken') || '')
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   useEffect(() => {
     if (token) {
@@ -75,12 +76,16 @@ function App() {
           isAdmin={isAdmin}
           user={user}
           onLogout={handleLogout}
+          sidebarOpen={sidebarOpen}
+          setSidebarOpen={setSidebarOpen}
         />
         <div className="flex flex-1 overflow-hidden">
           <Sidebar
             isLoggedIn={isLoggedIn}
             isAdmin={isAdmin}
             user={user}
+            isOpen={sidebarOpen}
+            onClose={() => setSidebarOpen(false)}
           />
           <Routes>
             <Route

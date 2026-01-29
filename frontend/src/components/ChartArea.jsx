@@ -1,11 +1,19 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { useCurrency } from '../context/CurrencyContext'
+import { formatPrice, formatChange } from '../utils/currency'
 import BXtrenderChart from './BXtrenderChart'
+import BacktestPanel from './BacktestPanel'
 
-function ChartArea({ stock, stocks, onBacktestUpdate, onSelectStock }) {
+function ChartArea({ stock, stocks, onBacktestUpdate, onSelectStock, backtestData }) {
   const chartContainerRef = useRef(null)
-  const { formatPrice, formatChange } = useCurrency()
-  const [timeframe, setTimeframe] = useState('M') // M = Monthly (default), W = Weekly, D = Daily
+  const [timeframe, setTimeframe] = useState('M')
+  const [performanceExpanded, setPerformanceExpanded] = useState(false)
+  const [, forceUpdate] = useState(0)
+
+  useEffect(() => {
+    const handleCurrencyChange = () => forceUpdate(n => n + 1)
+    window.addEventListener('currencyChanged', handleCurrencyChange)
+    return () => window.removeEventListener('currencyChanged', handleCurrencyChange)
+  }, [])
 
   const handleTradesUpdate = useCallback((data) => {
     if (onBacktestUpdate) {
@@ -161,10 +169,42 @@ function ChartArea({ stock, stocks, onBacktestUpdate, onSelectStock }) {
         </div>
       </div>
 
-      {/* Main TradingView Chart */}
-      <div className="flex-1 min-h-[400px] bg-dark-800 rounded-xl border border-dark-600 overflow-hidden mb-4" ref={chartContainerRef}>
+      {/* Main TradingView Chart - constrained height to keep BXtrender visible */}
+      <div className="min-h-[250px] max-h-[350px] md:min-h-[300px] md:max-h-[45vh] bg-dark-800 rounded-xl border border-dark-600 overflow-hidden mb-4" ref={chartContainerRef}>
         <div className="h-full flex items-center justify-center">
           <div className="w-8 h-8 border-2 border-accent-500 border-t-transparent rounded-full animate-spin"></div>
+        </div>
+      </div>
+
+      {/* System Performance - Mobile only, collapsible */}
+      <div className="md:hidden mb-4 bg-dark-800 rounded-xl border border-dark-600 overflow-hidden">
+        <button
+          onClick={() => setPerformanceExpanded(!performanceExpanded)}
+          className="flex items-center justify-between w-full px-4 py-3 bg-dark-700"
+        >
+          <div className="flex items-center gap-2">
+            <svg className="w-5 h-5 text-accent-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            </svg>
+            <span className="text-white font-medium">System Performance</span>
+          </div>
+          <svg
+            className={`w-5 h-5 text-gray-400 transition-transform duration-200 ${performanceExpanded ? 'rotate-180' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+        <div className={`
+          overflow-hidden transition-all duration-300 ease-in-out
+          ${performanceExpanded ? 'max-h-[500px]' : 'max-h-0'}
+        `}>
+          <BacktestPanel
+            trades={backtestData?.trades || []}
+            metrics={backtestData?.metrics || null}
+          />
         </div>
       </div>
 

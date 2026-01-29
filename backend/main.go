@@ -83,6 +83,37 @@ type Session struct {
 	Expiry  time.Time
 }
 
+type PortfolioPosition struct {
+	ID           uint       `json:"id" gorm:"primaryKey"`
+	UserID       uint       `json:"user_id" gorm:"index;not null"`
+	Symbol       string     `json:"symbol" gorm:"not null"`
+	Name         string     `json:"name" gorm:"not null"`
+	PurchaseDate *time.Time `json:"purchase_date"`
+	AvgPrice     float64    `json:"avg_price" gorm:"not null"`
+	Currency     string     `json:"currency" gorm:"default:EUR"`
+	Quantity     *float64   `json:"quantity"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+type PortfolioPositionWithQuote struct {
+	ID              uint       `json:"id"`
+	Symbol          string     `json:"symbol"`
+	Name            string     `json:"name"`
+	PurchaseDate    *time.Time `json:"purchase_date"`
+	AvgPrice        float64    `json:"avg_price"`
+	AvgPriceUSD     float64    `json:"avg_price_usd"`
+	Currency        string     `json:"currency"`
+	Quantity        *float64   `json:"quantity"`
+	CurrentPrice    float64    `json:"current_price"`
+	Change          float64    `json:"change"`
+	ChangePercent   float64    `json:"change_percent"`
+	TotalReturn     float64    `json:"total_return"`
+	TotalReturnPct  float64    `json:"total_return_pct"`
+	CurrentValue    float64    `json:"current_value"`
+	InvestedValue   float64    `json:"invested_value"`
+}
+
 var db *gorm.DB
 var sessions = make(map[string]Session)
 var httpClient = &http.Client{Timeout: 10 * time.Second}
@@ -99,7 +130,7 @@ func main() {
 		panic("Failed to connect to database: " + err.Error())
 	}
 
-	db.AutoMigrate(&User{}, &Stock{})
+	db.AutoMigrate(&User{}, &Stock{}, &PortfolioPosition{})
 
 	r := gin.Default()
 
@@ -130,6 +161,16 @@ func main() {
 		api.GET("/search", searchStocks)
 		api.GET("/quote/:symbol", getQuote)
 		api.GET("/history/:symbol", getHistory)
+
+		// Portfolio routes
+		api.GET("/portfolio", authMiddleware(), getPortfolio)
+		api.POST("/portfolio", authMiddleware(), createPortfolioPosition)
+		api.PUT("/portfolio/:id", authMiddleware(), updatePortfolioPosition)
+		api.DELETE("/portfolio/:id", authMiddleware(), deletePortfolioPosition)
+		api.GET("/portfolio/performance", authMiddleware(), getPortfolioPerformance)
+		api.GET("/portfolio/history", authMiddleware(), getPortfolioHistory)
+		api.GET("/portfolios/compare", authMiddleware(), getAllPortfoliosForComparison)
+		api.GET("/portfolios/history/:userId", authMiddleware(), getUserPortfolioHistory)
 	}
 
 	r.Run(":8080")
@@ -668,4 +709,747 @@ func deleteStock(c *gin.Context) {
 	}
 	db.Delete(&stock)
 	c.JSON(http.StatusOK, gin.H{"message": "Stock deleted"})
+}
+
+// Exchange rates to USD (approximate, for calculation purposes)
+var exchangeRatesToUSD = map[string]float64{
+	"USD": 1.0,
+	"EUR": 1.09, // 1 EUR = 1.09 USD
+	"GBP": 1.27, // 1 GBP = 1.27 USD
+	"CHF": 1.14, // 1 CHF = 1.14 USD
+}
+
+func convertToUSD(amount float64, currency string) float64 {
+	if rate, ok := exchangeRatesToUSD[currency]; ok {
+		return amount * rate
+	}
+	return amount // Default to USD if unknown
+}
+
+// Portfolio functions
+func getPortfolio(c *gin.Context) {
+	userID, _ := c.Get("userID")
+
+	var positions []PortfolioPosition
+	db.Where("user_id = ?", userID).Order("created_at desc").Find(&positions)
+
+	if len(positions) == 0 {
+		c.JSON(http.StatusOK, []PortfolioPositionWithQuote{})
+		return
+	}
+
+	// Fetch current quotes
+	symbols := make([]string, len(positions))
+	for i, p := range positions {
+		symbols[i] = p.Symbol
+	}
+	quotes := fetchQuotes(symbols)
+
+	result := make([]PortfolioPositionWithQuote, len(positions))
+	for i, pos := range positions {
+		currency := pos.Currency
+		if currency == "" {
+			currency = "EUR"
+		}
+
+		// Convert avg price to USD for comparison with current price (which is in USD)
+		avgPriceUSD := convertToUSD(pos.AvgPrice, currency)
+
+		result[i] = PortfolioPositionWithQuote{
+			ID:           pos.ID,
+			Symbol:       pos.Symbol,
+			Name:         pos.Name,
+			PurchaseDate: pos.PurchaseDate,
+			AvgPrice:     pos.AvgPrice,
+			AvgPriceUSD:  avgPriceUSD,
+			Currency:     currency,
+			Quantity:     pos.Quantity,
+		}
+
+		if q, ok := quotes[pos.Symbol]; ok {
+			result[i].CurrentPrice = q.Price
+			result[i].Change = q.Change
+			result[i].ChangePercent = q.ChangePercent
+
+			// Calculate returns using USD values
+			if avgPriceUSD > 0 {
+				result[i].TotalReturn = q.Price - avgPriceUSD
+				result[i].TotalReturnPct = ((q.Price - avgPriceUSD) / avgPriceUSD) * 100
+			}
+
+			// Calculate values if quantity is set (in USD)
+			if pos.Quantity != nil && *pos.Quantity > 0 {
+				result[i].CurrentValue = q.Price * (*pos.Quantity)
+				result[i].InvestedValue = avgPriceUSD * (*pos.Quantity)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+func createPortfolioPosition(c *gin.Context) {
+	userID, _ := c.Get("userID")
+
+	var req struct {
+		Symbol       string   `json:"symbol" binding:"required"`
+		Name         string   `json:"name"`
+		PurchaseDate *string  `json:"purchase_date"`
+		AvgPrice     float64  `json:"avg_price" binding:"required"`
+		Currency     string   `json:"currency"`
+		Quantity     *float64 `json:"quantity"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Symbol and avg_price are required"})
+		return
+	}
+
+	if req.AvgPrice <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Average price must be greater than 0"})
+		return
+	}
+
+	symbol := strings.ToUpper(req.Symbol)
+	name := req.Name
+	if name == "" {
+		name = symbol
+	}
+
+	currency := req.Currency
+	if currency == "" {
+		currency = "EUR"
+	}
+
+	var purchaseDate *time.Time
+	if req.PurchaseDate != nil && *req.PurchaseDate != "" {
+		parsed, err := time.Parse("2006-01-02", *req.PurchaseDate)
+		if err == nil {
+			purchaseDate = &parsed
+		}
+	}
+
+	position := PortfolioPosition{
+		UserID:       userID.(uint),
+		Symbol:       symbol,
+		Name:         name,
+		PurchaseDate: purchaseDate,
+		AvgPrice:     req.AvgPrice,
+		Currency:     currency,
+		Quantity:     req.Quantity,
+	}
+
+	if err := db.Create(&position).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create position"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, position)
+}
+
+func updatePortfolioPosition(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	id := c.Param("id")
+
+	var position PortfolioPosition
+	if err := db.Where("id = ? AND user_id = ?", id, userID).First(&position).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Position not found"})
+		return
+	}
+
+	var req struct {
+		Symbol       string   `json:"symbol"`
+		Name         string   `json:"name"`
+		PurchaseDate *string  `json:"purchase_date"`
+		AvgPrice     float64  `json:"avg_price"`
+		Currency     string   `json:"currency"`
+		Quantity     *float64 `json:"quantity"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	if req.Symbol != "" {
+		position.Symbol = strings.ToUpper(req.Symbol)
+	}
+	if req.Name != "" {
+		position.Name = req.Name
+	}
+	if req.AvgPrice > 0 {
+		position.AvgPrice = req.AvgPrice
+	}
+	if req.Currency != "" {
+		position.Currency = req.Currency
+	}
+	if req.Quantity != nil {
+		position.Quantity = req.Quantity
+	}
+	if req.PurchaseDate != nil {
+		if *req.PurchaseDate == "" {
+			position.PurchaseDate = nil
+		} else {
+			parsed, err := time.Parse("2006-01-02", *req.PurchaseDate)
+			if err == nil {
+				position.PurchaseDate = &parsed
+			}
+		}
+	}
+
+	db.Save(&position)
+	c.JSON(http.StatusOK, position)
+}
+
+func deletePortfolioPosition(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	id := c.Param("id")
+
+	var position PortfolioPosition
+	if err := db.Where("id = ? AND user_id = ?", id, userID).First(&position).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Position not found"})
+		return
+	}
+
+	db.Delete(&position)
+	c.JSON(http.StatusOK, gin.H{"message": "Position deleted"})
+}
+
+func getPortfolioPerformance(c *gin.Context) {
+	userID, _ := c.Get("userID")
+
+	var positions []PortfolioPosition
+	db.Where("user_id = ?", userID).Find(&positions)
+
+	if len(positions) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"total_value":     0,
+			"total_invested":  0,
+			"total_return":    0,
+			"total_return_pct": 0,
+			"positions_count": 0,
+			"period_changes":  gin.H{},
+		})
+		return
+	}
+
+	// Fetch current quotes
+	symbols := make([]string, len(positions))
+	for i, p := range positions {
+		symbols[i] = p.Symbol
+	}
+	quotes := fetchQuotes(symbols)
+
+	// Check if any position has quantity set
+	hasQuantities := false
+	for _, p := range positions {
+		if p.Quantity != nil && *p.Quantity > 0 {
+			hasQuantities = true
+			break
+		}
+	}
+
+	var totalValue, totalInvested float64
+	var totalReturnPct float64
+
+	if hasQuantities {
+		// Calculate with actual quantities
+		for _, pos := range positions {
+			if q, ok := quotes[pos.Symbol]; ok && pos.Quantity != nil && *pos.Quantity > 0 {
+				totalValue += q.Price * (*pos.Quantity)
+				totalInvested += pos.AvgPrice * (*pos.Quantity)
+			}
+		}
+	} else {
+		// Equal weight assumption - calculate average return
+		validPositions := 0
+		for _, pos := range positions {
+			if q, ok := quotes[pos.Symbol]; ok && pos.AvgPrice > 0 {
+				returnPct := ((q.Price - pos.AvgPrice) / pos.AvgPrice) * 100
+				totalReturnPct += returnPct
+				validPositions++
+			}
+		}
+		if validPositions > 0 {
+			totalReturnPct = totalReturnPct / float64(validPositions)
+		}
+		// Use placeholder values for display
+		totalInvested = 10000 // Assume 10k invested for display
+		totalValue = totalInvested * (1 + totalReturnPct/100)
+	}
+
+	totalReturn := totalValue - totalInvested
+	if hasQuantities && totalInvested > 0 {
+		totalReturnPct = (totalReturn / totalInvested) * 100
+	}
+
+	// Fetch historical data for period changes
+	periodChanges := calculatePeriodChanges(positions, quotes)
+
+	c.JSON(http.StatusOK, gin.H{
+		"total_value":      totalValue,
+		"total_invested":   totalInvested,
+		"total_return":     totalReturn,
+		"total_return_pct": totalReturnPct,
+		"positions_count":  len(positions),
+		"has_quantities":   hasQuantities,
+		"period_changes":   periodChanges,
+	})
+}
+
+func calculatePeriodChanges(positions []PortfolioPosition, currentQuotes map[string]QuoteData) map[string]float64 {
+	// Period durations in days (approximate)
+	periodDays := map[string]int{
+		"1d":  1,
+		"1w":  7,
+		"1m":  30,
+		"3m":  90,
+		"6m":  180,
+		"ytd": getDaysFromYearStart(),
+		"1y":  365,
+		"5y":  1825,
+	}
+
+	periods := map[string]string{
+		"1d":  "1d",
+		"1w":  "5d",
+		"1m":  "1mo",
+		"3m":  "3mo",
+		"6m":  "6mo",
+		"ytd": "ytd",
+		"1y":  "1y",
+		"5y":  "5y",
+	}
+
+	result := make(map[string]float64)
+	now := time.Now()
+
+	// For day change, we can use the current quotes (only for positions owned at least 1 day)
+	dayChange := 0.0
+	validCount := 0
+	for _, pos := range positions {
+		// Skip if position was purchased today or has no purchase date
+		if pos.PurchaseDate != nil && pos.PurchaseDate.After(now.AddDate(0, 0, -1)) {
+			continue
+		}
+		if q, ok := currentQuotes[pos.Symbol]; ok && q.PrevClose > 0 {
+			dayChange += q.ChangePercent
+			validCount++
+		}
+	}
+	if validCount > 0 {
+		result["1d"] = dayChange / float64(validCount)
+	}
+
+	// For other periods, fetch historical data
+	for periodKey, yahooRange := range periods {
+		if periodKey == "1d" {
+			continue
+		}
+
+		totalChange := 0.0
+		count := 0
+		periodStartDate := now.AddDate(0, 0, -periodDays[periodKey])
+
+		for _, pos := range positions {
+			// Only include position if it was purchased before or at the start of the period
+			if pos.PurchaseDate != nil && pos.PurchaseDate.After(periodStartDate) {
+				// Position was purchased during this period - calculate from purchase date
+				if q, ok := currentQuotes[pos.Symbol]; ok && q.Price > 0 {
+					avgPriceUSD := convertToUSD(pos.AvgPrice, pos.Currency)
+					if avgPriceUSD > 0 {
+						change := ((q.Price - avgPriceUSD) / avgPriceUSD) * 100
+						totalChange += change
+						count++
+					}
+				}
+				continue
+			}
+
+			// Position was owned before this period - use historical price
+			histPrice := getHistoricalPrice(pos.Symbol, yahooRange)
+			if histPrice > 0 {
+				if q, ok := currentQuotes[pos.Symbol]; ok && q.Price > 0 {
+					change := ((q.Price - histPrice) / histPrice) * 100
+					totalChange += change
+					count++
+				}
+			}
+		}
+
+		if count > 0 {
+			result[periodKey] = totalChange / float64(count)
+		}
+	}
+
+	return result
+}
+
+func getDaysFromYearStart() int {
+	now := time.Now()
+	yearStart := time.Date(now.Year(), 1, 1, 0, 0, 0, 0, now.Location())
+	return int(now.Sub(yearStart).Hours() / 24)
+}
+
+func getHistoricalPrice(symbol string, period string) float64 {
+	apiURL := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/chart/%s?range=%s&interval=1d",
+		url.QueryEscape(symbol), period)
+
+	req, _ := http.NewRequest("GET", apiURL, nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+
+	resp, err := httpClient.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		return 0
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	var yahooResp YahooChartResponse
+	if err := json.Unmarshal(body, &yahooResp); err != nil {
+		return 0
+	}
+
+	if len(yahooResp.Chart.Result) == 0 {
+		return 0
+	}
+
+	result := yahooResp.Chart.Result[0]
+	if len(result.Indicators.Quote) == 0 || len(result.Indicators.Quote[0].Close) == 0 {
+		return 0
+	}
+
+	// Return the first valid close price
+	for _, price := range result.Indicators.Quote[0].Close {
+		if price > 0 {
+			return price
+		}
+	}
+
+	return 0
+}
+
+// Get all portfolios for comparison (public view)
+func getAllPortfoliosForComparison(c *gin.Context) {
+	// Get all users with positions
+	var users []User
+	db.Find(&users)
+
+	type PositionSummary struct {
+		Symbol         string  `json:"symbol"`
+		Name           string  `json:"name"`
+		CurrentPrice   float64 `json:"current_price"`
+		AvgPrice       float64 `json:"avg_price"`
+		AvgPriceUSD    float64 `json:"avg_price_usd"`
+		Currency       string  `json:"currency"`
+		TotalReturnPct float64 `json:"total_return_pct"`
+		ChangePercent  float64 `json:"change_percent"`
+	}
+
+	type PortfolioSummary struct {
+		UserID         uint              `json:"user_id"`
+		Username       string            `json:"username"`
+		Positions      []PositionSummary `json:"positions"`
+		TotalReturnPct float64           `json:"total_return_pct"`
+		PositionCount  int               `json:"position_count"`
+	}
+
+	var portfolios []PortfolioSummary
+
+	// Collect all unique symbols for batch quote fetch
+	allSymbols := make(map[string]bool)
+	userPositions := make(map[uint][]PortfolioPosition)
+
+	for _, user := range users {
+		var positions []PortfolioPosition
+		db.Where("user_id = ?", user.ID).Find(&positions)
+		if len(positions) > 0 {
+			userPositions[user.ID] = positions
+			for _, p := range positions {
+				allSymbols[p.Symbol] = true
+			}
+		}
+	}
+
+	// Fetch all quotes at once
+	symbols := make([]string, 0, len(allSymbols))
+	for s := range allSymbols {
+		symbols = append(symbols, s)
+	}
+	quotes := fetchQuotes(symbols)
+
+	// Build portfolio summaries
+	for _, user := range users {
+		positions, exists := userPositions[user.ID]
+		if !exists || len(positions) == 0 {
+			continue
+		}
+
+		var posSummaries []PositionSummary
+		var totalReturnPct float64
+		validCount := 0
+
+		for _, pos := range positions {
+			currency := pos.Currency
+			if currency == "" {
+				currency = "EUR"
+			}
+			avgPriceUSD := convertToUSD(pos.AvgPrice, currency)
+
+			summary := PositionSummary{
+				Symbol:      pos.Symbol,
+				Name:        pos.Name,
+				AvgPrice:    pos.AvgPrice,
+				AvgPriceUSD: avgPriceUSD,
+				Currency:    currency,
+			}
+
+			if q, ok := quotes[pos.Symbol]; ok {
+				summary.CurrentPrice = q.Price
+				summary.ChangePercent = q.ChangePercent
+				if avgPriceUSD > 0 {
+					summary.TotalReturnPct = ((q.Price - avgPriceUSD) / avgPriceUSD) * 100
+					totalReturnPct += summary.TotalReturnPct
+					validCount++
+				}
+			}
+
+			posSummaries = append(posSummaries, summary)
+		}
+
+		avgReturn := 0.0
+		if validCount > 0 {
+			avgReturn = totalReturnPct / float64(validCount)
+		}
+
+		portfolios = append(portfolios, PortfolioSummary{
+			UserID:         user.ID,
+			Username:       user.Username,
+			Positions:      posSummaries,
+			TotalReturnPct: avgReturn,
+			PositionCount:  len(positions),
+		})
+	}
+
+	c.JSON(http.StatusOK, portfolios)
+}
+
+// Get historical portfolio performance data for charting
+func getPortfolioHistory(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	period := c.DefaultQuery("period", "1mo")
+
+	history := calculatePortfolioHistoryForUser(userID.(uint), period)
+	c.JSON(http.StatusOK, history)
+}
+
+// Get historical portfolio performance for a specific user (for comparison)
+func getUserPortfolioHistory(c *gin.Context) {
+	userIDParam := c.Param("userId")
+	period := c.DefaultQuery("period", "1mo")
+
+	var userID uint
+	fmt.Sscanf(userIDParam, "%d", &userID)
+
+	history := calculatePortfolioHistoryForUser(userID, period)
+	c.JSON(http.StatusOK, history)
+}
+
+func calculatePortfolioHistoryForUser(userID uint, period string) []map[string]interface{} {
+	var positions []PortfolioPosition
+	db.Where("user_id = ?", userID).Find(&positions)
+
+	if len(positions) == 0 {
+		return []map[string]interface{}{}
+	}
+
+	// Map period to Yahoo Finance range
+	yahooRange := "1mo"
+	switch period {
+	case "1w":
+		yahooRange = "5d"
+	case "1m":
+		yahooRange = "1mo"
+	case "3m":
+		yahooRange = "3mo"
+	case "6m":
+		yahooRange = "6mo"
+	case "1y":
+		yahooRange = "1y"
+	case "ytd":
+		yahooRange = "ytd"
+	case "5y":
+		yahooRange = "5y"
+	}
+
+	// Collect symbols and fetch historical data
+	symbolData := make(map[string][]OHLCV)
+	for _, pos := range positions {
+		data := fetchHistoricalData(pos.Symbol, yahooRange)
+		if len(data) > 0 {
+			symbolData[pos.Symbol] = data
+		}
+	}
+
+	if len(symbolData) == 0 {
+		return []map[string]interface{}{}
+	}
+
+	// Find the common time range across all symbols
+	var allTimes []int64
+	timeValues := make(map[int64]map[string]float64) // time -> symbol -> close price
+
+	// First pass: collect all timestamps
+	for symbol, data := range symbolData {
+		for _, candle := range data {
+			if _, exists := timeValues[candle.Time]; !exists {
+				timeValues[candle.Time] = make(map[string]float64)
+				allTimes = append(allTimes, candle.Time)
+			}
+			timeValues[candle.Time][symbol] = candle.Close
+		}
+	}
+
+	// Sort times
+	for i := 0; i < len(allTimes)-1; i++ {
+		for j := i + 1; j < len(allTimes); j++ {
+			if allTimes[i] > allTimes[j] {
+				allTimes[i], allTimes[j] = allTimes[j], allTimes[i]
+			}
+		}
+	}
+
+	// Calculate portfolio value at each time point
+	result := make([]map[string]interface{}, 0)
+
+	// Get initial invested value for normalization
+	var totalInvested float64
+	hasQuantities := false
+	for _, pos := range positions {
+		if pos.Quantity != nil && *pos.Quantity > 0 {
+			hasQuantities = true
+			avgPriceUSD := convertToUSD(pos.AvgPrice, pos.Currency)
+			totalInvested += avgPriceUSD * (*pos.Quantity)
+		}
+	}
+
+	if !hasQuantities {
+		// Assume equal investment of $1000 per position for visualization
+		totalInvested = float64(len(positions)) * 1000
+	}
+
+	// Track last known prices for each symbol (for filling gaps)
+	lastPrices := make(map[string]float64)
+
+	for _, t := range allTimes {
+		prices := timeValues[t]
+
+		// Update last known prices
+		for symbol, price := range prices {
+			lastPrices[symbol] = price
+		}
+
+		// Calculate portfolio value at this time
+		var portfolioValue float64
+
+		if hasQuantities {
+			for _, pos := range positions {
+				if pos.Quantity != nil && *pos.Quantity > 0 {
+					if price, ok := lastPrices[pos.Symbol]; ok {
+						portfolioValue += price * (*pos.Quantity)
+					}
+				}
+			}
+		} else {
+			// Equal weight: $1000 per position, calculate based on price change ratio
+			for _, pos := range positions {
+				if price, ok := lastPrices[pos.Symbol]; ok {
+					avgPriceUSD := convertToUSD(pos.AvgPrice, pos.Currency)
+					if avgPriceUSD > 0 {
+						// Value = initial investment * (current price / purchase price)
+						portfolioValue += 1000 * (price / avgPriceUSD)
+					}
+				}
+			}
+		}
+
+		if portfolioValue > 0 {
+			// Calculate percentage change from initial investment
+			pctChange := ((portfolioValue - totalInvested) / totalInvested) * 100
+
+			result = append(result, map[string]interface{}{
+				"time":  t,
+				"value": portfolioValue,
+				"pct":   pctChange,
+			})
+		}
+	}
+
+	return result
+}
+
+func fetchHistoricalData(symbol string, period string) []OHLCV {
+	apiURL := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/chart/%s?range=%s&interval=1d",
+		url.QueryEscape(symbol), period)
+
+	req, _ := http.NewRequest("GET", apiURL, nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+
+	resp, err := httpClient.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	var yahooResp YahooChartResponse
+	if err := json.Unmarshal(body, &yahooResp); err != nil {
+		return nil
+	}
+
+	if len(yahooResp.Chart.Result) == 0 || len(yahooResp.Chart.Result[0].Timestamp) == 0 {
+		return nil
+	}
+
+	result := yahooResp.Chart.Result[0]
+	if len(result.Indicators.Quote) == 0 {
+		return nil
+	}
+
+	quotes := result.Indicators.Quote[0]
+	data := make([]OHLCV, 0)
+
+	for i, ts := range result.Timestamp {
+		if i < len(quotes.Close) && quotes.Close[i] > 0 {
+			open := quotes.Close[i]
+			high := quotes.Close[i]
+			low := quotes.Close[i]
+			if i < len(quotes.Open) && quotes.Open[i] > 0 {
+				open = quotes.Open[i]
+			}
+			if i < len(quotes.High) && quotes.High[i] > 0 {
+				high = quotes.High[i]
+			}
+			if i < len(quotes.Low) && quotes.Low[i] > 0 {
+				low = quotes.Low[i]
+			}
+			volume := 0.0
+			if i < len(quotes.Volume) {
+				volume = quotes.Volume[i]
+			}
+
+			data = append(data, OHLCV{
+				Time:   ts,
+				Open:   open,
+				High:   high,
+				Low:    low,
+				Close:  quotes.Close[i],
+				Volume: volume,
+			})
+		}
+	}
+
+	return data
 }

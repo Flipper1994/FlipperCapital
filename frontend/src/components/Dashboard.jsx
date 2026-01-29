@@ -9,6 +9,9 @@ function Dashboard({ isAdmin, token }) {
   const [selectedStock, setSelectedStock] = useState(null)
   const [backtestData, setBacktestData] = useState({ trades: [], metrics: null })
 
+  // Mobile collapsible state for watchlist (default collapsed)
+  const [watchlistExpanded, setWatchlistExpanded] = useState(false)
+
   const fetchStocks = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true)
     try {
@@ -82,35 +85,75 @@ function Dashboard({ isAdmin, token }) {
     setBacktestData(data)
   }, [])
 
+  // Chevron icon component for collapsible sections
+  const ChevronIcon = ({ expanded }) => (
+    <svg
+      className={`w-5 h-5 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+    </svg>
+  )
+
   return (
-    <main className="flex flex-1 overflow-hidden">
-      <div className="flex-1 p-6 overflow-auto">
+    <main className="flex flex-col md:flex-row flex-1 overflow-hidden">
+      {/* Chart Area */}
+      <div className="flex-1 p-4 md:p-6 overflow-auto">
         <ChartArea
           stock={selectedStock}
           stocks={stocks}
           onBacktestUpdate={handleBacktestUpdate}
           onSelectStock={setSelectedStock}
+          backtestData={backtestData}
         />
       </div>
-      <aside className="w-80 bg-dark-800 border-l border-dark-600 flex flex-col">
-        {/* Watchlist - Top */}
-        <div className="flex-1 overflow-hidden">
-          <Watchlist
-            stocks={stocks}
-            loading={loading}
-            isAdmin={isAdmin}
-            onAdd={addStock}
-            onDelete={deleteStock}
-            onSelectStock={setSelectedStock}
-          />
+
+      {/* Right Sidebar - Desktop: fixed sidebar, Mobile: collapsible sections */}
+      <aside className="md:w-80 bg-dark-800 border-t md:border-t-0 md:border-l border-dark-600 flex flex-col">
+        {/* Watchlist Section */}
+        <div className="flex-1 md:flex-1 overflow-hidden flex flex-col">
+          {/* Collapsible Header - Mobile only */}
+          <button
+            onClick={() => setWatchlistExpanded(!watchlistExpanded)}
+            className="md:hidden flex items-center justify-between w-full px-4 py-3 bg-dark-700 border-b border-dark-600"
+          >
+            <div className="flex items-center gap-2">
+              <svg className="w-5 h-5 text-accent-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+              </svg>
+              <span className="text-white font-medium">Watchlist</span>
+              <span className="text-xs text-gray-500">({stocks.length})</span>
+            </div>
+            <ChevronIcon expanded={watchlistExpanded} />
+          </button>
+
+          {/* Watchlist Content */}
+          <div className={`
+            overflow-hidden transition-all duration-300 ease-in-out
+            ${watchlistExpanded ? 'max-h-[400px]' : 'max-h-0'}
+            md:max-h-none md:flex-1
+          `}>
+            <Watchlist
+              stocks={stocks}
+              loading={loading}
+              isAdmin={isAdmin}
+              onAdd={addStock}
+              onDelete={deleteStock}
+              onSelectStock={setSelectedStock}
+            />
+          </div>
         </div>
 
-        {/* Backtest Panel - Bottom */}
-        <div className="border-t border-dark-600 max-h-[50%] overflow-auto">
-          <BacktestPanel
-            trades={backtestData.trades}
-            metrics={backtestData.metrics}
-          />
+        {/* Backtest Panel Section - Desktop only (mobile version is in ChartArea) */}
+        <div className="hidden md:flex border-t border-dark-600 md:max-h-[50%] overflow-hidden flex-col">
+          <div className="overflow-auto flex-1">
+            <BacktestPanel
+              trades={backtestData.trades}
+              metrics={backtestData.metrics}
+            />
+          </div>
         </div>
       </aside>
     </main>
