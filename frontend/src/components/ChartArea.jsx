@@ -170,7 +170,7 @@ function ChartArea({ stock, stocks, onBacktestUpdate, onSelectStock, backtestDat
       </div>
 
       {/* Main TradingView Chart - constrained height to keep BXtrender visible */}
-      <div className="min-h-[250px] max-h-[350px] md:min-h-[300px] md:max-h-[45vh] bg-dark-800 rounded-xl border border-dark-600 overflow-hidden mb-4" ref={chartContainerRef}>
+      <div className="min-h-[250px] max-h-[350px] md:min-h-[350px] md:max-h-[55vh] bg-dark-800 rounded-xl border border-dark-600 overflow-hidden mb-4" ref={chartContainerRef}>
         <div className="h-full flex items-center justify-center">
           <div className="w-8 h-8 border-2 border-accent-500 border-t-transparent rounded-full animate-spin"></div>
         </div>
@@ -199,7 +199,7 @@ function ChartArea({ stock, stocks, onBacktestUpdate, onSelectStock, backtestDat
         </button>
         <div className={`
           overflow-hidden transition-all duration-300 ease-in-out
-          ${performanceExpanded ? 'max-h-[500px]' : 'max-h-0'}
+          ${performanceExpanded ? 'max-h-[400px] overflow-y-auto' : 'max-h-0'}
         `}>
           <BacktestPanel
             trades={backtestData?.trades || []}

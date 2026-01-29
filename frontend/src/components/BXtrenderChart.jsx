@@ -400,7 +400,7 @@ function BXtrenderChart({ symbol, timeframe = 'M', onTradesUpdate }) {
             horzLines: { color: '#1f1f2e' },
           },
           width: chartContainerRef.current.clientWidth,
-          height: 180,
+          height: 200,
           timeScale: {
             borderColor: '#2a2a3c',
             timeVisible: true,
@@ -408,8 +408,8 @@ function BXtrenderChart({ symbol, timeframe = 'M', onTradesUpdate }) {
           rightPriceScale: {
             borderColor: '#2a2a3c',
             scaleMargins: {
-              top: 0.2,
-              bottom: 0.1,
+              top: 0.05,
+              bottom: 0.05,
             },
           },
           crosshair: {
@@ -511,7 +511,7 @@ function BXtrenderChart({ symbol, timeframe = 'M', onTradesUpdate }) {
           </div>
         </div>
       </div>
-      <div ref={chartContainerRef} className="h-[180px] relative">
+      <div ref={chartContainerRef} className="h-[200px] relative">
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center bg-dark-800">
             <div className="text-center">

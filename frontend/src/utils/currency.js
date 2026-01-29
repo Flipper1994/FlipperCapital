@@ -1,5 +1,6 @@
 // Direct currency conversion utilities - no React context
-export const EXCHANGE_RATES = {
+// Fallback rates if API fails
+const FALLBACK_RATES = {
   USD: 1,
   EUR: 0.92,
   GBP: 0.79,
@@ -13,6 +14,58 @@ export const CURRENCY_SYMBOLS = {
   CHF: 'CHF'
 }
 
+// Get exchange rates from localStorage or use fallback
+function getExchangeRates() {
+  try {
+    const stored = localStorage.getItem('exchangeRates')
+    if (stored) {
+      const { rates, timestamp } = JSON.parse(stored)
+      // Use cached rates if less than 1 hour old
+      if (Date.now() - timestamp < 3600000) {
+        return rates
+      }
+    }
+  } catch {
+    // Ignore parse errors
+  }
+  return FALLBACK_RATES
+}
+
+// Fetch live exchange rates from API
+export async function fetchExchangeRates() {
+  try {
+    const res = await fetch('https://api.frankfurter.app/latest?from=USD&to=EUR,GBP,CHF')
+    if (!res.ok) throw new Error('API error')
+    const data = await res.json()
+
+    const rates = {
+      USD: 1,
+      EUR: data.rates.EUR,
+      GBP: data.rates.GBP,
+      CHF: data.rates.CHF
+    }
+
+    // Cache rates with timestamp
+    localStorage.setItem('exchangeRates', JSON.stringify({
+      rates,
+      timestamp: Date.now()
+    }))
+
+    // Notify components of rate update
+    window.dispatchEvent(new Event('currencyChanged'))
+
+    return rates
+  } catch (err) {
+    console.warn('Failed to fetch exchange rates, using fallback:', err)
+    return FALLBACK_RATES
+  }
+}
+
+// Initialize rates on load
+fetchExchangeRates()
+
+export const EXCHANGE_RATES = getExchangeRates()
+
 export function getCurrency() {
   return localStorage.getItem('currency') || 'EUR'
 }
@@ -25,7 +78,8 @@ export function setCurrency(currency) {
 export function formatPrice(usdPrice) {
   if (usdPrice === null || usdPrice === undefined) return '--'
   const currency = getCurrency()
-  const rate = EXCHANGE_RATES[currency] || 1
+  const rates = getExchangeRates()
+  const rate = rates[currency] || 1
   const symbol = CURRENCY_SYMBOLS[currency] || '$'
   const converted = usdPrice * rate
 
@@ -38,7 +92,8 @@ export function formatPrice(usdPrice) {
 export function formatChange(usdChange, percent) {
   if (usdChange === undefined || usdChange === null) return null
   const currency = getCurrency()
-  const rate = EXCHANGE_RATES[currency] || 1
+  const rates = getExchangeRates()
+  const rate = rates[currency] || 1
   const symbol = CURRENCY_SYMBOLS[currency] || '$'
   const converted = usdChange * rate
   const isPositive = converted >= 0

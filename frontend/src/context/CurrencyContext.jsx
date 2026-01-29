@@ -1,33 +1,48 @@
 import { createContext, useContext, useState, useEffect } from 'react'
+import { CURRENCY_SYMBOLS, fetchExchangeRates } from '../utils/currency'
 
 const CurrencyContext = createContext()
 
-// Exchange rates: How many units of this currency per 1 USD
-export const EXCHANGE_RATES = {
+// Fallback rates
+const FALLBACK_RATES = {
   USD: 1,
-  EUR: 0.92,   // 1 USD = 0.92 EUR
-  GBP: 0.79,   // 1 USD = 0.79 GBP
-  CHF: 0.88    // 1 USD = 0.88 CHF
+  EUR: 0.92,
+  GBP: 0.79,
+  CHF: 0.88
 }
 
-export const CURRENCY_SYMBOLS = {
-  USD: '$',
-  EUR: '€',
-  GBP: '£',
-  CHF: 'CHF'
+function getStoredRates() {
+  try {
+    const stored = localStorage.getItem('exchangeRates')
+    if (stored) {
+      const { rates } = JSON.parse(stored)
+      return rates
+    }
+  } catch {
+    // Ignore
+  }
+  return FALLBACK_RATES
 }
 
 export function CurrencyProvider({ children }) {
   const [currency, setCurrency] = useState(() => {
     return localStorage.getItem('currency') || 'EUR'
   })
+  const [exchangeRates, setExchangeRates] = useState(getStoredRates)
 
   useEffect(() => {
     localStorage.setItem('currency', currency)
   }, [currency])
 
+  // Fetch live rates on mount
+  useEffect(() => {
+    fetchExchangeRates().then(rates => {
+      setExchangeRates(rates)
+    })
+  }, [])
+
   return (
-    <CurrencyContext.Provider value={{ currency, setCurrency }}>
+    <CurrencyContext.Provider value={{ currency, setCurrency, exchangeRates }}>
       {children}
     </CurrencyContext.Provider>
   )
@@ -39,25 +54,22 @@ export function useCurrency() {
     throw new Error('useCurrency must be used within a CurrencyProvider')
   }
 
-  const { currency, setCurrency } = context
+  const { currency, setCurrency, exchangeRates } = context
 
-  // Calculate rate and symbol directly from current currency - no closures
-  const getRate = () => EXCHANGE_RATES[currency] || 1
+  const getRate = () => exchangeRates[currency] || 1
   const getSymbol = () => CURRENCY_SYMBOLS[currency] || '$'
 
   return {
     currency,
     setCurrency,
-    availableCurrencies: Object.keys(EXCHANGE_RATES),
+    availableCurrencies: Object.keys(FALLBACK_RATES),
 
-    // Get current values
     get exchangeRate() { return getRate() },
     get currencySymbol() { return getSymbol() },
 
-    // Format USD price to current currency
     formatPrice: (usdPrice) => {
       if (usdPrice === null || usdPrice === undefined) return '--'
-      const rate = EXCHANGE_RATES[currency] || 1
+      const rate = exchangeRates[currency] || 1
       const symbol = CURRENCY_SYMBOLS[currency] || '$'
       const converted = usdPrice * rate
 
@@ -74,17 +86,15 @@ export function useCurrency() {
       })}`
     },
 
-    // Convert USD to current currency (returns number)
     convertPrice: (usdPrice) => {
       if (usdPrice === null || usdPrice === undefined) return null
-      const rate = EXCHANGE_RATES[currency] || 1
+      const rate = exchangeRates[currency] || 1
       return usdPrice * rate
     },
 
-    // Format price change
     formatChange: (usdChange, percent) => {
       if (usdChange === undefined || usdChange === null) return null
-      const rate = EXCHANGE_RATES[currency] || 1
+      const rate = exchangeRates[currency] || 1
       const symbol = CURRENCY_SYMBOLS[currency] || '$'
       const converted = usdChange * rate
       const isPositive = converted >= 0
