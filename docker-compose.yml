@@ -1,0 +1,44 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: flipper-frontend
+    restart: unless-stopped
+    networks:
+      - flipper-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: flipper-backend
+    restart: unless-stopped
+    environment:
+      - ADMIN_PASSWORD=admin123
+      - DB_PATH=/data/watchlist.db
+    volumes:
+      - backend-data:/data
+    networks:
+      - flipper-network
+
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: flipper-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - flipper-network
+
+networks:
+  flipper-network:
+    driver: bridge
+
+volumes:
+  backend-data:

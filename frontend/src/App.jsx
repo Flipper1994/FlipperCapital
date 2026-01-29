@@ -1,0 +1,118 @@
+import { useState, useEffect } from 'react'
+import { Routes, Route } from 'react-router-dom'
+import { CurrencyProvider } from './context/CurrencyContext'
+import Header from './components/Header'
+import Sidebar from './components/Sidebar'
+import Dashboard from './components/Dashboard'
+import Login from './components/Login'
+import Register from './components/Register'
+import PortfolioManage from './components/PortfolioManage'
+import PortfolioCompare from './components/PortfolioCompare'
+
+function App() {
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [isLoggedIn, setIsLoggedIn] = useState(false)
+  const [user, setUser] = useState(null)
+  const [token, setToken] = useState(localStorage.getItem('authToken') || '')
+
+  useEffect(() => {
+    if (token) {
+      verifyToken()
+    }
+  }, [])
+
+  const verifyToken = async () => {
+    try {
+      const res = await fetch('/api/verify', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      if (data.valid) {
+        setIsLoggedIn(true)
+        setIsAdmin(data.is_admin || false)
+        setUser(data.user || null)
+      } else {
+        clearAuth()
+      }
+    } catch {
+      clearAuth()
+    }
+  }
+
+  const clearAuth = () => {
+    localStorage.removeItem('authToken')
+    setToken('')
+    setIsLoggedIn(false)
+    setIsAdmin(false)
+    setUser(null)
+  }
+
+  const handleLogin = (newToken, userData) => {
+    setToken(newToken)
+    localStorage.setItem('authToken', newToken)
+    setIsLoggedIn(true)
+    setIsAdmin(userData?.is_admin || false)
+    setUser(userData)
+  }
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/logout', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+    } catch {
+      // Ignore errors, just clear local state
+    }
+    clearAuth()
+  }
+
+  return (
+    <CurrencyProvider>
+      <div className="min-h-screen bg-dark-900 flex flex-col">
+        <Header
+          isLoggedIn={isLoggedIn}
+          isAdmin={isAdmin}
+          user={user}
+          onLogout={handleLogout}
+        />
+        <div className="flex flex-1 overflow-hidden">
+          <Sidebar
+            isLoggedIn={isLoggedIn}
+            isAdmin={isAdmin}
+            user={user}
+          />
+          <Routes>
+            <Route
+              path="/"
+              element={
+                <Dashboard
+                  isAdmin={isAdmin}
+                  token={token}
+                />
+              }
+            />
+            <Route
+              path="/login"
+              element={<Login onLogin={handleLogin} />}
+            />
+            <Route
+              path="/register"
+              element={<Register onLogin={handleLogin} />}
+            />
+            <Route
+              path="/portfolio"
+              element={<PortfolioManage />}
+            />
+            <Route
+              path="/compare"
+              element={<PortfolioCompare />}
+            />
+          </Routes>
+        </div>
+      </div>
+    </CurrencyProvider>
+  )
+}
+
+export default App
