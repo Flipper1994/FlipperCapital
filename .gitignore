@@ -50,6 +50,7 @@ temp/
 
 # Claude config
 .claude/
+claude.md
 
 # Test/temp images
 vergleichsbilder/

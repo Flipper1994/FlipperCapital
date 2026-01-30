@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { formatPrice, formatChange } from '../utils/currency'
 
 function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock }) {
@@ -9,9 +9,36 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock })
   const [showDropdown, setShowDropdown] = useState(false)
   const [canAdd, setCanAdd] = useState(false)
   const [addMessage, setAddMessage] = useState('')
+  const [addError, setAddError] = useState('')
+  const [collapsedSectors, setCollapsedSectors] = useState({})
   const [, forceUpdate] = useState(0)
   const searchRef = useRef(null)
   const debounceRef = useRef(null)
+
+  // Group stocks by sector and sort by market cap
+  const groupedStocks = useMemo(() => {
+    const groups = {}
+    stocks.forEach(stock => {
+      const sector = stock.sector || 'Sonstige'
+      if (!groups[sector]) groups[sector] = []
+      groups[sector].push(stock)
+    })
+    // Sort each sector by market cap descending
+    Object.keys(groups).forEach(sector => {
+      groups[sector].sort((a, b) => (b.market_cap || 0) - (a.market_cap || 0))
+    })
+    // Sort sectors alphabetically, but put "Sonstige" at the end
+    const sortedSectors = Object.keys(groups).sort((a, b) => {
+      if (a === 'Sonstige') return 1
+      if (b === 'Sonstige') return -1
+      return a.localeCompare(b)
+    })
+    return { groups, sortedSectors }
+  }, [stocks])
+
+  const toggleSector = (sector) => {
+    setCollapsedSectors(prev => ({ ...prev, [sector]: !prev[sector] }))
+  }
 
   useEffect(() => {
     const handleCurrencyChange = () => forceUpdate(n => n + 1)
@@ -77,14 +104,18 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock })
 
   const handleSelectStock = async (stock) => {
     setAdding(true)
-    const success = await onAdd({
+    setAddError('')
+    const result = await onAdd({
       symbol: stock.symbol,
       name: stock.name
     })
-    if (success) {
+    if (result?.success || result === true) {
       setQuery('')
       setSearchResults([])
       setShowDropdown(false)
+    } else if (result?.error) {
+      setAddError(result.error)
+      setTimeout(() => setAddError(''), 8000)
     }
     setAdding(false)
   }
@@ -144,6 +175,17 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock })
               ))}
             </div>
           )}
+
+          {addError && (
+            <div className="mt-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+              <div className="flex items-start gap-2">
+                <svg className="w-5 h-5 text-red-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <p className="text-xs text-red-400">{addError}</p>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -178,52 +220,80 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock })
             )}
           </div>
         ) : (
-          <div className="space-y-2">
-            {stocks.map((stock) => {
-              const changeData = formatChange(stock.change, stock.change_percent)
-              return (
-                <div
-                  key={stock.id}
-                  onClick={() => onSelectStock && onSelectStock(stock)}
-                  className="p-3 bg-dark-700 rounded-lg hover:bg-dark-600 transition-colors group cursor-pointer"
+          <div className="space-y-3">
+            {groupedStocks.sortedSectors.map((sector) => (
+              <div key={sector} className="border border-dark-600 rounded-lg overflow-hidden">
+                {/* Sector Header */}
+                <button
+                  onClick={() => toggleSector(sector)}
+                  className="w-full flex items-center justify-between px-3 py-2 bg-dark-700 hover:bg-dark-600 transition-colors"
                 >
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-white">{stock.symbol}</span>
-                      </div>
-                      <p className="text-xs text-gray-500 mt-0.5 truncate">{stock.name}</p>
-                    </div>
-                    <div className="text-right ml-2">
-                      <div className="font-medium text-white">
-                        {formatPrice(stock.price)}
-                      </div>
-                      {changeData && (
-                        <div className={`text-xs ${changeData.isPositive ? 'text-green-400' : 'text-red-400'}`}>
-                          {changeData.text}
-                        </div>
-                      )}
-                    </div>
+                  <span className="text-sm font-medium text-gray-300">{sector}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500">({groupedStocks.groups[sector].length})</span>
+                    <svg
+                      className={`w-4 h-4 text-gray-400 transition-transform ${collapsedSectors[sector] ? '' : 'rotate-180'}`}
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
                   </div>
-                  {isAdmin && (
-                    <div className="mt-2 pt-2 border-t border-dark-600 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onDelete(stock.id)
-                        }}
-                        className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1"
-                      >
-                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                        </svg>
-                        Entfernen
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )
-            })}
+                </button>
+
+                {/* Sector Stocks */}
+                {!collapsedSectors[sector] && (
+                  <div className="divide-y divide-dark-600">
+                    {groupedStocks.groups[sector].map((stock) => {
+                      const changeData = formatChange(stock.change, stock.change_percent)
+                      return (
+                        <div
+                          key={stock.id}
+                          onClick={() => onSelectStock && onSelectStock(stock)}
+                          className="p-3 hover:bg-dark-700 transition-colors group cursor-pointer"
+                        >
+                          <div className="flex items-start justify-between">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="font-semibold text-white">{stock.symbol}</span>
+                              </div>
+                              <p className="text-xs text-gray-500 mt-0.5 truncate">{stock.name}</p>
+                            </div>
+                            <div className="text-right ml-2">
+                              <div className="font-medium text-white">
+                                {formatPrice(stock.price)}
+                              </div>
+                              {changeData && (
+                                <div className={`text-xs ${changeData.isPositive ? 'text-green-400' : 'text-red-400'}`}>
+                                  {changeData.text}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          {isAdmin && (
+                            <div className="mt-2 pt-2 border-t border-dark-600 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  onDelete(stock.id)
+                                }}
+                                className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1"
+                              >
+                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                </svg>
+                                Entfernen
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         )}
       </div>

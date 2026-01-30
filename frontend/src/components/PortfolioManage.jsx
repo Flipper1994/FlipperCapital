@@ -46,14 +46,18 @@ function PortfolioManage() {
 
 function PortfolioContent({ token }) {
   const [positions, setPositions] = useState([])
+  const [trades, setTrades] = useState([])
   const [performance, setPerformance] = useState(null)
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editingPosition, setEditingPosition] = useState(null)
+  const [sellingPosition, setSellingPosition] = useState(null)
+  const [sellPrice, setSellPrice] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [searching, setSearching] = useState(false)
   const [showDropdown, setShowDropdown] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
   const [formData, setFormData] = useState({
     symbol: '',
     name: '',
@@ -70,6 +74,7 @@ function PortfolioContent({ token }) {
   useEffect(() => {
     fetchPortfolio()
     fetchPerformance()
+    fetchTrades()
   }, [])
 
   useEffect(() => {
@@ -105,6 +110,18 @@ function PortfolioContent({ token }) {
       setPerformance(data)
     } catch (err) {
       console.error('Failed to fetch performance:', err)
+    }
+  }
+
+  const fetchTrades = async () => {
+    try {
+      const res = await fetch('/api/portfolio/trades', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      setTrades(data || [])
+    } catch (err) {
+      console.error('Failed to fetch trades:', err)
     }
   }
 
@@ -204,7 +221,7 @@ function PortfolioContent({ token }) {
   }
 
   const handleDelete = async (id) => {
-    if (!confirm('Position wirklich löschen?')) return
+    if (!confirm('Position wirklich löschen? (Wird NICHT in der History gespeichert)')) return
     try {
       const res = await fetch(`/api/portfolio/${id}`, {
         method: 'DELETE',
@@ -217,6 +234,42 @@ function PortfolioContent({ token }) {
     } catch (err) {
       console.error('Failed to delete position:', err)
     }
+  }
+
+  const handleSell = async (e) => {
+    e.preventDefault()
+    if (!sellingPosition || !sellPrice) return
+
+    setSubmitting(true)
+    try {
+      const res = await fetch(`/api/portfolio/${sellingPosition.id}/sell`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          sell_price: parseFloat(sellPrice),
+          quantity: sellingPosition.quantity
+        })
+      })
+      if (res.ok) {
+        setSellingPosition(null)
+        setSellPrice('')
+        fetchPortfolio()
+        fetchPerformance()
+        fetchTrades()
+      }
+    } catch (err) {
+      console.error('Failed to sell position:', err)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const openSellModal = (pos) => {
+    setSellingPosition(pos)
+    setSellPrice(pos.current_price?.toFixed(2) || '')
   }
 
   const handleCancel = () => {
@@ -453,6 +506,15 @@ function PortfolioContent({ token }) {
                       </div>
                       <div className="flex gap-1">
                         <button
+                          onClick={() => openSellModal(pos)}
+                          className="p-2 text-green-400 hover:text-green-300"
+                          title="Verkaufen"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        </button>
+                        <button
                           onClick={() => handleEdit(pos)}
                           className="p-2 text-gray-400 hover:text-white"
                         >
@@ -552,6 +614,15 @@ function PortfolioContent({ token }) {
                         <td className="py-3">
                           <div className="flex items-center gap-1">
                             <button
+                              onClick={() => openSellModal(pos)}
+                              className="p-1.5 text-green-400 hover:text-green-300 transition-colors"
+                              title="Verkaufen"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                            </button>
+                            <button
                               onClick={() => handleEdit(pos)}
                               className="p-1.5 text-gray-400 hover:text-white transition-colors"
                               title="Bearbeiten"
@@ -579,7 +650,133 @@ function PortfolioContent({ token }) {
             </>
           )}
         </div>
+
+        {/* Trade History Section */}
+        <div className="bg-dark-800 rounded-xl border border-dark-600 p-4 md:p-6">
+          <button
+            onClick={() => setShowHistory(!showHistory)}
+            className="w-full flex items-center justify-between"
+          >
+            <h2 className="text-lg font-semibold text-white">Trade History ({trades.length})</h2>
+            <svg className={`w-5 h-5 text-gray-400 transition-transform ${showHistory ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+
+          {showHistory && trades.length > 0 && (
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-gray-500 border-b border-dark-600">
+                    <th className="pb-2 pr-4">Symbol</th>
+                    <th className="pb-2 pr-4">Kauf</th>
+                    <th className="pb-2 pr-4">Verkauf</th>
+                    <th className="pb-2 pr-4">Menge</th>
+                    <th className="pb-2 pr-4 text-right">Rendite</th>
+                    <th className="pb-2 text-right">Datum</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {trades.map((trade) => (
+                    <tr key={trade.id} className="border-b border-dark-700/50 last:border-0">
+                      <td className="py-2 pr-4">
+                        <div className="font-medium text-white">{trade.symbol}</div>
+                        <div className="text-xs text-gray-500 truncate max-w-[100px]">{trade.name}</div>
+                      </td>
+                      <td className="py-2 pr-4 text-green-400">
+                        {trade.buy_price.toFixed(2)} {trade.currency}
+                      </td>
+                      <td className="py-2 pr-4 text-red-400">
+                        {trade.sell_price.toFixed(2)} {trade.currency}
+                      </td>
+                      <td className="py-2 pr-4 text-gray-400">
+                        {trade.quantity}
+                      </td>
+                      <td className={`py-2 pr-4 text-right font-medium ${trade.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {formatPercent(trade.profit_loss_pct)}
+                      </td>
+                      <td className="py-2 text-right text-gray-500">
+                        {formatDate(trade.sell_date)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {showHistory && trades.length === 0 && (
+            <p className="mt-4 text-gray-500 text-sm">Noch keine abgeschlossenen Trades.</p>
+          )}
+        </div>
       </div>
+
+      {/* Sell Modal */}
+      {sellingPosition && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={() => setSellingPosition(null)}>
+          <div className="bg-dark-800 rounded-xl border border-dark-600 max-w-md w-full p-6" onClick={e => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-white mb-4">Position verkaufen</h3>
+
+            <div className="mb-4 p-3 bg-dark-700 rounded-lg">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="font-bold text-white">{sellingPosition.symbol}</span>
+                <span className="text-gray-500 text-sm">{sellingPosition.name}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div>
+                  <span className="text-gray-500">Kaufkurs:</span>
+                  <span className="text-white ml-2">{sellingPosition.avg_price.toFixed(2)} {sellingPosition.currency}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Aktuell:</span>
+                  <span className="text-white ml-2">{formatPrice(sellingPosition.current_price)}</span>
+                </div>
+              </div>
+            </div>
+
+            <form onSubmit={handleSell}>
+              <div className="mb-4">
+                <label className="block text-sm text-gray-400 mb-1">Verkaufspreis ({sellingPosition.currency})</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  required
+                  value={sellPrice}
+                  onChange={(e) => setSellPrice(e.target.value)}
+                  className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white focus:outline-none focus:border-accent-500"
+                  placeholder="0.00"
+                />
+              </div>
+
+              {sellPrice && (
+                <div className="mb-4 p-3 bg-dark-700 rounded-lg">
+                  <div className="text-sm text-gray-400">Voraussichtliche Rendite:</div>
+                  <div className={`text-xl font-bold ${parseFloat(sellPrice) >= sellingPosition.avg_price ? 'text-green-400' : 'text-red-400'}`}>
+                    {formatPercent(((parseFloat(sellPrice) - sellingPosition.avg_price) / sellingPosition.avg_price) * 100)}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="flex-1 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-400 transition-colors disabled:opacity-50"
+                >
+                  {submitting ? 'Verkaufe...' : 'Verkaufen'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSellingPosition(null)}
+                  className="px-4 py-2 bg-dark-600 text-gray-300 rounded-lg hover:bg-dark-500 transition-colors"
+                >
+                  Abbrechen
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

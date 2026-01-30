@@ -44,7 +44,7 @@ function Sidebar({ isLoggedIn, isAdmin, user, isOpen, onClose }) {
           w-56 bg-dark-800 border-r border-dark-600 flex flex-col
           transform transition-transform duration-300 ease-in-out
           ${isOpen ? 'translate-x-0' : '-translate-x-full'}
-          md:translate-x-0 md:top-0 md:h-screen md:shrink-0
+          md:translate-x-0 md:top-0 md:h-[calc(100vh-64px)] md:shrink-0 md:self-start
         `}
       >
         {/* Mobile close button */}

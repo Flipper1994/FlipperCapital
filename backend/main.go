@@ -60,6 +60,8 @@ type StockWithQuote struct {
 	Change        float64   `json:"change"`
 	ChangePercent float64   `json:"change_percent"`
 	PrevClose     float64   `json:"prev_close"`
+	Sector        string    `json:"sector"`
+	MarketCap     int64     `json:"market_cap"`
 	CreatedAt     time.Time `json:"created_at"`
 }
 
@@ -80,6 +82,8 @@ type YahooQuoteResponse struct {
 			RegularMarketChange        float64 `json:"regularMarketChange"`
 			RegularMarketChangePercent float64 `json:"regularMarketChangePercent"`
 			RegularMarketPreviousClose float64 `json:"regularMarketPreviousClose"`
+			Sector                     string  `json:"sector"`
+			MarketCap                  int64   `json:"marketCap"`
 		} `json:"result"`
 	} `json:"quoteResponse"`
 }
@@ -129,6 +133,23 @@ type PortfolioPositionWithQuote struct {
 	TotalReturnPct  float64    `json:"total_return_pct"`
 	CurrentValue    float64    `json:"current_value"`
 	InvestedValue   float64    `json:"invested_value"`
+}
+
+// PortfolioTradeHistory stores closed/sold positions for performance calculation
+type PortfolioTradeHistory struct {
+	ID           uint       `json:"id" gorm:"primaryKey"`
+	UserID       uint       `json:"user_id" gorm:"index;not null"`
+	Symbol       string     `json:"symbol" gorm:"not null"`
+	Name         string     `json:"name" gorm:"not null"`
+	BuyPrice     float64    `json:"buy_price" gorm:"not null"`
+	SellPrice    float64    `json:"sell_price" gorm:"not null"`
+	Currency     string     `json:"currency" gorm:"default:EUR"`
+	Quantity     float64    `json:"quantity" gorm:"default:1"`
+	BuyDate      *time.Time `json:"buy_date"`
+	SellDate     time.Time  `json:"sell_date" gorm:"not null"`
+	ProfitLoss   float64    `json:"profit_loss"`
+	ProfitLossPct float64   `json:"profit_loss_pct"`
+	CreatedAt    time.Time  `json:"created_at"`
 }
 
 // StockPerformance stores BX Trender performance data for tracked stocks
@@ -253,7 +274,7 @@ func main() {
 		panic("Failed to connect to database: " + err.Error())
 	}
 
-	db.AutoMigrate(&User{}, &Stock{}, &PortfolioPosition{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{})
+	db.AutoMigrate(&User{}, &Stock{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{})
 
 	// Ensure FlipperBot and Lutz users exist for portfolio comparison
 	ensureFlipperBotUser()
@@ -297,7 +318,9 @@ func main() {
 		api.POST("/portfolio", authMiddleware(), createPortfolioPosition)
 		api.PUT("/portfolio/:id", authMiddleware(), updatePortfolioPosition)
 		api.DELETE("/portfolio/:id", authMiddleware(), deletePortfolioPosition)
+		api.POST("/portfolio/:id/sell", authMiddleware(), sellPortfolioPosition)
 		api.GET("/portfolio/performance", authMiddleware(), getPortfolioPerformance)
+		api.GET("/portfolio/trades", authMiddleware(), getPortfolioTrades)
 		api.GET("/portfolio/history", authMiddleware(), getPortfolioHistory)
 		api.GET("/portfolios/compare", authMiddleware(), getAllPortfoliosForComparison)
 		api.GET("/portfolios/history/all", authMiddleware(), getAllPortfoliosHistory)
@@ -631,6 +654,8 @@ func getStocks(c *gin.Context) {
 			result[i].Change = q.Change
 			result[i].ChangePercent = q.ChangePercent
 			result[i].PrevClose = q.PrevClose
+			result[i].Sector = q.Sector
+			result[i].MarketCap = q.MarketCap
 		}
 	}
 
@@ -642,6 +667,8 @@ type QuoteData struct {
 	Change        float64
 	ChangePercent float64
 	PrevClose     float64
+	Sector        string
+	MarketCap     int64
 }
 
 func fetchQuotes(symbols []string) map[string]QuoteData {
@@ -652,11 +679,7 @@ func fetchQuotes(symbols []string) map[string]QuoteData {
 
 	symbolsStr := strings.Join(symbols, ",")
 
-	sparkURL := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/spark?symbols=%s&range=1d&interval=1d", url.QueryEscape(symbolsStr))
-	if sparkResult := trySparkAPI(sparkURL); len(sparkResult) > 0 {
-		return sparkResult
-	}
-
+	// Try v7 quote API first (has sector and market cap)
 	apiURL := fmt.Sprintf("https://query2.finance.yahoo.com/v7/finance/quote?symbols=%s", url.QueryEscape(symbolsStr))
 	req, _ := http.NewRequest("GET", apiURL, nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -664,36 +687,56 @@ func fetchQuotes(symbols []string) map[string]QuoteData {
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
 	resp, err := httpClient.Do(req)
-	if err != nil {
-		return result
-	}
-	defer resp.Body.Close()
+	if err == nil && resp.StatusCode == 200 {
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
 
-	body, _ := io.ReadAll(resp.Body)
-
-	var yahooResp YahooQuoteResponse
-	if err := json.Unmarshal(body, &yahooResp); err != nil {
-		return result
-	}
-
-	for _, q := range yahooResp.QuoteResponse.Result {
-		result[q.Symbol] = QuoteData{
-			Price:         q.RegularMarketPrice,
-			Change:        q.RegularMarketChange,
-			ChangePercent: q.RegularMarketChangePercent,
-			PrevClose:     q.RegularMarketPreviousClose,
+		var yahooResp YahooQuoteResponse
+		if err := json.Unmarshal(body, &yahooResp); err == nil && len(yahooResp.QuoteResponse.Result) > 0 {
+			for _, q := range yahooResp.QuoteResponse.Result {
+				result[q.Symbol] = QuoteData{
+					Price:         q.RegularMarketPrice,
+					Change:        q.RegularMarketChange,
+					ChangePercent: q.RegularMarketChangePercent,
+					PrevClose:     q.RegularMarketPreviousClose,
+					Sector:        q.Sector,
+					MarketCap:     q.MarketCap,
+				}
+			}
+			return result
 		}
 	}
+	if resp != nil {
+		resp.Body.Close()
+	}
 
-	return result
+	// Fallback to spark API
+	sparkURL := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/spark?symbols=%s&range=1d&interval=1d", url.QueryEscape(symbolsStr))
+	return trySparkAPI(sparkURL)
 }
 
 type SparkQuote struct {
-	Symbol             string    `json:"symbol"`
-	Timestamp          []int64   `json:"timestamp"`
-	Close              []float64 `json:"close"`
-	ChartPreviousClose float64   `json:"chartPreviousClose"`
-	PreviousClose      float64   `json:"previousClose"`
+	Symbol   string `json:"symbol"`
+	Response []struct {
+		Meta struct {
+			RegularMarketPrice float64 `json:"regularMarketPrice"`
+			ChartPreviousClose float64 `json:"chartPreviousClose"`
+			PreviousClose      float64 `json:"previousClose"`
+		} `json:"meta"`
+		Timestamp  []int64 `json:"timestamp"`
+		Indicators struct {
+			Quote []struct {
+				Close []float64 `json:"close"`
+			} `json:"quote"`
+		} `json:"indicators"`
+	} `json:"response"`
+}
+
+type SparkAPIResponse struct {
+	Spark struct {
+		Result []SparkQuote `json:"result"`
+		Error  interface{}  `json:"error"`
+	} `json:"spark"`
 }
 
 func trySparkAPI(apiURL string) map[string]QuoteData {
@@ -710,24 +753,32 @@ func trySparkAPI(apiURL string) map[string]QuoteData {
 
 	body, _ := io.ReadAll(resp.Body)
 
-	var sparkResp map[string]SparkQuote
+	var sparkResp SparkAPIResponse
 	if err := json.Unmarshal(body, &sparkResp); err != nil {
 		return result
 	}
 
-	for symbol, data := range sparkResp {
-		if len(data.Close) > 0 {
-			price := data.Close[len(data.Close)-1]
-			prevClose := data.ChartPreviousClose
+	for _, quote := range sparkResp.Spark.Result {
+		if len(quote.Response) > 0 {
+			meta := quote.Response[0].Meta
+			price := meta.RegularMarketPrice
+			prevClose := meta.ChartPreviousClose
 			if prevClose == 0 {
-				prevClose = data.PreviousClose
+				prevClose = meta.PreviousClose
+			}
+			// Fallback to last close from indicators if meta price is 0
+			if price == 0 && len(quote.Response[0].Indicators.Quote) > 0 {
+				closes := quote.Response[0].Indicators.Quote[0].Close
+				if len(closes) > 0 {
+					price = closes[len(closes)-1]
+				}
 			}
 			change := price - prevClose
 			changePercent := 0.0
 			if prevClose > 0 {
 				changePercent = (change / prevClose) * 100
 			}
-			result[symbol] = QuoteData{
+			result[quote.Symbol] = QuoteData{
 				Price:         price,
 				Change:        change,
 				ChangePercent: changePercent,
@@ -1250,6 +1301,80 @@ func deletePortfolioPosition(c *gin.Context) {
 
 	db.Delete(&position)
 	c.JSON(http.StatusOK, gin.H{"message": "Position deleted"})
+}
+
+func sellPortfolioPosition(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	id := c.Param("id")
+
+	var position PortfolioPosition
+	if err := db.Where("id = ? AND user_id = ?", id, userID).First(&position).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Position not found"})
+		return
+	}
+
+	var input struct {
+		SellPrice float64 `json:"sell_price" binding:"required"`
+		Quantity  *float64 `json:"quantity"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "sell_price is required"})
+		return
+	}
+
+	// Calculate profit/loss
+	quantity := 1.0
+	if position.Quantity != nil && *position.Quantity > 0 {
+		quantity = *position.Quantity
+	}
+	if input.Quantity != nil && *input.Quantity > 0 {
+		quantity = *input.Quantity
+	}
+
+	profitLoss := (input.SellPrice - position.AvgPrice) * quantity
+	profitLossPct := 0.0
+	if position.AvgPrice > 0 {
+		profitLossPct = ((input.SellPrice - position.AvgPrice) / position.AvgPrice) * 100
+	}
+
+	// Create trade history entry
+	tradeHistory := PortfolioTradeHistory{
+		UserID:        userID.(uint),
+		Symbol:        position.Symbol,
+		Name:          position.Name,
+		BuyPrice:      position.AvgPrice,
+		SellPrice:     input.SellPrice,
+		Currency:      position.Currency,
+		Quantity:      quantity,
+		BuyDate:       position.PurchaseDate,
+		SellDate:      time.Now(),
+		ProfitLoss:    profitLoss,
+		ProfitLossPct: profitLossPct,
+	}
+
+	if err := db.Create(&tradeHistory).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create trade history"})
+		return
+	}
+
+	// Delete the position
+	db.Delete(&position)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":        "Position sold successfully",
+		"profit_loss":    profitLoss,
+		"profit_loss_pct": profitLossPct,
+		"trade":          tradeHistory,
+	})
+}
+
+func getPortfolioTrades(c *gin.Context) {
+	userID, _ := c.Get("userID")
+
+	var trades []PortfolioTradeHistory
+	db.Where("user_id = ?", userID).Order("sell_date desc").Find(&trades)
+
+	c.JSON(http.StatusOK, trades)
 }
 
 func getPortfolioPerformance(c *gin.Context) {

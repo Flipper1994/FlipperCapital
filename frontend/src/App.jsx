@@ -87,7 +87,7 @@ function App() {
             sidebarOpen={sidebarOpen}
             setSidebarOpen={setSidebarOpen}
           />
-          <div className="flex flex-1 overflow-x-hidden overflow-y-auto">
+          <div className="flex flex-1 overflow-x-hidden">
             <Sidebar
               isLoggedIn={isLoggedIn}
               isAdmin={isAdmin}

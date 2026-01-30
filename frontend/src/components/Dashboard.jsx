@@ -48,6 +48,16 @@ function Dashboard({ isAdmin, token }) {
 
   const addStock = async (stock) => {
     try {
+      // First validate that chart data is available for BX Trender analysis
+      const histRes = await fetch(`/api/history/${stock.symbol}?period=max&interval=1mo`)
+      if (!histRes.ok) {
+        return { success: false, error: `Keine Kursdaten für ${stock.symbol} verfügbar. BX Trender Analyse nicht möglich.` }
+      }
+      const histData = await histRes.json()
+      if (!histData.data || histData.data.length < 40) {
+        return { success: false, error: `Nicht genügend historische Daten für ${stock.symbol}. Mindestens 40 Monate benötigt für BX Trender Analyse.` }
+      }
+
       const res = await fetch('/api/stocks', {
         method: 'POST',
         headers: {
@@ -74,11 +84,11 @@ function Dashboard({ isAdmin, token }) {
         if (stockWithPrice) {
           handleSelectStock(stockWithPrice)
         }
-        return true
+        return { success: true }
       }
-      return false
-    } catch {
-      return false
+      return { success: false, error: 'Fehler beim Hinzufügen zur Watchlist.' }
+    } catch (err) {
+      return { success: false, error: err.message || 'Unbekannter Fehler' }
     }
   }
 
