@@ -12,6 +12,9 @@ function Dashboard({ isAdmin, token }) {
   // Mobile collapsible state for watchlist (default collapsed)
   const [watchlistExpanded, setWatchlistExpanded] = useState(false)
 
+  // PC collapsible state for System Performance (default collapsed, opens on stock click)
+  const [performanceExpanded, setPerformanceExpanded] = useState(false)
+
   const fetchStocks = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true)
     try {
@@ -85,6 +88,14 @@ function Dashboard({ isAdmin, token }) {
     setBacktestData(data)
   }, [])
 
+  // Handle stock selection - also expand performance panel
+  const handleSelectStock = useCallback((stock) => {
+    setSelectedStock(stock)
+    if (stock) {
+      setPerformanceExpanded(true)
+    }
+  }, [])
+
   // Chevron icon component for collapsible sections
   const ChevronIcon = ({ expanded }) => (
     <svg
@@ -105,15 +116,48 @@ function Dashboard({ isAdmin, token }) {
           stock={selectedStock}
           stocks={stocks}
           onBacktestUpdate={handleBacktestUpdate}
-          onSelectStock={setSelectedStock}
+          onSelectStock={handleSelectStock}
           backtestData={backtestData}
         />
       </div>
 
       {/* Right Sidebar - Desktop: fixed sidebar, Mobile: collapsible sections */}
       <aside className="md:w-80 bg-dark-800 border-t md:border-t-0 md:border-l border-dark-600 flex flex-col">
-        {/* Watchlist Section */}
-        <div className="flex-1 md:flex-1 overflow-hidden flex flex-col">
+        {/* System Performance Section - Now ABOVE Watchlist, collapsible on both mobile and PC */}
+        <div className="border-b border-dark-600 flex flex-col">
+          {/* Collapsible Header */}
+          <button
+            onClick={() => setPerformanceExpanded(!performanceExpanded)}
+            className="flex items-center justify-between w-full px-4 py-3 bg-dark-700 border-b border-dark-600 hover:bg-dark-600 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <svg className="w-5 h-5 text-accent-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+              </svg>
+              <span className="text-white font-medium">System Performance</span>
+              {selectedStock && (
+                <span className="text-xs text-accent-400">({selectedStock.symbol})</span>
+              )}
+            </div>
+            <ChevronIcon expanded={performanceExpanded} />
+          </button>
+
+          {/* Performance Content */}
+          <div className={`
+            overflow-hidden transition-all duration-300 ease-in-out
+            ${performanceExpanded ? 'max-h-[400px]' : 'max-h-0'}
+          `}>
+            <div className="overflow-auto max-h-[400px]">
+              <BacktestPanel
+                trades={backtestData.trades}
+                metrics={backtestData.metrics}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Watchlist Section - Now BELOW System Performance */}
+        <div className="flex-1 overflow-hidden flex flex-col">
           {/* Collapsible Header - Mobile only */}
           <button
             onClick={() => setWatchlistExpanded(!watchlistExpanded)}
@@ -141,17 +185,7 @@ function Dashboard({ isAdmin, token }) {
               isAdmin={isAdmin}
               onAdd={addStock}
               onDelete={deleteStock}
-              onSelectStock={setSelectedStock}
-            />
-          </div>
-        </div>
-
-        {/* Backtest Panel Section - Desktop only (mobile version is in ChartArea) */}
-        <div className="hidden md:flex border-t border-dark-600 md:max-h-[50%] overflow-hidden flex-col">
-          <div className="overflow-auto flex-1">
-            <BacktestPanel
-              trades={backtestData.trades}
-              metrics={backtestData.metrics}
+              onSelectStock={handleSelectStock}
             />
           </div>
         </div>
