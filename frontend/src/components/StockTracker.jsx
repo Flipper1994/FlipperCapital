@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { formatPrice } from '../utils/currency'
+import { useTradingMode } from '../context/TradingModeContext'
 
 function StockTracker() {
   const [stocks, setStocks] = useState([])
@@ -9,6 +10,7 @@ function StockTracker() {
   const [selectedStock, setSelectedStock] = useState(null)
   const [signalFilter, setSignalFilter] = useState(null)
   const [, forceUpdate] = useState(0)
+  const { mode, isAggressive } = useTradingMode()
 
   useEffect(() => {
     const handleCurrencyChange = () => forceUpdate(n => n + 1)
@@ -18,15 +20,18 @@ function StockTracker() {
 
   useEffect(() => {
     fetchStocks()
-  }, [])
+  }, [isAggressive]) // Refetch when mode changes
 
   const fetchStocks = async () => {
+    setLoading(true)
     try {
-      const res = await fetch('/api/performance')
+      const endpoint = isAggressive ? '/api/performance/aggressive' : '/api/performance'
+      const res = await fetch(endpoint)
       const data = await res.json()
-      setStocks(data)
+      setStocks(data || [])
     } catch (err) {
       console.error('Failed to fetch tracked stocks:', err)
+      setStocks([])
     } finally {
       setLoading(false)
     }
@@ -133,8 +138,34 @@ function StockTracker() {
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="mb-4 md:mb-6">
-          <h1 className="text-xl md:text-2xl font-bold text-white">Aktien Tracker</h1>
-          <p className="text-gray-500 text-sm">BX Trender Performance aller beobachteten Aktien</p>
+          <div className="flex items-center gap-3 flex-wrap">
+            <h1 className="text-xl md:text-2xl font-bold text-white">Aktien Tracker</h1>
+            <span className={`px-2 py-1 text-xs font-bold rounded flex items-center gap-1.5 ${
+              isAggressive
+                ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
+                : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+            }`}>
+              {isAggressive ? (
+                <>
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z" />
+                  </svg>
+                  Aggressiv
+                </>
+              ) : (
+                <>
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                  </svg>
+                  Defensiv
+                </>
+              )}
+            </span>
+          </div>
+          <p className="text-gray-500 text-sm mt-1">
+            BX Trender Performance aller beobachteten Aktien
+            {isAggressive && <span className="text-orange-400"> (Aggressive Signale: Kauf bei hellrot, Verkauf bei dunkelrot)</span>}
+          </p>
         </div>
 
         {loading ? (

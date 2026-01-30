@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { useCurrency } from '../context/CurrencyContext'
 
-function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
+function LutzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
   const [portfolio, setPortfolio] = useState(null)
   const [actions, setActions] = useState([])
   const [performance, setPerformance] = useState(null)
@@ -62,13 +62,13 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
     setLoading(true)
     try {
       const [portfolioRes, actionsRes, perfRes] = await Promise.all([
-        fetch('/api/flipperbot/portfolio', {
+        fetch('/api/lutz/portfolio', {
           headers: { 'Authorization': `Bearer ${token}` }
         }),
-        fetch('/api/flipperbot/actions', {
+        fetch('/api/lutz/actions', {
           headers: { 'Authorization': `Bearer ${token}` }
         }),
-        fetch('/api/flipperbot/performance', {
+        fetch('/api/lutz/performance', {
           headers: { 'Authorization': `Bearer ${token}` }
         })
       ])
@@ -81,7 +81,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
       setActions(actionsData)
       setPerformance(perfData)
     } catch (err) {
-      console.error('Failed to fetch FlipperBot data:', err)
+      console.error('Failed to fetch Lutz data:', err)
     } finally {
       setLoading(false)
     }
@@ -93,7 +93,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
     setLogs([{ level: 'INFO', message: 'Update gestartet...', time: new Date().toLocaleTimeString('de-DE') }])
 
     try {
-      const res = await fetch('/api/flipperbot/update', {
+      const res = await fetch('/api/lutz/update', {
         headers: { 'Authorization': `Bearer ${token}` }
       })
       const data = await res.json()
@@ -107,7 +107,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
 
       await fetchData()
     } catch (err) {
-      console.error('Failed to update FlipperBot:', err)
+      console.error('Failed to update Lutz:', err)
       setUpdateResult({ error: 'Update failed' })
       setLogs(prev => [...prev, { level: 'ERROR', message: 'Update fehlgeschlagen: ' + err.message, time: new Date().toLocaleTimeString('de-DE') }])
     } finally {
@@ -116,14 +116,14 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
   }
 
   const handleReset = async () => {
-    if (!confirm('FlipperBot komplett zurücksetzen? Alle Trades und Positionen werden gelöscht!')) {
+    if (!confirm('Lutz komplett zurücksetzen? Alle Trades und Positionen werden gelöscht!')) {
       return
     }
     setResetting(true)
-    setLogs([{ level: 'WARN', message: 'FlipperBot wird zurückgesetzt...', time: new Date().toLocaleTimeString('de-DE') }])
+    setLogs([{ level: 'WARN', message: 'Lutz wird zurückgesetzt...', time: new Date().toLocaleTimeString('de-DE') }])
 
     try {
-      await fetch('/api/flipperbot/reset', {
+      await fetch('/api/lutz/reset', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` }
       })
@@ -131,7 +131,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
       setUpdateResult(null)
       await fetchData()
     } catch (err) {
-      console.error('Failed to reset FlipperBot:', err)
+      console.error('Failed to reset Lutz:', err)
       setLogs(prev => [...prev, { level: 'ERROR', message: 'Reset fehlgeschlagen', time: new Date().toLocaleTimeString('de-DE') }])
     } finally {
       setResetting(false)
@@ -190,7 +190,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
       <div className="flex-1 p-4 md:p-6 flex items-center justify-center">
         <div className="text-center">
           <div className="w-12 h-12 border-2 border-accent-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-gray-400">Lade FlipperBot Daten...</p>
+          <p className="text-gray-400">Lade Lutz Daten...</p>
         </div>
       </div>
     )
@@ -202,16 +202,16 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
       <div className="flex-1 p-4 md:p-6 flex items-center justify-center">
         <div className="max-w-md text-center">
           {/* Icon */}
-          <div className="w-24 h-24 mx-auto mb-6 bg-gradient-to-br from-purple-500/20 to-pink-500/20 rounded-2xl flex items-center justify-center border border-purple-500/30">
-            <svg className="w-12 h-12 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="w-24 h-24 mx-auto mb-6 bg-gradient-to-br from-orange-500/20 to-red-500/20 rounded-2xl flex items-center justify-center border border-orange-500/30">
+            <svg className="w-12 h-12 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
             </svg>
           </div>
 
           {/* Title */}
           <h1 className="text-2xl font-bold text-white mb-2 flex items-center justify-center gap-2">
-            FlipperBot Lab
-            <span className="px-2 py-0.5 bg-gradient-to-r from-purple-500 to-pink-500 text-white text-xs font-bold rounded">
+            Lutz Lab
+            <span className="px-2 py-0.5 bg-gradient-to-r from-orange-500 to-red-500 text-white text-xs font-bold rounded">
               BETA
             </span>
           </h1>
@@ -220,7 +220,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
           {!isLoggedIn ? (
             <>
               <p className="text-gray-400 mb-6">
-                Melde dich an, um den FlipperBot Lab zu nutzen und die automatisierte Trading-Strategie zu verfolgen.
+                Melde dich an, um den Lutz Lab zu nutzen und die automatisierte Trading-Strategie zu verfolgen.
               </p>
               <div className="flex flex-col sm:flex-row gap-3 justify-center">
                 <Link
@@ -246,7 +246,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
           ) : (
             <>
               <p className="text-gray-400 mb-6">
-                Um den FlipperBot Lab zu nutzen, musst du mindestens eine Aktie in deinem Portfolio haben.
+                Um den Lutz Lab zu nutzen, musst du mindestens eine Aktie in deinem Portfolio haben.
                 Füge zuerst eine Position hinzu, um die automatisierte Trading-Strategie zu verfolgen.
               </p>
               <Link
@@ -297,19 +297,19 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
           <div>
             <div className="flex items-center gap-3">
-              <div className="w-12 h-12 bg-gradient-to-br from-purple-500 to-pink-600 rounded-xl flex items-center justify-center">
+              <div className="w-12 h-12 bg-gradient-to-br from-orange-500 to-red-600 rounded-xl flex items-center justify-center">
                 <svg className="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
                 </svg>
               </div>
               <div>
                 <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-                  FlipperBot Lab
-                  <span className="px-2 py-0.5 bg-gradient-to-r from-purple-500 to-pink-500 text-white text-xs font-bold rounded">
+                  Lutz Lab
+                  <span className="px-2 py-0.5 bg-gradient-to-r from-orange-500 to-red-500 text-white text-xs font-bold rounded">
                     BETA
                   </span>
                 </h1>
-                <p className="text-gray-500 text-sm">Automatisiertes Trading seit 01.01.2026</p>
+                <p className="text-gray-500 text-sm">Aggressives Trading seit 01.01.2026</p>
               </div>
             </div>
           </div>
@@ -381,7 +381,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
               <div>
                 <span className="font-medium text-gray-300">Nur-Lesen Modus</span>
                 <span className="mx-2">–</span>
-                <span>Du kannst die Performance des FlipperBot einsehen. Trading-Aktionen und Debug-Logs sind Administratoren vorbehalten.</span>
+                <span>Du kannst die Performance des Lutz einsehen. Trading-Aktionen und Debug-Logs sind Administratoren vorbehalten.</span>
               </div>
             </div>
           </div>
@@ -428,7 +428,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
         {performance && (
           <>
             {/* Main Rendite Card */}
-            <div className="mb-4 bg-gradient-to-r from-purple-500/20 to-pink-500/20 rounded-xl border border-purple-500/30 p-5">
+            <div className="mb-4 bg-gradient-to-r from-orange-500/20 to-red-500/20 rounded-xl border border-orange-500/30 p-5">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
                   <div className="text-sm text-gray-400 mb-1">Portfolio Rendite</div>
@@ -588,7 +588,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
           <div className="bg-dark-800 rounded-xl border border-dark-600 overflow-hidden">
             <div className="p-4 border-b border-dark-600">
               <h2 className="text-lg font-semibold text-white">Letzte Aktionen</h2>
-              <p className="text-xs text-gray-500 mt-1">Trade-Historie des FlipperBot</p>
+              <p className="text-xs text-gray-500 mt-1">Trade-Historie des Lutz</p>
             </div>
 
             {actions.length === 0 ? (
@@ -635,20 +635,24 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
         </div>
 
         {/* Info Box */}
-        <div className="mt-6 bg-purple-500/10 border border-purple-500/30 rounded-xl p-4">
+        <div className="mt-6 bg-orange-500/10 border border-orange-500/30 rounded-xl p-4">
           <div className="flex items-start gap-3">
-            <svg className="w-5 h-5 text-purple-400 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            <svg className="w-5 h-5 text-orange-400 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z" />
             </svg>
             <div>
-              <h3 className="font-medium text-purple-400">So funktioniert der FlipperBot</h3>
+              <h3 className="font-medium text-orange-400">So funktioniert der Lutz (Aggressiv)</h3>
               <ul className="text-sm text-gray-400 mt-2 space-y-1">
-                <li>Folgt den BUY/SELL Signalen aus dem Aktien Tracker</li>
-                <li>Kauft 1 Aktie bei BUY-Signal, verkauft bei SELL-Signal</li>
+                <li><span className="text-orange-400">Kauft bei erstem hellroten Balken</span> – früherer Einstieg als FlipperBot</li>
+                <li><span className="text-orange-400">Verkauft nur bei dunkelrotem Balken</span> – längere Haltezeit für mehr Gewinn</li>
+                <li>Aggressivere Strategie mit höherem Risiko und Potenzial</li>
                 <li>Startdatum: 01.01.2026 (keine Trades davor)</li>
-                <li>Sichtbar im Portfolio-Vergleich als "FlipperBot"</li>
-                <li>Klicke "Update & Trade" um neue Signale zu verarbeiten</li>
+                <li>Sichtbar im Portfolio-Vergleich als "Lutz"</li>
               </ul>
+              <div className="mt-3 p-2 bg-dark-800/50 rounded text-xs text-gray-500">
+                <strong className="text-gray-400">Unterschied zu FlipperBot:</strong> FlipperBot wartet auf grüne Balken (konservativ),
+                Lutz steigt schon bei hellrot ein (aggressiv) und hält länger.
+              </div>
             </div>
           </div>
         </div>
@@ -734,4 +738,4 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
   )
 }
 
-export default FlipperBotLab
+export default LutzLab

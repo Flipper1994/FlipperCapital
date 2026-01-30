@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { useCurrency } from '../context/CurrencyContext'
-import PortfolioChart from './PortfolioChart'
+import MultiPortfolioChart, { getPortfolioColor } from './MultiPortfolioChart'
 
 function PortfolioCompare() {
   const token = localStorage.getItem('authToken')
@@ -48,8 +48,13 @@ function PortfolioCompareContent({ token }) {
   const [portfolios, setPortfolios] = useState([])
   const [loading, setLoading] = useState(true)
   const [expandedPortfolio, setExpandedPortfolio] = useState(null)
-  const [selectedChartUser, setSelectedChartUser] = useState(null)
+  const [colorMap, setColorMap] = useState({})
   const { formatPrice, currency } = useCurrency()
+
+  // Callback to receive color mapping from chart
+  const handleColorMap = useCallback((map) => {
+    setColorMap(map)
+  }, [])
 
   useEffect(() => {
     fetchPortfolios()
@@ -113,86 +118,79 @@ function PortfolioCompareContent({ token }) {
           </div>
         ) : (
           <>
-            {/* Selected Portfolio Chart */}
-            {selectedChartUser && (
-              <div className="mb-4 md:mb-6">
-                <div className="flex items-center justify-between mb-2">
-                  <h2 className="text-lg font-semibold text-white">
-                    Portfolio von {portfolios.find(p => p.user_id === selectedChartUser)?.username}
-                  </h2>
-                  <button
-                    onClick={() => setSelectedChartUser(null)}
-                    className="text-gray-400 hover:text-white p-1"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-                <PortfolioChart userId={selectedChartUser} token={token} height={250} />
-              </div>
-            )}
+            {/* Multi Portfolio Chart - shown by default */}
+            <div className="mb-4 md:mb-6">
+              <MultiPortfolioChart
+                token={token}
+                height={300}
+                portfolios={portfolios}
+                onColorMap={handleColorMap}
+              />
+            </div>
 
             {/* Performance Ranking */}
             <div className="bg-dark-800 rounded-xl border border-dark-600 p-4 md:p-6 mb-4 md:mb-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold text-white">Performance Ranking</h2>
-                <p className="text-xs text-gray-500 hidden md:block">Klicke auf einen Nutzer für den Chart</p>
+                <p className="text-xs text-gray-500 hidden md:block">Farben entsprechen dem Chart oben</p>
               </div>
               <div className="space-y-3">
-                {portfolios.map((portfolio, index) => (
-                  <button
-                    key={portfolio.user_id}
-                    onClick={() => setSelectedChartUser(portfolio.user_id)}
-                    className={`w-full flex items-center gap-3 p-2 -m-2 rounded-lg transition-colors ${
-                      selectedChartUser === portfolio.user_id
-                        ? 'bg-accent-500/10 ring-1 ring-accent-500'
-                        : 'hover:bg-dark-700/50'
-                    }`}
-                  >
-                    {/* Rank */}
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${
-                      index === 0 ? 'bg-yellow-500/20 text-yellow-400' :
-                      index === 1 ? 'bg-gray-400/20 text-gray-300' :
-                      index === 2 ? 'bg-orange-500/20 text-orange-400' :
-                      'bg-dark-700 text-gray-500'
-                    }`}>
-                      {index + 1}
-                    </div>
+                {portfolios.map((portfolio, index) => {
+                  // Get color from colorMap or fallback to index-based color
+                  const lineColor = colorMap[portfolio.user_id] || getPortfolioColor(index)
 
-                    {/* Username */}
-                    <div className="w-24 md:w-32 truncate text-sm text-white font-medium text-left">
-                      {portfolio.username}
-                    </div>
-
-                    {/* Bar Chart */}
-                    <div className="flex-1 h-8 bg-dark-700 rounded-lg overflow-hidden relative">
+                  return (
+                    <div
+                      key={portfolio.user_id}
+                      className="flex items-center gap-3 p-2 -m-2 rounded-lg"
+                    >
+                      {/* Color indicator */}
                       <div
-                        className={`h-full transition-all duration-500 ${
-                          portfolio.total_return_pct >= 0 ? 'bg-green-500/60' : 'bg-red-500/60'
-                        }`}
-                        style={{ width: `${getBarWidth(portfolio.total_return_pct)}%` }}
+                        className="w-4 h-4 rounded-full shrink-0"
+                        style={{ backgroundColor: lineColor }}
+                        title={`Linienfarbe: ${portfolio.username}`}
                       />
-                      <div className="absolute inset-0 flex items-center justify-end pr-2">
-                        <span className={`text-sm font-bold ${
-                          portfolio.total_return_pct >= 0 ? 'text-green-400' : 'text-red-400'
-                        }`}>
-                          {formatPercent(portfolio.total_return_pct)}
-                        </span>
+
+                      {/* Rank */}
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${
+                        index === 0 ? 'bg-yellow-500/20 text-yellow-400' :
+                        index === 1 ? 'bg-gray-400/20 text-gray-300' :
+                        index === 2 ? 'bg-orange-500/20 text-orange-400' :
+                        'bg-dark-700 text-gray-500'
+                      }`}>
+                        {index + 1}
+                      </div>
+
+                      {/* Username */}
+                      <div className="w-24 md:w-32 truncate text-sm text-white font-medium text-left">
+                        {portfolio.username}
+                      </div>
+
+                      {/* Bar Chart */}
+                      <div className="flex-1 h-8 bg-dark-700 rounded-lg overflow-hidden relative">
+                        <div
+                          className="h-full transition-all duration-500"
+                          style={{
+                            width: `${getBarWidth(portfolio.total_return_pct)}%`,
+                            backgroundColor: `${lineColor}99` // Add some transparency
+                          }}
+                        />
+                        <div className="absolute inset-0 flex items-center justify-end pr-2">
+                          <span className={`text-sm font-bold ${
+                            portfolio.total_return_pct >= 0 ? 'text-green-400' : 'text-red-400'
+                          }`}>
+                            {formatPercent(portfolio.total_return_pct)}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Position count - hidden on mobile */}
+                      <div className="hidden md:block w-20 text-right text-xs text-gray-500">
+                        {portfolio.position_count} Aktie{portfolio.position_count !== 1 ? 'n' : ''}
                       </div>
                     </div>
-
-                    {/* Position count - hidden on mobile */}
-                    <div className="hidden md:block w-20 text-right text-xs text-gray-500">
-                      {portfolio.position_count} Aktie{portfolio.position_count !== 1 ? 'n' : ''}
-                    </div>
-
-                    {/* Chart icon */}
-                    <svg className="w-5 h-5 text-gray-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-                    </svg>
-                  </button>
-                ))}
+                  )
+                })}
               </div>
             </div>
 
@@ -205,7 +203,9 @@ function PortfolioCompareContent({ token }) {
 
               {/* Mobile Card View */}
               <div className="md:hidden">
-                {portfolios.map((portfolio) => (
+                {portfolios.map((portfolio, index) => {
+                  const lineColor = colorMap[portfolio.user_id] || getPortfolioColor(index)
+                  return (
                   <div key={portfolio.user_id} className="border-b border-dark-700 last:border-0">
                     <button
                       onClick={() => setExpandedPortfolio(
@@ -214,6 +214,11 @@ function PortfolioCompareContent({ token }) {
                       className="w-full p-4 flex items-center justify-between hover:bg-dark-700/50 transition-colors"
                     >
                       <div className="flex items-center gap-3">
+                        {/* Color indicator */}
+                        <div
+                          className="w-3 h-10 rounded-full shrink-0"
+                          style={{ backgroundColor: lineColor }}
+                        />
                         <div className="w-10 h-10 bg-accent-500/20 rounded-full flex items-center justify-center">
                           <span className="text-accent-400 font-bold">
                             {portfolio.username.charAt(0).toUpperCase()}
@@ -264,7 +269,7 @@ function PortfolioCompareContent({ token }) {
                             <div className="grid grid-cols-2 gap-2 text-xs">
                               <div>
                                 <span className="text-gray-500">Kaufkurs:</span>
-                                <span className="text-gray-300 ml-1">{pos.avg_price.toFixed(2)} {pos.currency}</span>
+                                <span className="text-gray-300 ml-1">{formatPrice(pos.avg_price_usd)}</span>
                               </div>
                               <div>
                                 <span className="text-gray-500">Aktuell:</span>
@@ -276,7 +281,7 @@ function PortfolioCompareContent({ token }) {
                       </div>
                     )}
                   </div>
-                ))}
+                )})}
               </div>
 
               {/* Desktop Table View */}
@@ -284,6 +289,7 @@ function PortfolioCompareContent({ token }) {
                 <table className="w-full">
                   <thead>
                     <tr className="text-left text-xs text-gray-500 border-b border-dark-600">
+                      <th className="p-4 w-4"></th>
                       <th className="p-4">Nutzer</th>
                       <th className="p-4">Positionen</th>
                       <th className="p-4">Aktien</th>
@@ -291,7 +297,9 @@ function PortfolioCompareContent({ token }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {portfolios.map((portfolio) => (
+                    {portfolios.map((portfolio, index) => {
+                      const lineColor = colorMap[portfolio.user_id] || getPortfolioColor(index)
+                      return (
                       <>
                         <tr
                           key={portfolio.user_id}
@@ -300,6 +308,13 @@ function PortfolioCompareContent({ token }) {
                           )}
                           className="border-b border-dark-700/50 hover:bg-dark-700/30 transition-colors cursor-pointer"
                         >
+                          {/* Color indicator */}
+                          <td className="p-4 pr-0">
+                            <div
+                              className="w-3 h-8 rounded-full"
+                              style={{ backgroundColor: lineColor }}
+                            />
+                          </td>
                           <td className="p-4">
                             <div className="flex items-center gap-3">
                               <div className="w-10 h-10 bg-accent-500/20 rounded-full flex items-center justify-center">
@@ -354,7 +369,7 @@ function PortfolioCompareContent({ token }) {
                         {/* Expanded Row */}
                         {expandedPortfolio === portfolio.user_id && (
                           <tr key={`${portfolio.user_id}-expanded`}>
-                            <td colSpan={4} className="p-0">
+                            <td colSpan={5} className="p-0">
                               <div className="bg-dark-900/50 p-4">
                                 <table className="w-full">
                                   <thead>
@@ -362,7 +377,7 @@ function PortfolioCompareContent({ token }) {
                                       <th className="pb-2">Symbol</th>
                                       <th className="pb-2">Name</th>
                                       <th className="pb-2">Kaufkurs</th>
-                                      <th className="pb-2">Aktuell (USD→{currency})</th>
+                                      <th className="pb-2">Aktuell</th>
                                       <th className="pb-2 text-right">Rendite</th>
                                     </tr>
                                   </thead>
@@ -371,7 +386,7 @@ function PortfolioCompareContent({ token }) {
                                       <tr key={idx} className="border-t border-dark-700/50">
                                         <td className="py-2 font-medium text-white">{pos.symbol}</td>
                                         <td className="py-2 text-gray-400 text-sm truncate max-w-[200px]">{pos.name}</td>
-                                        <td className="py-2 text-gray-300">{pos.avg_price.toFixed(2)} {pos.currency}</td>
+                                        <td className="py-2 text-gray-300">{formatPrice(pos.avg_price_usd)}</td>
                                         <td className="py-2 text-white">{formatPrice(pos.current_price)}</td>
                                         <td className={`py-2 text-right font-bold ${
                                           pos.total_return_pct >= 0 ? 'text-green-400' : 'text-red-400'
@@ -387,7 +402,7 @@ function PortfolioCompareContent({ token }) {
                           </tr>
                         )}
                       </>
-                    ))}
+                    )})}
                   </tbody>
                 </table>
               </div>

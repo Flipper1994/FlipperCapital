@@ -6,6 +6,7 @@ function Sidebar({ isLoggedIn, isAdmin, user, isOpen, onClose }) {
     { path: '/tracker', label: 'Aktien Tracker', icon: 'M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z' },
     { path: '/flipperbot', label: 'FlipperBot', icon: 'M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z', premium: true },
     { path: '/flipperbot-lab', label: 'FlipperBot Lab', icon: 'M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z', beta: true },
+    { path: '/lutz-lab', label: 'Lutz Lab', icon: 'M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z', aggressive: true },
     { path: '/portfolio', label: 'Mein Portfolio', icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01', requiresAuth: true },
     { path: '/compare', label: 'Portfolio vergleich', icon: 'M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z', requiresAuth: true },
     { path: '/help', label: 'Hilfe', icon: 'M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
@@ -39,11 +40,11 @@ function Sidebar({ isLoggedIn, isAdmin, user, isOpen, onClose }) {
       {/* Sidebar */}
       <aside
         className={`
-          fixed md:static inset-y-0 left-0 z-50
+          fixed md:sticky inset-y-0 left-0 z-50
           w-56 bg-dark-800 border-r border-dark-600 flex flex-col
           transform transition-transform duration-300 ease-in-out
           ${isOpen ? 'translate-x-0' : '-translate-x-full'}
-          md:translate-x-0
+          md:translate-x-0 md:top-0 md:h-screen md:shrink-0
         `}
       >
         {/* Mobile close button */}
@@ -113,6 +114,11 @@ function Sidebar({ isLoggedIn, isAdmin, user, isOpen, onClose }) {
                       )}
                       {item.beta && (
                         <span className="ml-auto px-1.5 py-0.5 bg-gradient-to-r from-purple-500 to-pink-500 text-white text-[10px] font-bold rounded">
+                          BETA
+                        </span>
+                      )}
+                      {item.aggressive && (
+                        <span className="ml-auto px-1.5 py-0.5 bg-gradient-to-r from-orange-500 to-red-500 text-white text-[10px] font-bold rounded">
                           BETA
                         </span>
                       )}

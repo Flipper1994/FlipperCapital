@@ -1,389 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { createChart } from 'lightweight-charts'
-
-// B-Xtrender Implementation based on original Pine Script by @Puppytherapy
-// shortTermXtrender = rsi(ema(close, 5) - ema(close, 20), 15) - 50
-// longTermXtrender = rsi(ema(close, 20), 15) - 50
-
-// Pine Script compatible EMA - initializes with SMA of first 'period' values
-function calculateEMA(data, period) {
-  const ema = new Array(data.length).fill(0)
-
-  if (data.length < period) return ema
-
-  // Initialize with SMA of first 'period' values
-  let sum = 0
-  for (let i = 0; i < period; i++) {
-    sum += data[i]
-  }
-  ema[period - 1] = sum / period
-
-  // Calculate EMA for remaining values
-  const multiplier = 2 / (period + 1)
-  for (let i = period; i < data.length; i++) {
-    ema[i] = (data[i] - ema[i - 1]) * multiplier + ema[i - 1]
-  }
-
-  // Fill initial values with first valid EMA
-  for (let i = 0; i < period - 1; i++) {
-    ema[i] = ema[period - 1]
-  }
-
-  return ema
-}
-
-// Pine Script compatible RMA (Wilder's smoothing) for RSI
-function calculateRMA(data, period) {
-  const rma = new Array(data.length).fill(0)
-
-  if (data.length < period) return rma
-
-  // Initialize with SMA
-  let sum = 0
-  for (let i = 0; i < period; i++) {
-    sum += data[i]
-  }
-  rma[period - 1] = sum / period
-
-  // Calculate RMA (Wilder's smoothing: alpha = 1/period)
-  const alpha = 1 / period
-  for (let i = period; i < data.length; i++) {
-    rma[i] = alpha * data[i] + (1 - alpha) * rma[i - 1]
-  }
-
-  return rma
-}
-
-// Pine Script compatible RSI using RMA
-function calcRSI(data, period) {
-  const result = new Array(data.length).fill(50)
-
-  if (data.length < period + 1) return result
-
-  // Calculate gains and losses
-  const gains = new Array(data.length).fill(0)
-  const losses = new Array(data.length).fill(0)
-
-  for (let i = 1; i < data.length; i++) {
-    const change = data[i] - data[i - 1]
-    gains[i] = change > 0 ? change : 0
-    losses[i] = change < 0 ? Math.abs(change) : 0
-  }
-
-  // Calculate RMA of gains and losses
-  const avgGain = calculateRMA(gains.slice(1), period)
-  const avgLoss = calculateRMA(losses.slice(1), period)
-
-  // Calculate RSI
-  for (let i = period; i < data.length; i++) {
-    const ag = avgGain[i - 1]
-    const al = avgLoss[i - 1]
-    if (al === 0) {
-      result[i] = ag === 0 ? 50 : 100
-    } else {
-      const rs = ag / al
-      result[i] = 100 - 100 / (1 + rs)
-    }
-  }
-
-  return result
-}
-
-// T3 Moving Average (Tillson T3)
-function calculateT3(data, period) {
-  const b = 0.7
-  const c1 = -b * b * b
-  const c2 = 3 * b * b + 3 * b * b * b
-  const c3 = -6 * b * b - 3 * b - 3 * b * b * b
-  const c4 = 1 + 3 * b + b * b * b + 3 * b * b
-
-  const e1 = calculateEMA(data, period)
-  const e2 = calculateEMA(e1, period)
-  const e3 = calculateEMA(e2, period)
-  const e4 = calculateEMA(e3, period)
-  const e5 = calculateEMA(e4, period)
-  const e6 = calculateEMA(e5, period)
-
-  return data.map((_, i) => c1 * e6[i] + c2 * e5[i] + c3 * e4[i] + c4 * e3[i])
-}
-
-function calculateBXtrender(ohlcv) {
-  const shortL1 = 5
-  const shortL2 = 20
-  const shortL3 = 15
-  const longL1 = 20
-  const longL2 = 15
-
-  if (!ohlcv || ohlcv.length < Math.max(shortL2, longL1) + shortL3 + 10) {
-    return { short: [], long: [], signal: [], trades: [], markers: [] }
-  }
-
-  // Filter out invalid data points
-  const validData = ohlcv.filter(d => d && d.close != null && !isNaN(d.close))
-  if (validData.length < Math.max(shortL2, longL1) + shortL3 + 10) {
-    return { short: [], long: [], signal: [], trades: [], markers: [] }
-  }
-
-  const closes = validData.map(d => d.close)
-  const opens = validData.map(d => d.open != null ? d.open : d.close) // Fallback to close if no open
-  const times = validData.map(d => d.time)
-
-  // Short-term: RSI(EMA(close, 5) - EMA(close, 20), 15) - 50
-  const emaShort1 = calculateEMA(closes, shortL1)
-  const emaShort2 = calculateEMA(closes, shortL2)
-  const emaDiff = emaShort1.map((v, i) => v - emaShort2[i])
-  const rsiShort = calcRSI(emaDiff, shortL3)
-  const shortTermXtrender = rsiShort.map(v => v - 50)
-
-  // Long-term: RSI(EMA(close, 20), 15) - 50
-  const emaLong = calculateEMA(closes, longL1)
-  const rsiLong = calcRSI(emaLong, longL2)
-  const longTermXtrender = rsiLong.map(v => v - 50)
-
-  // T3 Signal line of short-term
-  const signalLine = calculateT3(shortTermXtrender, 5)
-
-  // Build result with colors
-  const shortData = []
-  const longData = []
-  const signalData = []
-  const trades = []
-  const markers = []
-
-  const startIdx = Math.max(shortL2, longL1) + shortL3
-
-  // Track trading state
-  let inPosition = false
-  let entryPrice = 0
-  let entryDate = null
-  let entryIdx = 0
-
-  for (let i = startIdx; i < closes.length; i++) {
-    const shortVal = shortTermXtrender[i]
-    const shortPrev = shortTermXtrender[i - 1]
-    const longVal = longTermXtrender[i]
-    const longPrev = longTermXtrender[i - 1]
-    const sigVal = signalLine[i]
-    const sigPrev = signalLine[i - 1]
-
-    // Determine if bullish (green) or bearish (red)
-    const isBullish = shortVal > 0
-    const wasBullish = shortPrev > 0
-
-    // Short-term histogram colors
-    let shortColor
-    if (shortVal > 0) {
-      shortColor = shortVal > shortPrev ? '#00FF00' : '#228B22' // lime : dark green
-    } else {
-      shortColor = shortVal > shortPrev ? '#FF0000' : '#8B0000' // red : dark red
-    }
-
-    // Long-term histogram colors
-    let longColor
-    if (longVal > 0) {
-      longColor = longVal > longPrev ? '#00FF00' : '#228B22'
-    } else {
-      longColor = longVal > longPrev ? '#FF0000' : '#8B0000'
-    }
-
-    // Signal line color
-    const signalColor = sigVal > sigPrev ? '#00FF00' : '#FF0000'
-
-    // Detect BUY signal: Red -> Green (shortVal crosses above 0)
-    if (isBullish && !wasBullish && !inPosition && opens[i] > 0) {
-      inPosition = true
-      entryPrice = opens[i]
-      entryDate = times[i]
-      entryIdx = shortData.length
-
-      markers.push({
-        time: times[i],
-        position: 'belowBar',
-        color: '#00FF00',
-        shape: 'arrowUp',
-        text: `BUY $${opens[i].toFixed(2)}`
-      })
-    }
-
-    // Detect SELL signal: Green -> Red (shortVal crosses below 0)
-    if (!isBullish && wasBullish && inPosition && opens[i] > 0 && entryPrice > 0) {
-      const exitPrice = opens[i]
-      const returnPct = ((exitPrice - entryPrice) / entryPrice) * 100
-
-      // Store complete trade (BUY + SELL together)
-      trades.push({
-        entryDate: entryDate,
-        entryPrice: entryPrice,
-        exitDate: times[i],
-        exitPrice: exitPrice,
-        returnPct: returnPct,
-        isOpen: false
-      })
-
-      const returnText = returnPct >= 0 ? `+${returnPct.toFixed(1)}%` : `${returnPct.toFixed(1)}%`
-      markers.push({
-        time: times[i],
-        position: 'aboveBar',
-        color: '#FF0000',
-        shape: 'arrowDown',
-        text: `SELL $${exitPrice.toFixed(2)} ${returnText}`
-      })
-
-      inPosition = false
-      entryPrice = 0
-      entryDate = null
-    }
-
-    shortData.push({
-      time: times[i],
-      value: shortVal,
-      color: shortColor
-    })
-
-    longData.push({
-      time: times[i],
-      value: longVal,
-      color: longColor
-    })
-
-    signalData.push({
-      time: times[i],
-      value: sigVal,
-      color: signalColor
-    })
-  }
-
-  // If still in position, add open trade info
-  if (inPosition && entryPrice > 0) {
-    const lastIdx = closes.length - 1
-    const currentPrice = closes[lastIdx]
-    const unrealizedReturn = ((currentPrice - entryPrice) / entryPrice) * 100
-
-    trades.push({
-      entryDate: entryDate,
-      entryPrice: entryPrice,
-      exitDate: null,
-      exitPrice: null,
-      currentPrice: currentPrice,
-      returnPct: unrealizedReturn,
-      isOpen: true
-    })
-  }
-
-  return { short: shortData, long: longData, signal: signalData, trades, markers }
-}
-
-// Calculate performance metrics from trades
-function calculateMetrics(trades) {
-  const completedTrades = trades.filter(t => !t.isOpen)
-
-  if (completedTrades.length === 0) {
-    return {
-      winRate: 0,
-      riskReward: 0,
-      totalReturn: 0,
-      totalTrades: 0,
-      wins: 0,
-      losses: 0
-    }
-  }
-
-  const wins = completedTrades.filter(t => t.returnPct > 0)
-  const losses = completedTrades.filter(t => t.returnPct <= 0)
-
-  const winRate = (wins.length / completedTrades.length) * 100
-
-  const avgWin = wins.length > 0
-    ? wins.reduce((sum, t) => sum + t.returnPct, 0) / wins.length
-    : 0
-
-  const avgLoss = losses.length > 0
-    ? Math.abs(losses.reduce((sum, t) => sum + t.returnPct, 0) / losses.length)
-    : 1
-
-  const riskReward = avgLoss > 0 ? avgWin / avgLoss : avgWin
-
-  // Compounded total return
-  const totalReturn = completedTrades.reduce((acc, t) => acc * (1 + t.returnPct / 100), 1) - 1
-
-  return {
-    winRate,
-    riskReward,
-    totalReturn: totalReturn * 100,
-    totalTrades: completedTrades.length,
-    wins: wins.length,
-    losses: losses.length
-  }
-}
-
-// Calculate signal based on BX Trender bars
-function calculateSignal(shortData) {
-  if (shortData.length < 3) return { signal: 'WAIT', bars: 0 }
-
-  // Count consecutive bars of the same sign from the end
-  let consecutiveBars = 1
-  const lastValue = shortData[shortData.length - 1].value
-  const isPositive = lastValue > 0
-
-  for (let i = shortData.length - 2; i >= 0; i--) {
-    const val = shortData[i].value
-    if ((val > 0) === isPositive) {
-      consecutiveBars++
-    } else {
-      break
-    }
-  }
-
-  if (isPositive) {
-    // Green/bullish bars
-    if (consecutiveBars <= 2) {
-      return { signal: 'BUY', bars: consecutiveBars }
-    } else {
-      return { signal: 'HOLD', bars: consecutiveBars }
-    }
-  } else {
-    // Red/bearish bars
-    if (consecutiveBars <= 2) {
-      return { signal: 'SELL', bars: consecutiveBars }
-    } else {
-      return { signal: 'WAIT', bars: consecutiveBars }
-    }
-  }
-}
-
-// Save performance data to backend
-async function savePerformanceToBackend(symbol, name, metrics, trades, shortData, currentPrice) {
-  try {
-    const { signal, bars } = calculateSignal(shortData)
-
-    await fetch('/api/performance', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        symbol,
-        name,
-        win_rate: metrics.winRate,
-        risk_reward: metrics.riskReward,
-        total_return: metrics.totalReturn,
-        total_trades: metrics.totalTrades,
-        wins: metrics.wins,
-        losses: metrics.losses,
-        signal,
-        signal_bars: bars,
-        trades,
-        current_price: currentPrice
-      })
-    })
-  } catch (err) {
-    console.warn('Failed to save performance data:', err)
-  }
-}
+import { useTradingMode } from '../context/TradingModeContext'
+import { calculateBXtrender, calculateMetrics, savePerformanceToBackend } from '../utils/bxtrender'
 
 function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdate }) {
   const chartContainerRef = useRef(null)
   const chartRef = useRef(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const { isAggressive } = useTradingMode()
 
   useEffect(() => {
     if (!symbol || !chartContainerRef.current) return
@@ -426,7 +51,8 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
           return
         }
 
-        const { short, long, signal, trades, markers } = calculateBXtrender(json.data)
+        // Calculate B-Xtrender with current mode
+        const { short, long, signal, trades, markers } = calculateBXtrender(json.data, isAggressive)
 
         if (short.length === 0) {
           setError('Not enough data for indicator')
@@ -441,9 +67,17 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
         }
 
         // Get current price and save to backend (only for monthly timeframe)
+        // Save both defensive and aggressive data when in monthly view
         if (timeframe === 'M' && json.data.length > 0) {
           const currentPrice = json.data[json.data.length - 1].close
-          savePerformanceToBackend(symbol, stockName || symbol, metrics, trades, short, currentPrice)
+
+          // Save current mode's data
+          savePerformanceToBackend(symbol, stockName || symbol, metrics, trades, short, currentPrice, isAggressive)
+
+          // Also save the other mode's data for completeness
+          const otherModeResult = calculateBXtrender(json.data, !isAggressive)
+          const otherMetrics = calculateMetrics(otherModeResult.trades)
+          savePerformanceToBackend(symbol, stockName || symbol, otherMetrics, otherModeResult.trades, otherModeResult.short, currentPrice, !isAggressive)
         }
 
         // Clear previous chart
@@ -552,16 +186,31 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
         chartRef.current = null
       }
     }
-  }, [symbol, timeframe, onTradesUpdate])
+  }, [symbol, timeframe, onTradesUpdate, isAggressive])
 
   return (
-    <div className="bg-dark-800 rounded-xl border border-dark-600 overflow-hidden">
+    <div className={`bg-dark-800 rounded-xl border overflow-hidden ${isAggressive ? 'border-orange-500/50' : 'border-dark-600'}`}>
       <div className="px-4 py-2 border-b border-dark-600 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-white">B-Xtrender</span>
           <span className="text-xs text-gray-500">@Puppytherapy</span>
+          {isAggressive ? (
+            <span className="px-1.5 py-0.5 bg-orange-500/20 text-orange-400 text-[10px] font-bold rounded flex items-center gap-1">
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z" />
+              </svg>
+              AGGRESSIV
+            </span>
+          ) : (
+            <span className="px-1.5 py-0.5 bg-blue-500/20 text-blue-400 text-[10px] font-bold rounded flex items-center gap-1">
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+              </svg>
+              DEFENSIV
+            </span>
+          )}
         </div>
-        <div className="flex items-center gap-3 text-xs">
+        <div className="hidden md:flex items-center gap-3 text-xs">
           <div className="flex items-center gap-1">
             <div className="w-2 h-2 bg-lime-400 rounded-sm"></div>
             <span className="text-gray-400">Bull Rising</span>
@@ -572,11 +221,11 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
           </div>
           <div className="flex items-center gap-1">
             <div className="w-2 h-2 bg-red-500 rounded-sm"></div>
-            <span className="text-gray-400">Bear Rising</span>
+            <span className="text-gray-400">{isAggressive ? 'BUY Zone' : 'Bear Rising'}</span>
           </div>
           <div className="flex items-center gap-1">
             <div className="w-2 h-2 bg-red-900 rounded-sm"></div>
-            <span className="text-gray-400">Bear Falling</span>
+            <span className="text-gray-400">{isAggressive ? 'SELL Zone' : 'Bear Falling'}</span>
           </div>
         </div>
       </div>

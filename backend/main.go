@@ -37,7 +37,8 @@ type ActivityLog struct {
 	Username  string    `json:"username"`
 	Action    string    `json:"action" gorm:"index"` // login, search, page_view, add_stock, etc.
 	Details   string    `json:"details"`             // JSON with extra info
-	IPAddress string    `json:"ip_address"`
+	IPAddress string    `json:"ip_address" gorm:"index"`
+	UserAgent string    `json:"user_agent"`
 	CreatedAt time.Time `json:"created_at" gorm:"index"`
 }
 
@@ -188,6 +189,53 @@ type FlipperBotPosition struct {
 
 const FLIPPERBOT_START_DATE = "2026-01-01"
 const FLIPPERBOT_USER_ID = 999999 // Special user ID for FlipperBot
+const LUTZ_USER_ID = 999998       // Special user ID for Lutz (aggressive mode bot)
+
+// AggressiveStockPerformance stores performance data for aggressive trading mode
+type AggressiveStockPerformance struct {
+	ID           uint      `json:"id" gorm:"primaryKey"`
+	Symbol       string    `json:"symbol" gorm:"uniqueIndex;not null"`
+	Name         string    `json:"name"`
+	WinRate      float64   `json:"win_rate"`
+	RiskReward   float64   `json:"risk_reward"`
+	TotalReturn  float64   `json:"total_return"`
+	TotalTrades  int       `json:"total_trades"`
+	Wins         int       `json:"wins"`
+	Losses       int       `json:"losses"`
+	Signal       string    `json:"signal"` // BUY, SELL, HOLD, WAIT
+	SignalBars   int       `json:"signal_bars"`
+	TradesJSON   string    `json:"trades_json" gorm:"type:text"`
+	CurrentPrice float64   `json:"current_price"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// LutzTrade tracks all trades made by the Lutz bot (aggressive mode)
+type LutzTrade struct {
+	ID            uint       `json:"id" gorm:"primaryKey"`
+	Symbol        string     `json:"symbol" gorm:"index;not null"`
+	Name          string     `json:"name"`
+	Action        string     `json:"action" gorm:"not null"` // BUY or SELL
+	Quantity      float64    `json:"quantity" gorm:"default:1"`
+	Price         float64    `json:"price" gorm:"not null"`
+	SignalDate    time.Time  `json:"signal_date" gorm:"not null"`
+	ExecutedAt    time.Time  `json:"executed_at" gorm:"not null"`
+	ProfitLoss    *float64   `json:"profit_loss"`
+	ProfitLossPct *float64   `json:"profit_loss_pct"`
+	CreatedAt     time.Time  `json:"created_at"`
+}
+
+// LutzPosition tracks current open positions of the Lutz bot
+type LutzPosition struct {
+	ID        uint      `json:"id" gorm:"primaryKey"`
+	Symbol    string    `json:"symbol" gorm:"uniqueIndex;not null"`
+	Name      string    `json:"name"`
+	Quantity  float64   `json:"quantity" gorm:"default:1"`
+	AvgPrice  float64   `json:"avg_price" gorm:"not null"`
+	BuyDate   time.Time `json:"buy_date" gorm:"not null"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
 
 var db *gorm.DB
 var sessions = make(map[string]Session)
@@ -205,10 +253,11 @@ func main() {
 		panic("Failed to connect to database: " + err.Error())
 	}
 
-	db.AutoMigrate(&User{}, &Stock{}, &PortfolioPosition{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{})
+	db.AutoMigrate(&User{}, &Stock{}, &PortfolioPosition{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{})
 
-	// Ensure FlipperBot user exists for portfolio comparison
+	// Ensure FlipperBot and Lutz users exist for portfolio comparison
 	ensureFlipperBotUser()
+	ensureLutzUser()
 
 	// Fetch live exchange rates on startup
 	go fetchLiveExchangeRates()
@@ -251,12 +300,18 @@ func main() {
 		api.GET("/portfolio/performance", authMiddleware(), getPortfolioPerformance)
 		api.GET("/portfolio/history", authMiddleware(), getPortfolioHistory)
 		api.GET("/portfolios/compare", authMiddleware(), getAllPortfoliosForComparison)
+		api.GET("/portfolios/history/all", authMiddleware(), getAllPortfoliosHistory)
 		api.GET("/portfolios/history/:userId", authMiddleware(), getUserPortfolioHistory)
 
-		// Stock Performance Tracker routes
+		// Stock Performance Tracker routes (Defensive mode)
 		api.POST("/performance", saveStockPerformance)
 		api.GET("/performance", getTrackedStocks)
 		api.GET("/performance/:symbol", getStockPerformance)
+
+		// Aggressive mode performance routes
+		api.POST("/performance/aggressive", saveAggressiveStockPerformance)
+		api.GET("/performance/aggressive", getAggressiveTrackedStocks)
+		api.GET("/performance/aggressive/:symbol", getAggressiveStockPerformance)
 
 		// User permission check
 		api.GET("/can-add-stocks", optionalAuthMiddleware(), canAddStocks)
@@ -270,13 +325,22 @@ func main() {
 		api.PUT("/admin/users/:id", authMiddleware(), adminOnly(), updateAdminUser)
 		api.GET("/admin/activity", authMiddleware(), adminOnly(), getAdminActivity)
 		api.GET("/admin/stats", authMiddleware(), adminOnly(), getAdminStats)
+		api.GET("/admin/traffic", authMiddleware(), adminOnly(), getAdminTraffic)
+		api.GET("/admin/update-all-stocks", authMiddleware(), adminOnly(), updateAllWatchlistStocks)
 
-		// FlipperBot routes (admin only)
+		// FlipperBot routes - Defensive mode (view: all users, actions: admin only)
 		api.GET("/flipperbot/update", authMiddleware(), adminOnly(), flipperBotUpdate)
-		api.GET("/flipperbot/portfolio", authMiddleware(), adminOnly(), getFlipperBotPortfolio)
-		api.GET("/flipperbot/actions", authMiddleware(), adminOnly(), getFlipperBotActions)
-		api.GET("/flipperbot/performance", authMiddleware(), adminOnly(), getFlipperBotPerformance)
+		api.GET("/flipperbot/portfolio", authMiddleware(), getFlipperBotPortfolio)
+		api.GET("/flipperbot/actions", authMiddleware(), getFlipperBotActions)
+		api.GET("/flipperbot/performance", authMiddleware(), getFlipperBotPerformance)
 		api.POST("/flipperbot/reset", authMiddleware(), adminOnly(), resetFlipperBot)
+
+		// Lutz routes - Aggressive mode bot (view: all users, actions: admin only)
+		api.GET("/lutz/update", authMiddleware(), adminOnly(), lutzUpdate)
+		api.GET("/lutz/portfolio", authMiddleware(), getLutzPortfolio)
+		api.GET("/lutz/actions", authMiddleware(), getLutzActions)
+		api.GET("/lutz/performance", authMiddleware(), getLutzPerformance)
+		api.POST("/lutz/reset", authMiddleware(), adminOnly(), resetLutz)
 	}
 
 	r.Run(":8080")
@@ -415,7 +479,7 @@ func login(c *gin.Context) {
 	})
 
 	// Log activity
-	logUserActivity(user.ID, user.Username, "login", "", c.ClientIP())
+	logUserActivity(user.ID, user.Username, "login", "", c.ClientIP(), c.GetHeader("User-Agent"))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -526,13 +590,14 @@ func adminOnly() gin.HandlerFunc {
 }
 
 // Helper to log activity
-func logUserActivity(userID uint, username, action, details, ip string) {
+func logUserActivity(userID uint, username, action, details, ip, userAgent string) {
 	log := ActivityLog{
 		UserID:    userID,
 		Username:  username,
 		Action:    action,
 		Details:   details,
 		IPAddress: ip,
+		UserAgent: userAgent,
 	}
 	db.Create(&log)
 }
@@ -888,7 +953,7 @@ func createStock(c *gin.Context) {
 	db.Create(&stock)
 
 	// Log activity
-	logUserActivity(userID.(uint), username, "add_stock", fmt.Sprintf(`{"symbol":"%s"}`, symbol), c.ClientIP())
+	logUserActivity(userID.(uint), username, "add_stock", fmt.Sprintf(`{"symbol":"%s"}`, symbol), c.ClientIP(), c.GetHeader("User-Agent"))
 
 	c.JSON(http.StatusCreated, stock)
 }
@@ -1480,8 +1545,8 @@ func getAllPortfoliosForComparison(c *gin.Context) {
 		}
 
 		var posSummaries []PositionSummary
-		var totalReturnPct float64
-		validCount := 0
+		totalInvested := 0.0
+		totalUnrealizedGain := 0.0
 
 		for _, pos := range positions {
 			currency := pos.Currency
@@ -1489,6 +1554,12 @@ func getAllPortfoliosForComparison(c *gin.Context) {
 				currency = "EUR"
 			}
 			avgPriceUSD := convertToUSD(pos.AvgPrice, currency)
+
+			// Get quantity (default to 1 if not set)
+			qty := 1.0
+			if pos.Quantity != nil && *pos.Quantity > 0 {
+				qty = *pos.Quantity
+			}
 
 			summary := PositionSummary{
 				Symbol:      pos.Symbol,
@@ -1505,24 +1576,28 @@ func getAllPortfoliosForComparison(c *gin.Context) {
 				currentPriceInUserCurrency := convertFromUSD(q.Price, currency)
 				if pos.AvgPrice > 0 {
 					summary.TotalReturnPct = ((currentPriceInUserCurrency - pos.AvgPrice) / pos.AvgPrice) * 100
-					totalReturnPct += summary.TotalReturnPct
-					validCount++
+					// Calculate weighted values for portfolio return
+					invested := pos.AvgPrice * qty
+					currentValue := currentPriceInUserCurrency * qty
+					totalInvested += invested
+					totalUnrealizedGain += (currentValue - invested)
 				}
 			}
 
 			posSummaries = append(posSummaries, summary)
 		}
 
-		avgReturn := 0.0
-		if validCount > 0 {
-			avgReturn = totalReturnPct / float64(validCount)
+		// Calculate weighted average return based on investment amounts
+		weightedReturn := 0.0
+		if totalInvested > 0 {
+			weightedReturn = (totalUnrealizedGain / totalInvested) * 100
 		}
 
 		portfolios = append(portfolios, PortfolioSummary{
 			UserID:         user.ID,
 			Username:       user.Username,
 			Positions:      posSummaries,
-			TotalReturnPct: avgReturn,
+			TotalReturnPct: weightedReturn,
 			PositionCount:  len(positions),
 		})
 	}
@@ -1549,6 +1624,43 @@ func getUserPortfolioHistory(c *gin.Context) {
 
 	history := calculatePortfolioHistoryForUser(userID, period)
 	c.JSON(http.StatusOK, history)
+}
+
+// Get historical portfolio performance for ALL users (for comparison chart)
+func getAllPortfoliosHistory(c *gin.Context) {
+	period := c.DefaultQuery("period", "1mo")
+
+	// Get all users with positions
+	var users []User
+	db.Find(&users)
+
+	type PortfolioHistory struct {
+		UserID   uint                     `json:"user_id"`
+		Username string                   `json:"username"`
+		History  []map[string]interface{} `json:"history"`
+	}
+
+	var result []PortfolioHistory
+
+	for _, user := range users {
+		// Check if user has any positions
+		var count int64
+		db.Model(&PortfolioPosition{}).Where("user_id = ?", user.ID).Count(&count)
+		if count == 0 {
+			continue
+		}
+
+		history := calculatePortfolioHistoryForUser(user.ID, period)
+		if len(history) > 0 {
+			result = append(result, PortfolioHistory{
+				UserID:   user.ID,
+				Username: user.Username,
+				History:  history,
+			})
+		}
+	}
+
+	c.JSON(http.StatusOK, result)
 }
 
 func calculatePortfolioHistoryForUser(userID uint, period string) []map[string]interface{} {
@@ -1948,6 +2060,109 @@ func getStockPerformance(c *gin.Context) {
 	})
 }
 
+// Aggressive mode performance handlers
+func saveAggressiveStockPerformance(c *gin.Context) {
+	var req struct {
+		Symbol       string      `json:"symbol" binding:"required"`
+		Name         string      `json:"name"`
+		WinRate      float64     `json:"win_rate"`
+		RiskReward   float64     `json:"risk_reward"`
+		TotalReturn  float64     `json:"total_return"`
+		TotalTrades  int         `json:"total_trades"`
+		Wins         int         `json:"wins"`
+		Losses       int         `json:"losses"`
+		Signal       string      `json:"signal"`
+		SignalBars   int         `json:"signal_bars"`
+		Trades       []TradeData `json:"trades"`
+		CurrentPrice float64     `json:"current_price"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	symbol := strings.ToUpper(req.Symbol)
+	tradesJSON, _ := json.Marshal(req.Trades)
+
+	var existing AggressiveStockPerformance
+	result := db.Where("symbol = ?", symbol).First(&existing)
+
+	if result.Error == nil {
+		existing.Name = req.Name
+		existing.WinRate = req.WinRate
+		existing.RiskReward = req.RiskReward
+		existing.TotalReturn = req.TotalReturn
+		existing.TotalTrades = req.TotalTrades
+		existing.Wins = req.Wins
+		existing.Losses = req.Losses
+		existing.Signal = req.Signal
+		existing.SignalBars = req.SignalBars
+		existing.TradesJSON = string(tradesJSON)
+		existing.CurrentPrice = req.CurrentPrice
+		existing.UpdatedAt = time.Now()
+		db.Save(&existing)
+		c.JSON(http.StatusOK, existing)
+	} else {
+		perf := AggressiveStockPerformance{
+			Symbol:       symbol,
+			Name:         req.Name,
+			WinRate:      req.WinRate,
+			RiskReward:   req.RiskReward,
+			TotalReturn:  req.TotalReturn,
+			TotalTrades:  req.TotalTrades,
+			Wins:         req.Wins,
+			Losses:       req.Losses,
+			Signal:       req.Signal,
+			SignalBars:   req.SignalBars,
+			TradesJSON:   string(tradesJSON),
+			CurrentPrice: req.CurrentPrice,
+		}
+		db.Create(&perf)
+		c.JSON(http.StatusCreated, perf)
+	}
+}
+
+func getAggressiveTrackedStocks(c *gin.Context) {
+	var performances []AggressiveStockPerformance
+	db.Order("updated_at desc").Find(&performances)
+
+	type PerformanceWithTrades struct {
+		AggressiveStockPerformance
+		Trades []TradeData `json:"trades"`
+	}
+
+	result := make([]PerformanceWithTrades, len(performances))
+	for i, p := range performances {
+		result[i].AggressiveStockPerformance = p
+		if p.TradesJSON != "" {
+			json.Unmarshal([]byte(p.TradesJSON), &result[i].Trades)
+		}
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+func getAggressiveStockPerformance(c *gin.Context) {
+	symbol := strings.ToUpper(c.Param("symbol"))
+
+	var perf AggressiveStockPerformance
+	if err := db.Where("symbol = ?", symbol).First(&perf).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Stock not found"})
+		return
+	}
+
+	var trades []TradeData
+	if perf.TradesJSON != "" {
+		json.Unmarshal([]byte(perf.TradesJSON), &trades)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"performance": perf,
+		"trades":      trades,
+	})
+}
+
 // Check if user can add stocks to watchlist
 func canAddStocks(c *gin.Context) {
 	userID, hasUser := c.Get("userID")
@@ -2014,7 +2229,7 @@ func logActivity(c *gin.Context) {
 		}
 	}
 
-	logUserActivity(uid, username, req.Action, req.Details, c.ClientIP())
+	logUserActivity(uid, username, req.Action, req.Details, c.ClientIP(), c.GetHeader("User-Agent"))
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
@@ -2224,6 +2439,123 @@ func getAdminStats(c *gin.Context) {
 	})
 }
 
+// getAdminTraffic returns traffic statistics grouped by IP and device
+func getAdminTraffic(c *gin.Context) {
+	// Traffic by IP
+	type IPTraffic struct {
+		IPAddress string `json:"ip_address"`
+		Count     int64  `json:"count"`
+		LastVisit string `json:"last_visit"`
+	}
+
+	var ipTraffic []IPTraffic
+	db.Model(&ActivityLog{}).
+		Select("ip_address, count(*) as count, max(created_at) as last_visit").
+		Where("ip_address != ''").
+		Group("ip_address").
+		Order("count desc").
+		Limit(50).
+		Find(&ipTraffic)
+
+	// Traffic by device (parsed from User-Agent)
+	type DeviceTraffic struct {
+		UserAgent string `json:"user_agent"`
+		Device    string `json:"device"`
+		Count     int64  `json:"count"`
+	}
+
+	var rawDeviceTraffic []struct {
+		UserAgent string
+		Count     int64
+	}
+	db.Model(&ActivityLog{}).
+		Select("user_agent, count(*) as count").
+		Where("user_agent != ''").
+		Group("user_agent").
+		Order("count desc").
+		Limit(30).
+		Find(&rawDeviceTraffic)
+
+	// Parse User-Agent to get device type
+	var deviceTraffic []DeviceTraffic
+	for _, d := range rawDeviceTraffic {
+		device := "Desktop"
+		ua := strings.ToLower(d.UserAgent)
+		if strings.Contains(ua, "mobile") || strings.Contains(ua, "android") {
+			device = "Mobile"
+		} else if strings.Contains(ua, "tablet") || strings.Contains(ua, "ipad") {
+			device = "Tablet"
+		} else if strings.Contains(ua, "bot") || strings.Contains(ua, "crawler") || strings.Contains(ua, "spider") {
+			device = "Bot"
+		}
+
+		// Shorten User-Agent for display
+		shortUA := d.UserAgent
+		if len(shortUA) > 80 {
+			shortUA = shortUA[:80] + "..."
+		}
+
+		deviceTraffic = append(deviceTraffic, DeviceTraffic{
+			UserAgent: shortUA,
+			Device:    device,
+			Count:     d.Count,
+		})
+	}
+
+	// Traffic summary by day (last 7 days)
+	type DailyTraffic struct {
+		Date  string `json:"date"`
+		Count int64  `json:"count"`
+	}
+
+	var dailyTraffic []DailyTraffic
+	sevenDaysAgo := time.Now().AddDate(0, 0, -7)
+	db.Model(&ActivityLog{}).
+		Select("DATE(created_at) as date, count(*) as count").
+		Where("created_at > ?", sevenDaysAgo).
+		Group("DATE(created_at)").
+		Order("date desc").
+		Find(&dailyTraffic)
+
+	// Unique visitors (unique IPs) today
+	var uniqueToday int64
+	today := time.Now().Truncate(24 * time.Hour)
+	db.Model(&ActivityLog{}).
+		Where("created_at > ?", today).
+		Distinct("ip_address").
+		Count(&uniqueToday)
+
+	// Total page views today
+	var viewsToday int64
+	db.Model(&ActivityLog{}).
+		Where("created_at > ?", today).
+		Count(&viewsToday)
+
+	c.JSON(http.StatusOK, gin.H{
+		"by_ip":         ipTraffic,
+		"by_device":     deviceTraffic,
+		"daily":         dailyTraffic,
+		"unique_today":  uniqueToday,
+		"views_today":   viewsToday,
+	})
+}
+
+// updateAllWatchlistStocks returns all watchlist stocks for bulk update
+// The actual BX-Trender calculation happens in the frontend
+func updateAllWatchlistStocks(c *gin.Context) {
+	mode := c.DefaultQuery("mode", "defensive")
+
+	// Get all stocks from watchlist
+	var stocks []Stock
+	db.Order("symbol asc").Find(&stocks)
+
+	c.JSON(http.StatusOK, gin.H{
+		"mode":   mode,
+		"stocks": stocks,
+		"total":  len(stocks),
+	})
+}
+
 // ========================================
 // FlipperBot Functions
 // ========================================
@@ -2238,6 +2570,23 @@ func ensureFlipperBotUser() {
 			ID:       FLIPPERBOT_USER_ID,
 			Email:    "flipperbot@system.local",
 			Username: "FlipperBot",
+			Password: hashedPassword,
+			IsAdmin:  false,
+		}
+		db.Create(&botUser)
+	}
+}
+
+func ensureLutzUser() {
+	// Create Lutz user if not exists (for portfolio comparison visibility)
+	var user User
+	result := db.Where("id = ?", LUTZ_USER_ID).First(&user)
+	if result.Error != nil {
+		hashedPassword, _ := hashPassword("lutz-system-user-no-login")
+		botUser := User{
+			ID:       LUTZ_USER_ID,
+			Email:    "lutz@system.local",
+			Username: "Lutz",
 			Password: hashedPassword,
 			IsAdmin:  false,
 		}
@@ -2361,15 +2710,20 @@ func flipperBotUpdate(c *gin.Context) {
 					}
 				}
 
+				// Calculate quantity: invest 100 EUR worth
+				investmentEUR := 100.0
+				investmentUSD := convertToUSD(investmentEUR, "EUR")
+				qty := investmentUSD / buyPrice
+
 				// Execute BUY
-				addLog("ACTION", fmt.Sprintf("%s: KAUFE 1 Aktie @ $%.2f (Signal-Datum: %s)",
-					stock.Symbol, buyPrice, signalStartDate.Format("2006-01-02")), nil)
+				addLog("ACTION", fmt.Sprintf("%s: KAUFE %.4f Anteile @ $%.2f (100€ = $%.2f, Signal-Datum: %s)",
+					stock.Symbol, qty, buyPrice, investmentUSD, signalStartDate.Format("2006-01-02")), nil)
 
 				newTrade := FlipperBotTrade{
 					Symbol:     stock.Symbol,
 					Name:       stock.Name,
 					Action:     "BUY",
-					Quantity:   1,
+					Quantity:   qty,
 					Price:      buyPrice,
 					SignalDate: signalStartDate,
 					ExecutedAt: now,
@@ -2379,14 +2733,13 @@ func flipperBotUpdate(c *gin.Context) {
 				newPosition := FlipperBotPosition{
 					Symbol:   stock.Symbol,
 					Name:     stock.Name,
-					Quantity: 1,
+					Quantity: qty,
 					AvgPrice: buyPrice,
 					BuyDate:  signalStartDate,
 				}
 				db.Create(&newPosition)
 
 				// Add to portfolio for comparison
-				qty := 1.0
 				portfolioPos := PortfolioPosition{
 					UserID:       FLIPPERBOT_USER_ID,
 					Symbol:       stock.Symbol,
@@ -2404,7 +2757,7 @@ func flipperBotUpdate(c *gin.Context) {
 					"name":     stock.Name,
 					"price":    buyPrice,
 					"date":     signalStartDate.Format("2006-01-02"),
-					"quantity": 1,
+					"quantity": qty,
 				})
 			} else {
 				addLog("SKIP", fmt.Sprintf("%s: BUY-Signal aktiv, Position bereits vorhanden", stock.Symbol), nil)
@@ -2418,7 +2771,7 @@ func flipperBotUpdate(c *gin.Context) {
 			} else {
 				addLog("SKIP", fmt.Sprintf("%s: HOLD-Signal, behalte Position", stock.Symbol), nil)
 			}
-		} else if stock.Signal == "SELL" || stock.Signal == "WAIT" {
+		} else if stock.Signal == "SELL" {
 			// Should NOT have a position - check if we need to sell
 			if hasPosition {
 				// Calculate when SELL signal started based on SignalBars
@@ -2466,8 +2819,8 @@ func flipperBotUpdate(c *gin.Context) {
 				profitLoss := (sellPrice - existingPosition.AvgPrice) * existingPosition.Quantity
 				profitLossPct := ((sellPrice - existingPosition.AvgPrice) / existingPosition.AvgPrice) * 100
 
-				addLog("ACTION", fmt.Sprintf("%s: VERKAUFE 1 Aktie @ $%.2f (Gewinn: $%.2f / %.2f%%)",
-					stock.Symbol, sellPrice, profitLoss, profitLossPct), nil)
+				addLog("ACTION", fmt.Sprintf("%s: VERKAUFE %.4f Anteile @ $%.2f (Gewinn: $%.2f / %.2f%%)",
+					stock.Symbol, existingPosition.Quantity, sellPrice, profitLoss, profitLossPct), nil)
 
 				newTrade := FlipperBotTrade{
 					Symbol:        stock.Symbol,
@@ -2703,5 +3056,416 @@ func resetFlipperBot(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "FlipperBot reset completed",
+	})
+}
+
+// ==================== LUTZ BOT (Aggressive Mode) ====================
+
+func lutzUpdate(c *gin.Context) {
+	startDate, _ := time.Parse("2006-01-02", FLIPPERBOT_START_DATE)
+	now := time.Now()
+
+	var logs []map[string]interface{}
+	addLog := func(level, message string, data map[string]interface{}) {
+		entry := map[string]interface{}{
+			"level":   level,
+			"message": message,
+			"time":    time.Now().Format("15:04:05"),
+		}
+		for k, v := range data {
+			entry[k] = v
+		}
+		logs = append(logs, entry)
+	}
+
+	addLog("INFO", "Lutz Update gestartet (Aggressiver Modus)", map[string]interface{}{
+		"start_date": FLIPPERBOT_START_DATE,
+		"now":        now.Format("2006-01-02 15:04:05"),
+	})
+
+	// Get all tracked stocks from AGGRESSIVE performance data
+	var trackedStocks []AggressiveStockPerformance
+	db.Find(&trackedStocks)
+
+	if len(trackedStocks) == 0 {
+		addLog("WARN", "Keine aggressiven Performance-Daten gefunden", nil)
+		c.JSON(http.StatusOK, gin.H{
+			"message": "No aggressive performance data found",
+			"actions": []string{},
+			"logs":    logs,
+		})
+		return
+	}
+
+	addLog("INFO", fmt.Sprintf("%d Aktien mit aggressiven Daten gefunden", len(trackedStocks)), nil)
+
+	var actions []map[string]interface{}
+
+	symbols := make([]string, len(trackedStocks))
+	for i, s := range trackedStocks {
+		symbols[i] = s.Symbol
+	}
+	quotes := fetchQuotes(symbols)
+
+	for _, stock := range trackedStocks {
+		addLog("DEBUG", fmt.Sprintf("Prüfe %s", stock.Symbol), map[string]interface{}{
+			"signal":      stock.Signal,
+			"signal_bars": stock.SignalBars,
+		})
+
+		var existingPosition LutzPosition
+		hasPosition := db.Where("symbol = ?", stock.Symbol).First(&existingPosition).Error == nil
+
+		signalStartDate := now.AddDate(0, -stock.SignalBars, 0)
+		signalStartDate = adjustToTradingDay(signalStartDate)
+
+		addLog("DEBUG", fmt.Sprintf("%s: Signal=%s, Bars=%d, Position: %v",
+			stock.Symbol, stock.Signal, stock.SignalBars, hasPosition), nil)
+
+		// Aggressive mode signals (based on trade history):
+		// BUY = BUY triggered this/last month AND open position in BX-Trender simulation
+		// SELL = SELL triggered this/last month AND no open position
+		// HOLD = Open position but no recent BUY (do NOT buy)
+		// WAIT = No open position and no recent SELL (do nothing)
+		//
+		// Bot actions:
+		// - BUY signal ONLY -> buy (HOLD means already in position, don't buy again)
+		// - SELL signal ONLY -> sell (WAIT means already out, don't sell)
+		if stock.Signal == "BUY" {
+			if !hasPosition {
+				if signalStartDate.Before(startDate) {
+					addLog("INFO", fmt.Sprintf("%s: Signal startete vor %s, verwende Startdatum", stock.Symbol, FLIPPERBOT_START_DATE), nil)
+					signalStartDate = startDate
+					signalStartDate = adjustToTradingDay(signalStartDate)
+				}
+
+				var existingBuy LutzTrade
+				alreadyBought := db.Where("symbol = ? AND action = ?", stock.Symbol, "BUY").
+					Order("signal_date desc").First(&existingBuy).Error == nil
+
+				if alreadyBought {
+					var lastSell LutzTrade
+					hasSoldAfter := db.Where("symbol = ? AND action = ? AND signal_date > ?",
+						stock.Symbol, "SELL", existingBuy.SignalDate).First(&lastSell).Error == nil
+
+					if !hasSoldAfter {
+						addLog("SKIP", fmt.Sprintf("%s: Bereits gekauft am %s", stock.Symbol, existingBuy.SignalDate.Format("2006-01-02")), nil)
+						continue
+					}
+				}
+
+				buyPrice := getPriceAtDate(stock.Symbol, signalStartDate)
+				if buyPrice <= 0 {
+					if quote, ok := quotes[stock.Symbol]; ok && quote.Price > 0 {
+						buyPrice = quote.Price
+					} else {
+						addLog("ERROR", fmt.Sprintf("%s: Kein Preis verfügbar", stock.Symbol), nil)
+						continue
+					}
+				}
+
+				// Calculate quantity: invest 100 EUR worth
+				investmentEUR := 100.0
+				investmentUSD := convertToUSD(investmentEUR, "EUR")
+				qty := investmentUSD / buyPrice
+
+				addLog("ACTION", fmt.Sprintf("%s: KAUFE %.4f Anteile @ $%.2f (100€ = $%.2f, Signal-Datum: %s)",
+					stock.Symbol, qty, buyPrice, investmentUSD, signalStartDate.Format("2006-01-02")), nil)
+
+				newTrade := LutzTrade{
+					Symbol:     stock.Symbol,
+					Name:       stock.Name,
+					Action:     "BUY",
+					Quantity:   qty,
+					Price:      buyPrice,
+					SignalDate: signalStartDate,
+					ExecutedAt: now,
+				}
+				db.Create(&newTrade)
+
+				newPosition := LutzPosition{
+					Symbol:   stock.Symbol,
+					Name:     stock.Name,
+					Quantity: qty,
+					AvgPrice: buyPrice,
+					BuyDate:  signalStartDate,
+				}
+				db.Create(&newPosition)
+
+				portfolioPos := PortfolioPosition{
+					UserID:       LUTZ_USER_ID,
+					Symbol:       stock.Symbol,
+					Name:         stock.Name,
+					PurchaseDate: &signalStartDate,
+					AvgPrice:     buyPrice,
+					Currency:     "USD",
+					Quantity:     &qty,
+				}
+				db.Create(&portfolioPos)
+
+				actions = append(actions, map[string]interface{}{
+					"action":   "BUY",
+					"symbol":   stock.Symbol,
+					"name":     stock.Name,
+					"price":    buyPrice,
+					"date":     signalStartDate.Format("2006-01-02"),
+					"quantity": qty,
+				})
+			} else {
+				addLog("SKIP", fmt.Sprintf("%s: Position bereits vorhanden", stock.Symbol), nil)
+			}
+		} else if stock.Signal == "SELL" {
+			if hasPosition {
+				sellSignalDate := now.AddDate(0, -stock.SignalBars, 0)
+				sellSignalDate = adjustToTradingDay(sellSignalDate)
+
+				var sellPrice float64
+				var sellDate time.Time
+
+				sellPrice = getPriceAtDate(stock.Symbol, sellSignalDate)
+				if sellPrice > 0 {
+					sellDate = sellSignalDate
+				} else {
+					sellDate = now
+					if quote, ok := quotes[stock.Symbol]; ok && quote.Price > 0 {
+						sellPrice = quote.Price
+					} else {
+						sellPrice = stock.CurrentPrice
+					}
+				}
+
+				if sellDate.Before(existingPosition.BuyDate) {
+					sellDate = now
+					if quote, ok := quotes[stock.Symbol]; ok && quote.Price > 0 {
+						sellPrice = quote.Price
+					}
+				}
+
+				var existingSell LutzTrade
+				if db.Where("symbol = ? AND action = ? AND signal_date >= ?",
+					stock.Symbol, "SELL", existingPosition.BuyDate).First(&existingSell).Error == nil {
+					addLog("SKIP", fmt.Sprintf("%s: Bereits verkauft", stock.Symbol), nil)
+					continue
+				}
+
+				profitLoss := (sellPrice - existingPosition.AvgPrice) * existingPosition.Quantity
+				profitLossPct := ((sellPrice - existingPosition.AvgPrice) / existingPosition.AvgPrice) * 100
+
+				addLog("ACTION", fmt.Sprintf("%s: VERKAUFE %.4f Anteile @ $%.2f (Gewinn: $%.2f / %.2f%%)",
+					stock.Symbol, existingPosition.Quantity, sellPrice, profitLoss, profitLossPct), nil)
+
+				newTrade := LutzTrade{
+					Symbol:        stock.Symbol,
+					Name:          stock.Name,
+					Action:        "SELL",
+					Quantity:      existingPosition.Quantity,
+					Price:         sellPrice,
+					SignalDate:    sellDate,
+					ExecutedAt:    now,
+					ProfitLoss:    &profitLoss,
+					ProfitLossPct: &profitLossPct,
+				}
+				db.Create(&newTrade)
+				db.Delete(&existingPosition)
+				db.Where("user_id = ? AND symbol = ?", LUTZ_USER_ID, stock.Symbol).Delete(&PortfolioPosition{})
+
+				actions = append(actions, map[string]interface{}{
+					"action":          "SELL",
+					"symbol":          stock.Symbol,
+					"name":            stock.Name,
+					"price":           sellPrice,
+					"date":            sellDate.Format("2006-01-02"),
+					"quantity":        existingPosition.Quantity,
+					"profit_loss":     profitLoss,
+					"profit_loss_pct": profitLossPct,
+				})
+			} else {
+				addLog("SKIP", fmt.Sprintf("%s: Keine Position zum Verkaufen", stock.Symbol), nil)
+			}
+		}
+	}
+
+	addLog("INFO", fmt.Sprintf("Lutz Update abgeschlossen: %d Aktionen", len(actions)), nil)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":      "Lutz update completed",
+		"actions":      actions,
+		"action_count": len(actions),
+		"logs":         logs,
+	})
+}
+
+func getLutzPortfolio(c *gin.Context) {
+	var positions []LutzPosition
+	db.Order("buy_date desc").Find(&positions)
+
+	symbols := make([]string, len(positions))
+	for i, p := range positions {
+		symbols[i] = p.Symbol
+	}
+	quotes := fetchQuotes(symbols)
+
+	type PositionWithQuote struct {
+		ID             uint      `json:"id"`
+		Symbol         string    `json:"symbol"`
+		Name           string    `json:"name"`
+		Quantity       float64   `json:"quantity"`
+		AvgPrice       float64   `json:"avg_price"`
+		BuyDate        time.Time `json:"buy_date"`
+		CurrentPrice   float64   `json:"current_price"`
+		Change         float64   `json:"change"`
+		ChangePercent  float64   `json:"change_percent"`
+		TotalReturn    float64   `json:"total_return"`
+		TotalReturnPct float64   `json:"total_return_pct"`
+		CurrentValue   float64   `json:"current_value"`
+	}
+
+	result := make([]PositionWithQuote, 0)
+	totalValue := 0.0
+	totalInvested := 0.0
+	totalReturn := 0.0
+
+	for _, pos := range positions {
+		quote := quotes[pos.Symbol]
+		currentPrice := quote.Price
+		if currentPrice <= 0 {
+			currentPrice = pos.AvgPrice
+		}
+
+		posReturn := (currentPrice - pos.AvgPrice) * pos.Quantity
+		posReturnPct := ((currentPrice - pos.AvgPrice) / pos.AvgPrice) * 100
+		posValue := currentPrice * pos.Quantity
+
+		totalValue += posValue
+		totalInvested += pos.AvgPrice * pos.Quantity
+		totalReturn += posReturn
+
+		result = append(result, PositionWithQuote{
+			ID:             pos.ID,
+			Symbol:         pos.Symbol,
+			Name:           pos.Name,
+			Quantity:       pos.Quantity,
+			AvgPrice:       pos.AvgPrice,
+			BuyDate:        pos.BuyDate,
+			CurrentPrice:   currentPrice,
+			Change:         quote.Change,
+			ChangePercent:  quote.ChangePercent,
+			TotalReturn:    posReturn,
+			TotalReturnPct: posReturnPct,
+			CurrentValue:   posValue,
+		})
+	}
+
+	totalReturnPct := 0.0
+	if totalInvested > 0 {
+		totalReturnPct = (totalReturn / totalInvested) * 100
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"positions":        result,
+		"total_value":      totalValue,
+		"total_invested":   totalInvested,
+		"total_return":     totalReturn,
+		"total_return_pct": totalReturnPct,
+	})
+}
+
+func getLutzActions(c *gin.Context) {
+	var trades []LutzTrade
+	db.Order("signal_date desc").Limit(50).Find(&trades)
+	c.JSON(http.StatusOK, trades)
+}
+
+func getLutzPerformance(c *gin.Context) {
+	var sellTrades []LutzTrade
+	db.Where("action = ?", "SELL").Find(&sellTrades)
+
+	var buyTrades []LutzTrade
+	db.Where("action = ?", "BUY").Find(&buyTrades)
+
+	wins := 0
+	losses := 0
+	totalProfitLoss := 0.0
+
+	for _, trade := range sellTrades {
+		if trade.ProfitLoss != nil {
+			totalProfitLoss += *trade.ProfitLoss
+			if *trade.ProfitLoss >= 0 {
+				wins++
+			} else {
+				losses++
+			}
+		}
+	}
+
+	winRate := 0.0
+	if wins+losses > 0 {
+		winRate = float64(wins) / float64(wins+losses) * 100
+	}
+
+	var positions []LutzPosition
+	db.Find(&positions)
+
+	symbols := make([]string, len(positions))
+	for i, p := range positions {
+		symbols[i] = p.Symbol
+	}
+	quotes := fetchQuotes(symbols)
+
+	unrealizedGain := 0.0
+	investedInPositions := 0.0
+	currentValue := 0.0
+
+	for _, pos := range positions {
+		investedInPositions += pos.AvgPrice * pos.Quantity
+		quote := quotes[pos.Symbol]
+		if quote.Price > 0 {
+			currentValue += quote.Price * pos.Quantity
+			unrealizedGain += (quote.Price - pos.AvgPrice) * pos.Quantity
+		} else {
+			currentValue += pos.AvgPrice * pos.Quantity
+		}
+	}
+
+	totalInvested := 0.0
+	for _, trade := range buyTrades {
+		totalInvested += trade.Price * trade.Quantity
+	}
+
+	totalReturnPct := 0.0
+	if investedInPositions > 0 {
+		totalReturnPct = (unrealizedGain / investedInPositions) * 100
+	}
+
+	overallReturnPct := 0.0
+	if totalInvested > 0 {
+		overallReturnPct = ((totalProfitLoss + unrealizedGain) / totalInvested) * 100
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"total_trades":          len(sellTrades),
+		"total_buys":            len(buyTrades),
+		"wins":                  wins,
+		"losses":                losses,
+		"win_rate":              winRate,
+		"realized_profit":       totalProfitLoss,
+		"unrealized_gain":       unrealizedGain,
+		"total_gain":            totalProfitLoss + unrealizedGain,
+		"open_positions":        len(positions),
+		"invested_in_positions": investedInPositions,
+		"current_value":         currentValue,
+		"total_invested":        totalInvested,
+		"total_return_pct":      totalReturnPct,
+		"overall_return_pct":    overallReturnPct,
+	})
+}
+
+func resetLutz(c *gin.Context) {
+	db.Where("1 = 1").Delete(&LutzTrade{})
+	db.Where("1 = 1").Delete(&LutzPosition{})
+	db.Where("user_id = ?", LUTZ_USER_ID).Delete(&PortfolioPosition{})
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Lutz reset completed",
 	})
 }

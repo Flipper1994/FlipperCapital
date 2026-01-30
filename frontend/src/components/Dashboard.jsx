@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import ChartArea from './ChartArea'
 import Watchlist from './Watchlist'
 import BacktestPanel from './BacktestPanel'
+import { processStock } from '../utils/bxtrender'
 
 function Dashboard({ isAdmin, token }) {
   const [stocks, setStocks] = useState([])
@@ -56,7 +57,23 @@ function Dashboard({ isAdmin, token }) {
         body: JSON.stringify(stock)
       })
       if (res.ok) {
-        await fetchStocks(false)
+        const addedStock = await res.json()
+
+        // Calculate and save BX-Trender performance for both modes (defensive & aggressive)
+        processStock(addedStock.symbol, addedStock.name).catch(err => {
+          console.warn('Failed to process stock performance:', err)
+        })
+
+        // Fetch updated stocks list with prices
+        const stocksRes = await fetch('/api/stocks')
+        const updatedStocks = await stocksRes.json()
+        setStocks(updatedStocks)
+
+        // Find the newly added stock with current price data and select it
+        const stockWithPrice = updatedStocks.find(s => s.symbol === addedStock.symbol)
+        if (stockWithPrice) {
+          handleSelectStock(stockWithPrice)
+        }
         return true
       }
       return false
@@ -93,6 +110,10 @@ function Dashboard({ isAdmin, token }) {
     setSelectedStock(stock)
     if (stock) {
       setPerformanceExpanded(true)
+      // Calculate and save BX-Trender performance for both modes when stock is viewed
+      processStock(stock.symbol, stock.name).catch(err => {
+        console.warn('Failed to process stock performance:', err)
+      })
     }
   }, [])
 

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Routes, Route } from 'react-router-dom'
 import { CurrencyProvider } from './context/CurrencyContext'
+import { TradingModeProvider } from './context/TradingModeContext'
 import Header from './components/Header'
 import Sidebar from './components/Sidebar'
 import Dashboard from './components/Dashboard'
@@ -12,6 +13,7 @@ import StockTracker from './components/StockTracker'
 import AdminPanel from './components/AdminPanel'
 import FlipperBot from './components/FlipperBot'
 import FlipperBotLab from './components/FlipperBotLab'
+import LutzLab from './components/LutzLab'
 import Help from './components/Help'
 
 function App() {
@@ -75,72 +77,78 @@ function App() {
 
   return (
     <CurrencyProvider>
-      <div className="min-h-screen bg-dark-900 flex flex-col">
-        <Header
-          isLoggedIn={isLoggedIn}
-          isAdmin={isAdmin}
-          user={user}
-          onLogout={handleLogout}
-          sidebarOpen={sidebarOpen}
-          setSidebarOpen={setSidebarOpen}
-        />
-        <div className="flex flex-1 overflow-hidden">
-          <Sidebar
+      <TradingModeProvider>
+        <div className="min-h-screen bg-dark-900 flex flex-col">
+          <Header
             isLoggedIn={isLoggedIn}
             isAdmin={isAdmin}
             user={user}
-            isOpen={sidebarOpen}
-            onClose={() => setSidebarOpen(false)}
+            onLogout={handleLogout}
+            sidebarOpen={sidebarOpen}
+            setSidebarOpen={setSidebarOpen}
           />
-          <Routes>
-            <Route
-              path="/"
-              element={
-                <Dashboard
-                  isAdmin={isAdmin}
-                  token={token}
-                />
-              }
+          <div className="flex flex-1 overflow-x-hidden overflow-y-auto">
+            <Sidebar
+              isLoggedIn={isLoggedIn}
+              isAdmin={isAdmin}
+              user={user}
+              isOpen={sidebarOpen}
+              onClose={() => setSidebarOpen(false)}
             />
-            <Route
-              path="/login"
-              element={<Login onLogin={handleLogin} />}
-            />
-            <Route
-              path="/register"
-              element={<Register onLogin={handleLogin} />}
-            />
-            <Route
-              path="/portfolio"
-              element={<PortfolioManage />}
-            />
-            <Route
-              path="/compare"
-              element={<PortfolioCompare />}
-            />
-            <Route
-              path="/tracker"
-              element={<StockTracker />}
-            />
-            <Route
-              path="/admin"
-              element={<AdminPanel />}
-            />
-            <Route
-              path="/flipperbot"
-              element={<FlipperBot />}
-            />
-            <Route
-              path="/help"
-              element={<Help />}
-            />
-            <Route
-              path="/flipperbot-lab"
-              element={<FlipperBotLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} />}
-            />
-          </Routes>
+            <Routes>
+              <Route
+                path="/"
+                element={
+                  <Dashboard
+                    isAdmin={isAdmin}
+                    token={token}
+                  />
+                }
+              />
+              <Route
+                path="/login"
+                element={<Login onLogin={handleLogin} />}
+              />
+              <Route
+                path="/register"
+                element={<Register onLogin={handleLogin} />}
+              />
+              <Route
+                path="/portfolio"
+                element={<PortfolioManage />}
+              />
+              <Route
+                path="/compare"
+                element={<PortfolioCompare />}
+              />
+              <Route
+                path="/tracker"
+                element={<StockTracker />}
+              />
+              <Route
+                path="/admin"
+                element={<AdminPanel />}
+              />
+              <Route
+                path="/flipperbot"
+                element={<FlipperBot />}
+              />
+              <Route
+                path="/help"
+                element={<Help />}
+              />
+              <Route
+                path="/flipperbot-lab"
+                element={<FlipperBotLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} />}
+              />
+              <Route
+                path="/lutz-lab"
+                element={<LutzLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} />}
+              />
+            </Routes>
+          </div>
         </div>
-      </div>
+      </TradingModeProvider>
     </CurrencyProvider>
   )
 }
