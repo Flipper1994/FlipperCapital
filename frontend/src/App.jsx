@@ -8,6 +8,9 @@ import Login from './components/Login'
 import Register from './components/Register'
 import PortfolioManage from './components/PortfolioManage'
 import PortfolioCompare from './components/PortfolioCompare'
+import StockTracker from './components/StockTracker'
+import AdminPanel from './components/AdminPanel'
+import FlipperBot from './components/FlipperBot'
 
 function App() {
   const [isAdmin, setIsAdmin] = useState(false)
@@ -112,6 +115,18 @@ function App() {
             <Route
               path="/compare"
               element={<PortfolioCompare />}
+            />
+            <Route
+              path="/tracker"
+              element={<StockTracker />}
+            />
+            <Route
+              path="/admin"
+              element={<AdminPanel />}
+            />
+            <Route
+              path="/flipperbot"
+              element={<FlipperBot />}
             />
           </Routes>
         </div>

@@ -7,6 +7,8 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock })
   const [searching, setSearching] = useState(false)
   const [adding, setAdding] = useState(false)
   const [showDropdown, setShowDropdown] = useState(false)
+  const [canAdd, setCanAdd] = useState(false)
+  const [addMessage, setAddMessage] = useState('')
   const [, forceUpdate] = useState(0)
   const searchRef = useRef(null)
   const debounceRef = useRef(null)
@@ -18,6 +20,10 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock })
   }, [])
 
   useEffect(() => {
+    checkCanAddStocks()
+  }, [])
+
+  useEffect(() => {
     const handleClickOutside = (e) => {
       if (searchRef.current && !searchRef.current.contains(e.target)) {
         setShowDropdown(false)
@@ -26,6 +32,20 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock })
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
+
+  const checkCanAddStocks = async () => {
+    try {
+      const token = localStorage.getItem('authToken')
+      const res = await fetch('/api/can-add-stocks', {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      })
+      const data = await res.json()
+      setCanAdd(data.can_add)
+      setAddMessage(data.message || '')
+    } catch {
+      setCanAdd(false)
+    }
+  }
 
   const searchStocks = async (q) => {
     if (!q || q.length < 1) {
@@ -76,12 +96,13 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock })
         <span className="text-xs text-gray-500">{stocks.length} stocks</span>
       </div>
 
-      {isAdmin && (
+      {/* Search Box - shown if user can add stocks */}
+      {canAdd && (
         <div className="mb-4 relative" ref={searchRef}>
           <div className="relative">
             <input
               type="text"
-              placeholder="Search stocks (e.g. AAPL, Tesla)"
+              placeholder="Aktie suchen (z.B. AAPL, Tesla)"
               value={query}
               onChange={handleQueryChange}
               onFocus={() => searchResults.length > 0 && setShowDropdown(true)}
@@ -126,6 +147,18 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock })
         </div>
       )}
 
+      {/* Info message if user cannot add stocks */}
+      {!canAdd && addMessage && (
+        <div className="mb-4 p-3 bg-dark-700 rounded-lg border border-dark-600">
+          <div className="flex items-start gap-2">
+            <svg className="w-5 h-5 text-accent-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <p className="text-xs text-gray-400">{addMessage}</p>
+          </div>
+        </div>
+      )}
+
       <div className="flex-1 overflow-auto">
         {loading ? (
           <div className="text-center py-8">
@@ -139,9 +172,9 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock })
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
               </svg>
             </div>
-            <p className="text-gray-500 text-sm">No stocks in watchlist</p>
-            {!isAdmin && (
-              <p className="text-gray-600 text-xs mt-1">Login as admin to add stocks</p>
+            <p className="text-gray-500 text-sm">Keine Aktien in der Watchlist</p>
+            {!canAdd && (
+              <p className="text-gray-600 text-xs mt-1">Melde dich an und pflege dein Portfolio</p>
             )}
           </div>
         ) : (
@@ -184,7 +217,7 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock })
                         <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                         </svg>
-                        Remove
+                        Entfernen
                       </button>
                     </div>
                   )}

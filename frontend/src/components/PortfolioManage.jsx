@@ -242,7 +242,7 @@ function PortfolioContent({ token }) {
       <div className="max-w-6xl mx-auto">
         {/* Header */}
         <div className="mb-4 md:mb-6">
-          <h1 className="text-xl md:text-2xl font-bold text-white">Portfolio pflegen</h1>
+          <h1 className="text-xl md:text-2xl font-bold text-white">Mein Portfolio</h1>
           <p className="text-gray-500 text-sm">Verwalte deine Aktien und Investitionen</p>
         </div>
 

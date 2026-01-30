@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -18,21 +19,36 @@ import (
 )
 
 type User struct {
+	ID          uint      `json:"id" gorm:"primaryKey"`
+	Email       string    `json:"email" gorm:"uniqueIndex;not null"`
+	Username    string    `json:"username" gorm:"uniqueIndex;not null"`
+	Password    string    `json:"-" gorm:"not null"`
+	IsAdmin     bool      `json:"is_admin" gorm:"default:false"`
+	LoginCount  int       `json:"login_count" gorm:"default:0"`
+	LastActive  time.Time `json:"last_active"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// ActivityLog tracks user activities
+type ActivityLog struct {
 	ID        uint      `json:"id" gorm:"primaryKey"`
-	Email     string    `json:"email" gorm:"uniqueIndex;not null"`
-	Username  string    `json:"username" gorm:"uniqueIndex;not null"`
-	Password  string    `json:"-" gorm:"not null"`
-	IsAdmin   bool      `json:"is_admin" gorm:"default:false"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	UserID    uint      `json:"user_id" gorm:"index"`
+	Username  string    `json:"username"`
+	Action    string    `json:"action" gorm:"index"` // login, search, page_view, add_stock, etc.
+	Details   string    `json:"details"`             // JSON with extra info
+	IPAddress string    `json:"ip_address"`
+	CreatedAt time.Time `json:"created_at" gorm:"index"`
 }
 
 type Stock struct {
-	ID        uint      `json:"id" gorm:"primaryKey"`
-	Symbol    string    `json:"symbol" gorm:"not null;uniqueIndex"`
-	Name      string    `json:"name" gorm:"not null"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID            uint      `json:"id" gorm:"primaryKey"`
+	Symbol        string    `json:"symbol" gorm:"not null;uniqueIndex"`
+	Name          string    `json:"name" gorm:"not null"`
+	AddedByUserID uint      `json:"added_by_user_id"`
+	AddedByUser   string    `json:"added_by_user"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type StockWithQuote struct {
@@ -114,6 +130,35 @@ type PortfolioPositionWithQuote struct {
 	InvestedValue   float64    `json:"invested_value"`
 }
 
+// StockPerformance stores BX Trender performance data for tracked stocks
+type StockPerformance struct {
+	ID           uint      `json:"id" gorm:"primaryKey"`
+	Symbol       string    `json:"symbol" gorm:"uniqueIndex;not null"`
+	Name         string    `json:"name"`
+	WinRate      float64   `json:"win_rate"`
+	RiskReward   float64   `json:"risk_reward"`
+	TotalReturn  float64   `json:"total_return"`
+	TotalTrades  int       `json:"total_trades"`
+	Wins         int       `json:"wins"`
+	Losses       int       `json:"losses"`
+	Signal       string    `json:"signal"` // BUY, SELL, HOLD, WAIT
+	SignalBars   int       `json:"signal_bars"` // How many bars in current signal
+	TradesJSON   string    `json:"trades_json" gorm:"type:text"` // JSON array of trades
+	CurrentPrice float64   `json:"current_price"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type TradeData struct {
+	EntryDate    int64   `json:"entryDate"`
+	EntryPrice   float64 `json:"entryPrice"`
+	ExitDate     *int64  `json:"exitDate"`
+	ExitPrice    *float64 `json:"exitPrice"`
+	CurrentPrice *float64 `json:"currentPrice"`
+	ReturnPct    float64 `json:"returnPct"`
+	IsOpen       bool    `json:"isOpen"`
+}
+
 var db *gorm.DB
 var sessions = make(map[string]Session)
 var httpClient = &http.Client{Timeout: 10 * time.Second}
@@ -130,7 +175,10 @@ func main() {
 		panic("Failed to connect to database: " + err.Error())
 	}
 
-	db.AutoMigrate(&User{}, &Stock{}, &PortfolioPosition{})
+	db.AutoMigrate(&User{}, &Stock{}, &PortfolioPosition{}, &StockPerformance{}, &ActivityLog{})
+
+	// Fetch live exchange rates on startup
+	go fetchLiveExchangeRates()
 
 	r := gin.Default()
 
@@ -156,8 +204,8 @@ func main() {
 
 		// Stock routes
 		api.GET("/stocks", getStocks)
-		api.POST("/stocks", authMiddleware(), createStock)
-		api.DELETE("/stocks/:id", authMiddleware(), deleteStock)
+		api.POST("/stocks", optionalAuthMiddleware(), createStock)
+		api.DELETE("/stocks/:id", authMiddleware(), adminOnly(), deleteStock)
 		api.GET("/search", searchStocks)
 		api.GET("/quote/:symbol", getQuote)
 		api.GET("/history/:symbol", getHistory)
@@ -171,6 +219,24 @@ func main() {
 		api.GET("/portfolio/history", authMiddleware(), getPortfolioHistory)
 		api.GET("/portfolios/compare", authMiddleware(), getAllPortfoliosForComparison)
 		api.GET("/portfolios/history/:userId", authMiddleware(), getUserPortfolioHistory)
+
+		// Stock Performance Tracker routes
+		api.POST("/performance", saveStockPerformance)
+		api.GET("/performance", getTrackedStocks)
+		api.GET("/performance/:symbol", getStockPerformance)
+
+		// User permission check
+		api.GET("/can-add-stocks", optionalAuthMiddleware(), canAddStocks)
+
+		// Activity logging
+		api.POST("/activity", optionalAuthMiddleware(), logActivity)
+
+		// Admin routes
+		api.GET("/admin/users", authMiddleware(), adminOnly(), getAdminUsers)
+		api.DELETE("/admin/users/:id", authMiddleware(), adminOnly(), deleteAdminUser)
+		api.PUT("/admin/users/:id", authMiddleware(), adminOnly(), updateAdminUser)
+		api.GET("/admin/activity", authMiddleware(), adminOnly(), getAdminActivity)
+		api.GET("/admin/stats", authMiddleware(), adminOnly(), getAdminStats)
 	}
 
 	r.Run(":8080")
@@ -302,6 +368,15 @@ func login(c *gin.Context) {
 		Expiry:  time.Now().Add(7 * 24 * time.Hour),
 	}
 
+	// Update login count and last active
+	db.Model(&user).Updates(map[string]interface{}{
+		"login_count": user.LoginCount + 1,
+		"last_active": time.Now(),
+	})
+
+	// Log activity
+	logUserActivity(user.ID, user.Username, "login", "", c.ClientIP())
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"token":   token,
@@ -373,10 +448,53 @@ func authMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		// Update last active
+		db.Model(&User{}).Where("id = ?", session.UserID).Update("last_active", time.Now())
+
 		c.Set("userID", session.UserID)
 		c.Set("isAdmin", session.IsAdmin)
 		c.Next()
 	}
+}
+
+func optionalAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		if authHeader != "" {
+			token := strings.TrimPrefix(authHeader, "Bearer ")
+			session, exists := sessions[token]
+			if exists && !time.Now().After(session.Expiry) {
+				c.Set("userID", session.UserID)
+				c.Set("isAdmin", session.IsAdmin)
+				db.Model(&User{}).Where("id = ?", session.UserID).Update("last_active", time.Now())
+			}
+		}
+		c.Next()
+	}
+}
+
+func adminOnly() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		isAdmin, exists := c.Get("isAdmin")
+		if !exists || !isAdmin.(bool) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Admin access required"})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+// Helper to log activity
+func logUserActivity(userID uint, username, action, details, ip string) {
+	log := ActivityLog{
+		UserID:    userID,
+		Username:  username,
+		Action:    action,
+		Details:   details,
+		IPAddress: ip,
+	}
+	db.Create(&log)
 }
 
 func getStocks(c *gin.Context) {
@@ -663,6 +781,35 @@ func getHistory(c *gin.Context) {
 }
 
 func createStock(c *gin.Context) {
+	userID, hasUser := c.Get("userID")
+	isAdmin, _ := c.Get("isAdmin")
+
+	// Check if user can add stocks
+	canAdd := false
+	var username string
+
+	if hasUser {
+		if isAdmin != nil && isAdmin.(bool) {
+			canAdd = true
+		} else {
+			// Check if user has at least one portfolio position
+			var count int64
+			db.Model(&PortfolioPosition{}).Where("user_id = ?", userID).Count(&count)
+			canAdd = count > 0
+		}
+
+		// Get username
+		var user User
+		if db.First(&user, userID).Error == nil {
+			username = user.Username
+		}
+	}
+
+	if !canAdd {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Du musst mindestens eine Aktie in deinem Portfolio haben um Aktien hinzuzufügen"})
+		return
+	}
+
 	var req struct {
 		Symbol string `json:"symbol"`
 		Name   string `json:"name"`
@@ -692,11 +839,17 @@ func createStock(c *gin.Context) {
 	}
 
 	stock := Stock{
-		Symbol: symbol,
-		Name:   name,
+		Symbol:        symbol,
+		Name:          name,
+		AddedByUserID: userID.(uint),
+		AddedByUser:   username,
 	}
 
 	db.Create(&stock)
+
+	// Log activity
+	logUserActivity(userID.(uint), username, "add_stock", fmt.Sprintf(`{"symbol":"%s"}`, symbol), c.ClientIP())
+
 	c.JSON(http.StatusCreated, stock)
 }
 
@@ -711,17 +864,92 @@ func deleteStock(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Stock deleted"})
 }
 
-// Exchange rates to USD (approximate, for calculation purposes)
-var exchangeRatesToUSD = map[string]float64{
+// Exchange rates FROM USD TO other currencies
+// Cached rates from frankfurter.app API
+var exchangeRatesFromUSD = map[string]float64{
 	"USD": 1.0,
-	"EUR": 1.09, // 1 EUR = 1.09 USD
-	"GBP": 1.27, // 1 GBP = 1.27 USD
-	"CHF": 1.14, // 1 CHF = 1.14 USD
+	"EUR": 0.92, // fallback
+	"GBP": 0.79, // fallback
+	"CHF": 0.88, // fallback
+}
+var exchangeRatesLastFetched time.Time
+var exchangeRatesMutex = &sync.Mutex{}
+
+// FrankfurterResponse represents the API response from frankfurter.app
+type FrankfurterResponse struct {
+	Base  string             `json:"base"`
+	Date  string             `json:"date"`
+	Rates map[string]float64 `json:"rates"`
 }
 
-func convertToUSD(amount float64, currency string) float64 {
-	if rate, ok := exchangeRatesToUSD[currency]; ok {
-		return amount * rate
+// Fetch live exchange rates from frankfurter.app (same API as frontend)
+func fetchLiveExchangeRates() {
+	exchangeRatesMutex.Lock()
+	defer exchangeRatesMutex.Unlock()
+
+	// Only fetch if rates are older than 1 hour
+	if time.Since(exchangeRatesLastFetched) < time.Hour {
+		return
+	}
+
+	apiURL := "https://api.frankfurter.app/latest?from=USD&to=EUR,GBP,CHF"
+	req, _ := http.NewRequest("GET", apiURL, nil)
+	req.Header.Set("User-Agent", "FlipperCapital/1.0")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		fmt.Println("Failed to fetch exchange rates:", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		fmt.Println("Exchange rate API returned status:", resp.StatusCode)
+		return
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+
+	var frankfurterResp FrankfurterResponse
+	if err := json.Unmarshal(body, &frankfurterResp); err != nil {
+		fmt.Println("Failed to parse exchange rates:", err)
+		return
+	}
+
+	// Update rates
+	for currency, rate := range frankfurterResp.Rates {
+		exchangeRatesFromUSD[currency] = rate
+	}
+	exchangeRatesLastFetched = time.Now()
+	fmt.Printf("Updated exchange rates: EUR=%.4f, GBP=%.4f, CHF=%.4f\n",
+		exchangeRatesFromUSD["EUR"], exchangeRatesFromUSD["GBP"], exchangeRatesFromUSD["CHF"])
+}
+
+// Get current exchange rate (fetches live if needed)
+func getExchangeRate(currency string) float64 {
+	// Trigger fetch if needed (non-blocking for first request after cache expires)
+	go fetchLiveExchangeRates()
+
+	exchangeRatesMutex.Lock()
+	defer exchangeRatesMutex.Unlock()
+
+	if rate, ok := exchangeRatesFromUSD[currency]; ok {
+		return rate
+	}
+	return 1.0
+}
+
+// Convert USD price to user's currency using live rates
+func convertFromUSD(usdAmount float64, toCurrency string) float64 {
+	rate := getExchangeRate(toCurrency)
+	return usdAmount * rate
+}
+
+func convertToUSD(amount float64, fromCurrency string) float64 {
+	// Convert from user's currency to USD by dividing by the USD->currency rate
+	rate := getExchangeRate(fromCurrency)
+	if rate > 0 {
+		return amount / rate
 	}
 	return amount // Default to USD if unknown
 }
@@ -752,7 +980,7 @@ func getPortfolio(c *gin.Context) {
 			currency = "EUR"
 		}
 
-		// Convert avg price to USD for comparison with current price (which is in USD)
+		// Convert avg price to USD for internal calculations
 		avgPriceUSD := convertToUSD(pos.AvgPrice, currency)
 
 		result[i] = PortfolioPositionWithQuote{
@@ -771,10 +999,14 @@ func getPortfolio(c *gin.Context) {
 			result[i].Change = q.Change
 			result[i].ChangePercent = q.ChangePercent
 
-			// Calculate returns using USD values
-			if avgPriceUSD > 0 {
-				result[i].TotalReturn = q.Price - avgPriceUSD
-				result[i].TotalReturnPct = ((q.Price - avgPriceUSD) / avgPriceUSD) * 100
+			// Calculate returns by converting current USD price to user's currency
+			// This ensures comparison is in the same currency as the user entered their purchase price
+			currentPriceInUserCurrency := convertFromUSD(q.Price, currency)
+
+			if pos.AvgPrice > 0 {
+				// Return in user's currency terms
+				result[i].TotalReturn = currentPriceInUserCurrency - pos.AvgPrice
+				result[i].TotalReturnPct = ((currentPriceInUserCurrency - pos.AvgPrice) / pos.AvgPrice) * 100
 			}
 
 			// Calculate values if quantity is set (in USD)
@@ -956,7 +1188,15 @@ func getPortfolioPerformance(c *gin.Context) {
 		// Calculate with actual quantities
 		for _, pos := range positions {
 			if q, ok := quotes[pos.Symbol]; ok && pos.Quantity != nil && *pos.Quantity > 0 {
-				totalValue += q.Price * (*pos.Quantity)
+				currency := pos.Currency
+				if currency == "" {
+					currency = "EUR"
+				}
+				// Convert current USD price to user's currency for proper comparison
+				currentPriceInUserCurrency := convertFromUSD(q.Price, currency)
+
+				// Calculate in user's currency
+				totalValue += currentPriceInUserCurrency * (*pos.Quantity)
 				totalInvested += pos.AvgPrice * (*pos.Quantity)
 			}
 		}
@@ -965,7 +1205,14 @@ func getPortfolioPerformance(c *gin.Context) {
 		validPositions := 0
 		for _, pos := range positions {
 			if q, ok := quotes[pos.Symbol]; ok && pos.AvgPrice > 0 {
-				returnPct := ((q.Price - pos.AvgPrice) / pos.AvgPrice) * 100
+				currency := pos.Currency
+				if currency == "" {
+					currency = "EUR"
+				}
+				// Convert current USD price to user's currency for proper comparison
+				currentPriceInUserCurrency := convertFromUSD(q.Price, currency)
+
+				returnPct := ((currentPriceInUserCurrency - pos.AvgPrice) / pos.AvgPrice) * 100
 				totalReturnPct += returnPct
 				validPositions++
 			}
@@ -1052,13 +1299,19 @@ func calculatePeriodChanges(positions []PortfolioPosition, currentQuotes map[str
 		periodStartDate := now.AddDate(0, 0, -periodDays[periodKey])
 
 		for _, pos := range positions {
+			currency := pos.Currency
+			if currency == "" {
+				currency = "EUR"
+			}
+
 			// Only include position if it was purchased before or at the start of the period
 			if pos.PurchaseDate != nil && pos.PurchaseDate.After(periodStartDate) {
 				// Position was purchased during this period - calculate from purchase date
 				if q, ok := currentQuotes[pos.Symbol]; ok && q.Price > 0 {
-					avgPriceUSD := convertToUSD(pos.AvgPrice, pos.Currency)
-					if avgPriceUSD > 0 {
-						change := ((q.Price - avgPriceUSD) / avgPriceUSD) * 100
+					// Convert current USD price to user's currency for proper comparison
+					currentPriceInUserCurrency := convertFromUSD(q.Price, currency)
+					if pos.AvgPrice > 0 {
+						change := ((currentPriceInUserCurrency - pos.AvgPrice) / pos.AvgPrice) * 100
 						totalChange += change
 						count++
 					}
@@ -1208,8 +1461,10 @@ func getAllPortfoliosForComparison(c *gin.Context) {
 			if q, ok := quotes[pos.Symbol]; ok {
 				summary.CurrentPrice = q.Price
 				summary.ChangePercent = q.ChangePercent
-				if avgPriceUSD > 0 {
-					summary.TotalReturnPct = ((q.Price - avgPriceUSD) / avgPriceUSD) * 100
+				// Convert current USD price to user's currency for proper return calculation
+				currentPriceInUserCurrency := convertFromUSD(q.Price, currency)
+				if pos.AvgPrice > 0 {
+					summary.TotalReturnPct = ((currentPriceInUserCurrency - pos.AvgPrice) / pos.AvgPrice) * 100
 					totalReturnPct += summary.TotalReturnPct
 					validCount++
 				}
@@ -1324,18 +1579,18 @@ func calculatePortfolioHistoryForUser(userID uint, period string) []map[string]i
 	result := make([]map[string]interface{}, 0)
 
 	// Get initial invested value for normalization
+	// Use user's original currency values for consistency
 	var totalInvested float64
 	hasQuantities := false
 	for _, pos := range positions {
 		if pos.Quantity != nil && *pos.Quantity > 0 {
 			hasQuantities = true
-			avgPriceUSD := convertToUSD(pos.AvgPrice, pos.Currency)
-			totalInvested += avgPriceUSD * (*pos.Quantity)
+			totalInvested += pos.AvgPrice * (*pos.Quantity)
 		}
 	}
 
 	if !hasQuantities {
-		// Assume equal investment of $1000 per position for visualization
+		// Assume equal investment of 1000 per position for visualization
 		totalInvested = float64(len(positions)) * 1000
 	}
 
@@ -1357,18 +1612,29 @@ func calculatePortfolioHistoryForUser(userID uint, period string) []map[string]i
 			for _, pos := range positions {
 				if pos.Quantity != nil && *pos.Quantity > 0 {
 					if price, ok := lastPrices[pos.Symbol]; ok {
-						portfolioValue += price * (*pos.Quantity)
+						// Convert USD price to user's currency
+						currency := pos.Currency
+						if currency == "" {
+							currency = "EUR"
+						}
+						priceInUserCurrency := convertFromUSD(price, currency)
+						portfolioValue += priceInUserCurrency * (*pos.Quantity)
 					}
 				}
 			}
 		} else {
-			// Equal weight: $1000 per position, calculate based on price change ratio
+			// Equal weight: 1000 per position, calculate based on price change ratio
 			for _, pos := range positions {
 				if price, ok := lastPrices[pos.Symbol]; ok {
-					avgPriceUSD := convertToUSD(pos.AvgPrice, pos.Currency)
-					if avgPriceUSD > 0 {
+					currency := pos.Currency
+					if currency == "" {
+						currency = "EUR"
+					}
+					// Convert USD price to user's currency for proper comparison
+					priceInUserCurrency := convertFromUSD(price, currency)
+					if pos.AvgPrice > 0 {
 						// Value = initial investment * (current price / purchase price)
-						portfolioValue += 1000 * (price / avgPriceUSD)
+						portfolioValue += 1000 * (priceInUserCurrency / pos.AvgPrice)
 					}
 				}
 			}
@@ -1452,4 +1718,391 @@ func fetchHistoricalData(symbol string, period string) []OHLCV {
 	}
 
 	return data
+}
+
+// Stock Performance Tracker handlers
+
+func saveStockPerformance(c *gin.Context) {
+	var req struct {
+		Symbol       string      `json:"symbol" binding:"required"`
+		Name         string      `json:"name"`
+		WinRate      float64     `json:"win_rate"`
+		RiskReward   float64     `json:"risk_reward"`
+		TotalReturn  float64     `json:"total_return"`
+		TotalTrades  int         `json:"total_trades"`
+		Wins         int         `json:"wins"`
+		Losses       int         `json:"losses"`
+		Signal       string      `json:"signal"`
+		SignalBars   int         `json:"signal_bars"`
+		Trades       []TradeData `json:"trades"`
+		CurrentPrice float64     `json:"current_price"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	symbol := strings.ToUpper(req.Symbol)
+
+	// Convert trades to JSON
+	tradesJSON, _ := json.Marshal(req.Trades)
+
+	// Check if performance record exists
+	var existing StockPerformance
+	result := db.Where("symbol = ?", symbol).First(&existing)
+
+	if result.Error == nil {
+		// Update existing
+		existing.Name = req.Name
+		existing.WinRate = req.WinRate
+		existing.RiskReward = req.RiskReward
+		existing.TotalReturn = req.TotalReturn
+		existing.TotalTrades = req.TotalTrades
+		existing.Wins = req.Wins
+		existing.Losses = req.Losses
+		existing.Signal = req.Signal
+		existing.SignalBars = req.SignalBars
+		existing.TradesJSON = string(tradesJSON)
+		existing.CurrentPrice = req.CurrentPrice
+		existing.UpdatedAt = time.Now()
+		db.Save(&existing)
+		c.JSON(http.StatusOK, existing)
+	} else {
+		// Create new
+		perf := StockPerformance{
+			Symbol:       symbol,
+			Name:         req.Name,
+			WinRate:      req.WinRate,
+			RiskReward:   req.RiskReward,
+			TotalReturn:  req.TotalReturn,
+			TotalTrades:  req.TotalTrades,
+			Wins:         req.Wins,
+			Losses:       req.Losses,
+			Signal:       req.Signal,
+			SignalBars:   req.SignalBars,
+			TradesJSON:   string(tradesJSON),
+			CurrentPrice: req.CurrentPrice,
+		}
+		db.Create(&perf)
+		c.JSON(http.StatusCreated, perf)
+	}
+}
+
+func getTrackedStocks(c *gin.Context) {
+	var performances []StockPerformance
+	db.Order("updated_at desc").Find(&performances)
+
+	// Parse trades JSON for each
+	type PerformanceWithTrades struct {
+		StockPerformance
+		Trades []TradeData `json:"trades"`
+	}
+
+	result := make([]PerformanceWithTrades, len(performances))
+	for i, p := range performances {
+		result[i].StockPerformance = p
+		if p.TradesJSON != "" {
+			json.Unmarshal([]byte(p.TradesJSON), &result[i].Trades)
+		}
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+func getStockPerformance(c *gin.Context) {
+	symbol := strings.ToUpper(c.Param("symbol"))
+
+	var perf StockPerformance
+	if err := db.Where("symbol = ?", symbol).First(&perf).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Stock not found"})
+		return
+	}
+
+	// Parse trades
+	var trades []TradeData
+	if perf.TradesJSON != "" {
+		json.Unmarshal([]byte(perf.TradesJSON), &trades)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"performance": perf,
+		"trades":      trades,
+	})
+}
+
+// Check if user can add stocks to watchlist
+func canAddStocks(c *gin.Context) {
+	userID, hasUser := c.Get("userID")
+	isAdmin, _ := c.Get("isAdmin")
+
+	if !hasUser {
+		c.JSON(http.StatusOK, gin.H{
+			"can_add":  false,
+			"reason":   "not_logged_in",
+			"message":  "Melde dich an und pflege mindestens eine Aktie in deinem Portfolio ein, um Aktien zur Watchlist hinzuzufügen.",
+		})
+		return
+	}
+
+	if isAdmin != nil && isAdmin.(bool) {
+		c.JSON(http.StatusOK, gin.H{
+			"can_add":  true,
+			"reason":   "admin",
+			"message":  "",
+		})
+		return
+	}
+
+	// Check if user has at least one portfolio position
+	var count int64
+	db.Model(&PortfolioPosition{}).Where("user_id = ?", userID).Count(&count)
+
+	if count > 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"can_add":  true,
+			"reason":   "has_portfolio",
+			"message":  "",
+		})
+	} else {
+		c.JSON(http.StatusOK, gin.H{
+			"can_add":  false,
+			"reason":   "no_portfolio",
+			"message":  "Pflege mindestens eine Aktie in deinem Portfolio ein, um Aktien zur Watchlist hinzuzufügen.",
+		})
+	}
+}
+
+// Log user activity from frontend
+func logActivity(c *gin.Context) {
+	var req struct {
+		Action  string `json:"action"`
+		Details string `json:"details"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	userID, hasUser := c.Get("userID")
+	var uid uint
+	var username string
+
+	if hasUser {
+		uid = userID.(uint)
+		var user User
+		if db.First(&user, uid).Error == nil {
+			username = user.Username
+		}
+	}
+
+	logUserActivity(uid, username, req.Action, req.Details, c.ClientIP())
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// Admin: Get all users with stats
+func getAdminUsers(c *gin.Context) {
+	type UserWithStats struct {
+		User
+		PortfolioCount int64 `json:"portfolio_count"`
+		ActivityCount  int64 `json:"activity_count"`
+	}
+
+	var users []User
+	db.Order("created_at desc").Find(&users)
+
+	result := make([]UserWithStats, len(users))
+	for i, u := range users {
+		result[i].User = u
+
+		// Count portfolio positions
+		db.Model(&PortfolioPosition{}).Where("user_id = ?", u.ID).Count(&result[i].PortfolioCount)
+
+		// Count activities
+		db.Model(&ActivityLog{}).Where("user_id = ?", u.ID).Count(&result[i].ActivityCount)
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// Admin: Delete user
+func deleteAdminUser(c *gin.Context) {
+	id := c.Param("id")
+
+	var user User
+	if err := db.First(&user, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	// Don't allow deleting the last admin
+	if user.IsAdmin {
+		var adminCount int64
+		db.Model(&User{}).Where("is_admin = ?", true).Count(&adminCount)
+		if adminCount <= 1 {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Cannot delete the last admin"})
+			return
+		}
+	}
+
+	// Delete user's portfolio positions
+	db.Where("user_id = ?", user.ID).Delete(&PortfolioPosition{})
+
+	// Delete user's activity logs
+	db.Where("user_id = ?", user.ID).Delete(&ActivityLog{})
+
+	// Delete user
+	db.Delete(&user)
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// Admin: Update user
+func updateAdminUser(c *gin.Context) {
+	id := c.Param("id")
+
+	var user User
+	if err := db.First(&user, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	var req struct {
+		Username string `json:"username"`
+		Email    string `json:"email"`
+		IsAdmin  *bool  `json:"is_admin"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	if req.Username != "" {
+		user.Username = req.Username
+	}
+	if req.Email != "" {
+		user.Email = req.Email
+	}
+	if req.IsAdmin != nil {
+		// Don't allow removing admin from last admin
+		if user.IsAdmin && !*req.IsAdmin {
+			var adminCount int64
+			db.Model(&User{}).Where("is_admin = ?", true).Count(&adminCount)
+			if adminCount <= 1 {
+				c.JSON(http.StatusForbidden, gin.H{"error": "Cannot remove admin from last admin"})
+				return
+			}
+		}
+		user.IsAdmin = *req.IsAdmin
+	}
+
+	db.Save(&user)
+	c.JSON(http.StatusOK, user)
+}
+
+// Admin: Get activity logs
+func getAdminActivity(c *gin.Context) {
+	limit := 100
+	if l := c.Query("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+	}
+
+	action := c.Query("action")
+	userID := c.Query("user_id")
+
+	query := db.Model(&ActivityLog{}).Order("created_at desc").Limit(limit)
+
+	if action != "" {
+		query = query.Where("action = ?", action)
+	}
+	if userID != "" {
+		query = query.Where("user_id = ?", userID)
+	}
+
+	var logs []ActivityLog
+	query.Find(&logs)
+
+	c.JSON(http.StatusOK, logs)
+}
+
+// Admin: Get dashboard stats
+func getAdminStats(c *gin.Context) {
+	var userCount int64
+	var stockCount int64
+	var positionCount int64
+	var trackedCount int64
+
+	db.Model(&User{}).Count(&userCount)
+	db.Model(&Stock{}).Count(&stockCount)
+	db.Model(&PortfolioPosition{}).Count(&positionCount)
+	db.Model(&StockPerformance{}).Count(&trackedCount)
+
+	// Activity stats for last 7 days
+	sevenDaysAgo := time.Now().AddDate(0, 0, -7)
+
+	var loginCount int64
+	db.Model(&ActivityLog{}).Where("action = ? AND created_at > ?", "login", sevenDaysAgo).Count(&loginCount)
+
+	var searchCount int64
+	db.Model(&ActivityLog{}).Where("action = ? AND created_at > ?", "search", sevenDaysAgo).Count(&searchCount)
+
+	var pageViewCount int64
+	db.Model(&ActivityLog{}).Where("action = ? AND created_at > ?", "page_view", sevenDaysAgo).Count(&pageViewCount)
+
+	// Most active users
+	type UserActivity struct {
+		UserID   uint   `json:"user_id"`
+		Username string `json:"username"`
+		Count    int64  `json:"count"`
+	}
+
+	var mostActive []UserActivity
+	db.Model(&ActivityLog{}).
+		Select("user_id, username, count(*) as count").
+		Where("created_at > ? AND user_id > 0", sevenDaysAgo).
+		Group("user_id, username").
+		Order("count desc").
+		Limit(10).
+		Find(&mostActive)
+
+	// Most searched stocks
+	type StockSearch struct {
+		Symbol string `json:"symbol"`
+		Count  int64  `json:"count"`
+	}
+
+	var mostSearched []StockSearch
+	db.Model(&ActivityLog{}).
+		Select("details as symbol, count(*) as count").
+		Where("action = ? AND created_at > ?", "search", sevenDaysAgo).
+		Group("details").
+		Order("count desc").
+		Limit(10).
+		Find(&mostSearched)
+
+	// Recently added stocks
+	var recentStocks []Stock
+	db.Order("created_at desc").Limit(10).Find(&recentStocks)
+
+	// New users this week
+	var newUsers int64
+	db.Model(&User{}).Where("created_at > ?", sevenDaysAgo).Count(&newUsers)
+
+	c.JSON(http.StatusOK, gin.H{
+		"users":          userCount,
+		"stocks":         stockCount,
+		"positions":      positionCount,
+		"tracked_stocks": trackedCount,
+		"week_stats": gin.H{
+			"logins":     loginCount,
+			"searches":   searchCount,
+			"page_views": pageViewCount,
+			"new_users":  newUsers,
+		},
+		"most_active":    mostActive,
+		"most_searched":  mostSearched,
+		"recent_stocks":  recentStocks,
+	})
 }

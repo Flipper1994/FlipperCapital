@@ -316,7 +316,70 @@ function calculateMetrics(trades) {
   }
 }
 
-function BXtrenderChart({ symbol, timeframe = 'M', onTradesUpdate }) {
+// Calculate signal based on BX Trender bars
+function calculateSignal(shortData) {
+  if (shortData.length < 3) return { signal: 'WAIT', bars: 0 }
+
+  // Count consecutive bars of the same sign from the end
+  let consecutiveBars = 1
+  const lastValue = shortData[shortData.length - 1].value
+  const isPositive = lastValue > 0
+
+  for (let i = shortData.length - 2; i >= 0; i--) {
+    const val = shortData[i].value
+    if ((val > 0) === isPositive) {
+      consecutiveBars++
+    } else {
+      break
+    }
+  }
+
+  if (isPositive) {
+    // Green/bullish bars
+    if (consecutiveBars <= 2) {
+      return { signal: 'BUY', bars: consecutiveBars }
+    } else {
+      return { signal: 'HOLD', bars: consecutiveBars }
+    }
+  } else {
+    // Red/bearish bars
+    if (consecutiveBars <= 2) {
+      return { signal: 'SELL', bars: consecutiveBars }
+    } else {
+      return { signal: 'WAIT', bars: consecutiveBars }
+    }
+  }
+}
+
+// Save performance data to backend
+async function savePerformanceToBackend(symbol, name, metrics, trades, shortData, currentPrice) {
+  try {
+    const { signal, bars } = calculateSignal(shortData)
+
+    await fetch('/api/performance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol,
+        name,
+        win_rate: metrics.winRate,
+        risk_reward: metrics.riskReward,
+        total_return: metrics.totalReturn,
+        total_trades: metrics.totalTrades,
+        wins: metrics.wins,
+        losses: metrics.losses,
+        signal,
+        signal_bars: bars,
+        trades,
+        current_price: currentPrice
+      })
+    })
+  } catch (err) {
+    console.warn('Failed to save performance data:', err)
+  }
+}
+
+function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdate }) {
   const chartContainerRef = useRef(null)
   const chartRef = useRef(null)
   const [loading, setLoading] = useState(true)
@@ -375,6 +438,12 @@ function BXtrenderChart({ symbol, timeframe = 'M', onTradesUpdate }) {
         const metrics = calculateMetrics(trades)
         if (onTradesUpdate) {
           onTradesUpdate({ trades, metrics })
+        }
+
+        // Get current price and save to backend (only for monthly timeframe)
+        if (timeframe === 'M' && json.data.length > 0) {
+          const currentPrice = json.data[json.data.length - 1].close
+          savePerformanceToBackend(symbol, stockName || symbol, metrics, trades, short, currentPrice)
         }
 
         // Clear previous chart
