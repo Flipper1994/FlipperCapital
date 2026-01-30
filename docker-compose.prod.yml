@@ -22,6 +22,27 @@ services:
     networks:
       - flipper-network
 
+  certbot:
+    image: infinityofspace/certbot_dns_duckdns:latest
+    container_name: flipper-certbot
+    volumes:
+      - ./certbot/certs:/etc/letsencrypt
+      - ./certbot/logs:/var/log/letsencrypt
+    environment:
+      - DUCKDNS_TOKEN=${DUCKDNS_TOKEN}
+    command: >
+      certonly
+      --non-interactive
+      --agree-tos
+      --email ${CERT_EMAIL:-admin@example.com}
+      --preferred-challenges dns
+      --authenticator dns-duckdns
+      --dns-duckdns-token ${DUCKDNS_TOKEN}
+      --dns-duckdns-propagation-seconds 60
+      -d flippercapital.duckdns.org
+    networks:
+      - flipper-network
+
   nginx:
     build:
       context: ./nginx
@@ -30,9 +51,8 @@ services:
     restart: unless-stopped
     ports:
       - "54321:443"
-      - "54320:80"
     volumes:
-      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./certbot/certs:/etc/letsencrypt:ro
     depends_on:
       - frontend
       - backend
