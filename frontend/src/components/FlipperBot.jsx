@@ -21,7 +21,7 @@ function FlipperBot() {
           <img
             src="/images/flipperbot-hero.png"
             alt="FlipperBot"
-            className="w-full h-48 md:h-64 lg:h-80 object-cover"
+            className="w-full h-auto object-contain"
           />
           <div className="absolute inset-0 bg-gradient-to-t from-dark-900 via-dark-900/60 to-transparent"></div>
           <div className="absolute bottom-0 left-0 right-0 p-6 md:p-8">
