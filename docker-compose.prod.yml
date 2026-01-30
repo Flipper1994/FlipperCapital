@@ -39,7 +39,6 @@ services:
       --authenticator dns-duckdns
       --dns-duckdns-token ${DUCKDNS_TOKEN}
       --dns-duckdns-propagation-seconds 120
-      --timeout 120
       -d flippercapital.duckdns.org
     networks:
       - flipper-network
