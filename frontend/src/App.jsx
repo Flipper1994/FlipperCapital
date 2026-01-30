@@ -11,6 +11,8 @@ import PortfolioCompare from './components/PortfolioCompare'
 import StockTracker from './components/StockTracker'
 import AdminPanel from './components/AdminPanel'
 import FlipperBot from './components/FlipperBot'
+import FlipperBotLab from './components/FlipperBotLab'
+import Help from './components/Help'
 
 function App() {
   const [isAdmin, setIsAdmin] = useState(false)
@@ -127,6 +129,14 @@ function App() {
             <Route
               path="/flipperbot"
               element={<FlipperBot />}
+            />
+            <Route
+              path="/help"
+              element={<Help />}
+            />
+            <Route
+              path="/flipperbot-lab"
+              element={<FlipperBotLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} />}
             />
           </Routes>
         </div>
