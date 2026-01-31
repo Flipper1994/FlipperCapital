@@ -73,14 +73,17 @@ function StockTracker() {
   const [selectedStock, setSelectedStock] = useState(null)
   const [signalFilter, setSignalFilter] = useState(null)
   const [searchQuery, setSearchQuery] = useState('')
-  const [selectedMonth, setSelectedMonth] = useState(() => {
-    const now = new Date()
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-  })
   const [, forceUpdate] = useState(0)
   const { mode, isAggressive } = useTradingMode()
   const { formatPrice } = useCurrency()
 
+  // Selected month - default to current month (evaluated on page load)
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  })
+
+  // Generate month options on each page load
   const monthOptions = useMemo(() => generateMonthOptions(), [])
 
   useEffect(() => {

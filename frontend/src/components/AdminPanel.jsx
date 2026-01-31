@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, Navigate } from 'react-router-dom'
 import { useTradingMode } from '../context/TradingModeContext'
+import { useCurrency } from '../context/CurrencyContext'
 import { processStock } from '../utils/bxtrender'
 
 function AdminPanel() {
@@ -17,6 +18,15 @@ function AdminPanel() {
   const [updatingStocks, setUpdatingStocks] = useState(false)
   const [updateProgress, setUpdateProgress] = useState(null)
   const { mode, isAggressive } = useTradingMode()
+  const { formatPrice, convertPrice, convertToUSD, currencySymbol } = useCurrency()
+
+  // Bots state
+  const [flipperPositions, setFlipperPositions] = useState([])
+  const [flipperTrades, setFlipperTrades] = useState([])
+  const [lutzPositions, setLutzPositions] = useState([])
+  const [lutzTrades, setLutzTrades] = useState([])
+  const [botTab, setBotTab] = useState('flipper')
+  const [editingItem, setEditingItem] = useState(null)
 
   useEffect(() => {
     checkAdmin()
@@ -28,6 +38,7 @@ function AdminPanel() {
       if (activeTab === 'users') fetchUsers()
       if (activeTab === 'activity') fetchActivity()
       if (activeTab === 'traffic') fetchTraffic()
+      if (activeTab === 'bots') fetchBotData()
     }
   }, [isAdmin, activeTab, activityFilter])
 
@@ -106,6 +117,83 @@ function AdminPanel() {
       console.error('Failed to fetch traffic:', err)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const fetchBotData = async () => {
+    setLoading(true)
+    try {
+      const [fpRes, ftRes, lpRes, ltRes] = await Promise.all([
+        fetch('/api/flipperbot/portfolio', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/flipperbot/actions', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/lutz/portfolio', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/lutz/actions', { headers: { 'Authorization': `Bearer ${token}` } })
+      ])
+      const [fp, ft, lp, lt] = await Promise.all([
+        fpRes.json(), ftRes.json(), lpRes.json(), ltRes.json()
+      ])
+      setFlipperPositions(fp?.positions || [])
+      setFlipperTrades(ft || [])
+      setLutzPositions(lp?.positions || [])
+      setLutzTrades(lt || [])
+    } catch (err) {
+      console.error('Failed to fetch bot data:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleUpdatePosition = async (bot, position) => {
+    try {
+      const res = await fetch(`/api/${bot}/position/${position.id}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          quantity: parseFloat(position.quantity),
+          avg_price: parseFloat(position.avg_price),
+          is_live: position.is_live
+        })
+      })
+      if (res.ok) {
+        setEditingItem(null)
+        fetchBotData()
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Fehler beim Speichern')
+      }
+    } catch (err) {
+      console.error('Failed to update position:', err)
+    }
+  }
+
+  const handleUpdateTrade = async (bot, trade) => {
+    try {
+      // Convert price back to USD for storage
+      const priceInUSD = convertToUSD(parseFloat(trade.price))
+      const res = await fetch(`/api/${bot}/trade/${trade.id}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          quantity: parseFloat(trade.quantity),
+          price: priceInUSD,
+          is_live: trade.is_live
+        })
+      })
+      if (res.ok) {
+        setEditingItem(null)
+        fetchBotData()
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Fehler beim Speichern')
+      }
+    } catch (err) {
+      console.error('Failed to update trade:', err)
     }
   }
 
@@ -268,7 +356,8 @@ function AdminPanel() {
             { key: 'dashboard', label: 'Dashboard' },
             { key: 'users', label: 'Nutzer' },
             { key: 'activity', label: 'Aktivitäten' },
-            { key: 'traffic', label: 'Traffic' }
+            { key: 'traffic', label: 'Traffic' },
+            { key: 'bots', label: 'Bots' }
           ].map(tab => (
             <button
               key={tab.key}
@@ -717,6 +806,181 @@ function AdminPanel() {
                         </tbody>
                       </table>
                     </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Bots Tab */}
+            {activeTab === 'bots' && (
+              <div className="space-y-6">
+                {/* Bot Selector */}
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setBotTab('flipper')}
+                    className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                      botTab === 'flipper'
+                        ? 'bg-blue-500 text-white'
+                        : 'bg-dark-700 text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    FlipperBot (Defensiv)
+                  </button>
+                  <button
+                    onClick={() => setBotTab('lutz')}
+                    className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                      botTab === 'lutz'
+                        ? 'bg-orange-500 text-white'
+                        : 'bg-dark-700 text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    Lutz (Aggressiv)
+                  </button>
+                </div>
+
+                {/* Info */}
+                <div className="p-4 bg-blue-500/10 border border-blue-500/30 rounded-xl text-sm text-blue-300">
+                  <p>Trades bearbeiten um echte Werte einzutragen. Positionen werden automatisch aktualisiert.</p>
+                </div>
+
+                {/* Trades Table */}
+                <div className="bg-dark-800 rounded-xl border border-dark-600 overflow-hidden">
+                  <div className="p-4 border-b border-dark-600">
+                    <h2 className="text-lg font-semibold text-white">
+                      {botTab === 'flipper' ? 'FlipperBot' : 'Lutz'} Trades
+                    </h2>
+                    <p className="text-xs text-gray-500">BUY-Trades bearbeiten um Position zu aktualisieren</p>
+                  </div>
+                  <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
+                    <table className="w-full">
+                      <thead className="sticky top-0 bg-dark-900">
+                        <tr className="text-left text-xs text-gray-500 border-b border-dark-600">
+                          <th className="p-3">Datum</th>
+                          <th className="p-3">Symbol</th>
+                          <th className="p-3">Typ</th>
+                          <th className="p-3 text-right">Anzahl</th>
+                          <th className="p-3 text-right">Preis</th>
+                          <th className="p-3 text-center">LIVE</th>
+                          <th className="p-3"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(botTab === 'flipper' ? flipperTrades : lutzTrades).slice(0, 50).map((trade) => (
+                          <tr key={trade.id} className={`border-b border-dark-700/50 hover:bg-dark-700/30 ${trade.is_live ? 'bg-green-500/5' : ''}`}>
+                            {editingItem?.type === 'trade' && editingItem?.id === trade.id ? (
+                              <>
+                                <td className="p-3 text-gray-400 text-sm">
+                                  {new Date(trade.signal_date || trade.created_at).toLocaleDateString('de-DE')}
+                                </td>
+                                <td className="p-3 font-medium text-white">{trade.symbol}</td>
+                                <td className="p-3">
+                                  <span className={`px-2 py-1 text-xs rounded ${
+                                    trade.action === 'BUY' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                                  }`}>
+                                    {trade.action}
+                                  </span>
+                                </td>
+                                <td className="p-3">
+                                  <input
+                                    type="number"
+                                    step="0.0001"
+                                    value={editingItem.quantity}
+                                    onChange={(e) => setEditingItem({...editingItem, quantity: e.target.value})}
+                                    className="w-24 bg-dark-700 border border-dark-500 rounded px-2 py-1 text-white text-right"
+                                  />
+                                </td>
+                                <td className="p-3">
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-gray-400 text-sm">{currencySymbol}</span>
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      value={editingItem.price}
+                                      onChange={(e) => setEditingItem({...editingItem, price: e.target.value})}
+                                      className="w-24 bg-dark-700 border border-dark-500 rounded px-2 py-1 text-white text-right"
+                                    />
+                                  </div>
+                                </td>
+                                <td className="p-3 text-center">
+                                  <button
+                                    onClick={() => setEditingItem({...editingItem, is_live: !editingItem.is_live})}
+                                    className={`px-3 py-1 rounded text-xs font-bold transition-colors ${
+                                      editingItem.is_live
+                                        ? 'bg-green-500 text-white'
+                                        : 'bg-dark-600 text-gray-400'
+                                    }`}
+                                  >
+                                    {editingItem.is_live ? 'LIVE' : 'SIM'}
+                                  </button>
+                                </td>
+                                <td className="p-3">
+                                  <div className="flex gap-2">
+                                    <button
+                                      onClick={() => handleUpdateTrade(botTab === 'flipper' ? 'flipperbot' : 'lutz', editingItem)}
+                                      className="px-3 py-1 bg-green-500 text-white rounded text-xs font-medium"
+                                    >
+                                      Speichern
+                                    </button>
+                                    <button
+                                      onClick={() => setEditingItem(null)}
+                                      className="px-3 py-1 bg-dark-600 text-gray-400 rounded text-xs"
+                                    >
+                                      Abbrechen
+                                    </button>
+                                  </div>
+                                </td>
+                              </>
+                            ) : (
+                              <>
+                                <td className="p-3 text-gray-400 text-sm">
+                                  {new Date(trade.signal_date || trade.created_at).toLocaleDateString('de-DE')}
+                                </td>
+                                <td className="p-3 font-medium text-white">{trade.symbol}</td>
+                                <td className="p-3">
+                                  <span className={`px-2 py-1 text-xs rounded ${
+                                    trade.action === 'BUY' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                                  }`}>
+                                    {trade.action}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-right text-white">{trade.quantity}</td>
+                                <td className="p-3 text-right text-white">{formatPrice(trade.price, trade.symbol)}</td>
+                                <td className="p-3 text-center">
+                                  {trade.is_live && (
+                                    <span className="px-2 py-1 bg-green-500/20 text-green-400 rounded text-xs font-bold">
+                                      LIVE
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="p-3">
+                                  <button
+                                    onClick={() => setEditingItem({
+                                      type: 'trade',
+                                      id: trade.id,
+                                      quantity: trade.quantity,
+                                      price: convertPrice(trade.price)?.toFixed(2) || trade.price,
+                                      is_live: trade.is_live || false
+                                    })}
+                                    className="p-1.5 text-gray-400 hover:text-accent-400 transition-colors"
+                                  >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                                    </svg>
+                                  </button>
+                                </td>
+                              </>
+                            )}
+                          </tr>
+                        ))}
+                        {(botTab === 'flipper' ? flipperTrades : lutzTrades).length === 0 && (
+                          <tr>
+                            <td colSpan={7} className="p-8 text-center text-gray-500">
+                              Keine Trades vorhanden
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               </div>

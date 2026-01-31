@@ -122,6 +122,13 @@ export function useCurrency() {
       return usdPrice * rate
     },
 
+    // Convert from current currency back to USD
+    convertToUSD: (localPrice) => {
+      if (localPrice === null || localPrice === undefined) return null
+      const rate = exchangeRates[currency] || 1
+      return localPrice / rate
+    },
+
     formatChange: (usdChange, percent, stockSymbol = null) => {
       if (usdChange === undefined || usdChange === null) return null
       const symbol = CURRENCY_SYMBOLS[currency] || '$'

@@ -198,6 +198,7 @@ type FlipperBotTrade struct {
 	Name         string     `json:"name"`
 	Action       string     `json:"action" gorm:"not null"` // BUY or SELL
 	Quantity     float64    `json:"quantity" gorm:"default:1"`
+	IsLive       bool       `json:"is_live" gorm:"default:false"` // True if this is a real executed trade
 	Price        float64    `json:"price" gorm:"not null"`
 	SignalDate   time.Time  `json:"signal_date" gorm:"not null"` // When the signal occurred
 	ExecutedAt   time.Time  `json:"executed_at" gorm:"not null"` // When we recorded this trade
@@ -213,6 +214,7 @@ type FlipperBotPosition struct {
 	Name         string     `json:"name"`
 	Quantity     float64    `json:"quantity" gorm:"default:1"`
 	AvgPrice     float64    `json:"avg_price" gorm:"not null"`
+	IsLive       bool       `json:"is_live" gorm:"default:false"` // True if this is a real executed position
 	BuyDate      time.Time  `json:"buy_date" gorm:"not null"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
@@ -248,6 +250,7 @@ type LutzTrade struct {
 	Name          string     `json:"name"`
 	Action        string     `json:"action" gorm:"not null"` // BUY or SELL
 	Quantity      float64    `json:"quantity" gorm:"default:1"`
+	IsLive        bool       `json:"is_live" gorm:"default:false"` // True if this is a real executed trade
 	Price         float64    `json:"price" gorm:"not null"`
 	SignalDate    time.Time  `json:"signal_date" gorm:"not null"`
 	ExecutedAt    time.Time  `json:"executed_at" gorm:"not null"`
@@ -263,6 +266,7 @@ type LutzPosition struct {
 	Name      string    `json:"name"`
 	Quantity  float64   `json:"quantity" gorm:"default:1"`
 	AvgPrice  float64   `json:"avg_price" gorm:"not null"`
+	IsLive    bool      `json:"is_live" gorm:"default:false"` // True if this is a real executed position
 	BuyDate   time.Time `json:"buy_date" gorm:"not null"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -352,6 +356,12 @@ func main() {
 
 	db.AutoMigrate(&User{}, &Stock{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{}, &DBSession{})
 
+	// Ensure is_live columns exist (SQLite doesn't always add new columns)
+	db.Exec("ALTER TABLE flipper_bot_trades ADD COLUMN is_live BOOLEAN DEFAULT 0")
+	db.Exec("ALTER TABLE flipper_bot_positions ADD COLUMN is_live BOOLEAN DEFAULT 0")
+	db.Exec("ALTER TABLE lutz_trades ADD COLUMN is_live BOOLEAN DEFAULT 0")
+	db.Exec("ALTER TABLE lutz_positions ADD COLUMN is_live BOOLEAN DEFAULT 0")
+
 	// Clean up expired sessions on startup
 	db.Where("expiry < ?", time.Now()).Delete(&DBSession{})
 
@@ -436,6 +446,8 @@ func main() {
 		api.GET("/flipperbot/actions", authMiddleware(), getFlipperBotActions)
 		api.GET("/flipperbot/performance", authMiddleware(), getFlipperBotPerformance)
 		api.POST("/flipperbot/reset", authMiddleware(), adminOnly(), resetFlipperBot)
+		api.PUT("/flipperbot/position/:id", authMiddleware(), adminOnly(), updateFlipperBotPosition)
+		api.PUT("/flipperbot/trade/:id", authMiddleware(), adminOnly(), updateFlipperBotTrade)
 
 		// Lutz routes - Aggressive mode bot (view: all users, actions: admin only)
 		api.GET("/lutz/update", authMiddleware(), adminOnly(), lutzUpdate)
@@ -443,6 +455,8 @@ func main() {
 		api.GET("/lutz/actions", authMiddleware(), getLutzActions)
 		api.GET("/lutz/performance", authMiddleware(), getLutzPerformance)
 		api.POST("/lutz/reset", authMiddleware(), adminOnly(), resetLutz)
+		api.PUT("/lutz/position/:id", authMiddleware(), adminOnly(), updateLutzPosition)
+		api.PUT("/lutz/trade/:id", authMiddleware(), adminOnly(), updateLutzTrade)
 	}
 
 	r.Run(":8080")
@@ -1789,6 +1803,7 @@ func getAllPortfoliosForComparison(c *gin.Context) {
 		Currency       string  `json:"currency"`
 		TotalReturnPct float64 `json:"total_return_pct"`
 		ChangePercent  float64 `json:"change_percent"`
+		IsLive         bool    `json:"is_live"`
 	}
 
 	type PortfolioSummary struct {
@@ -1853,6 +1868,19 @@ func getAllPortfoliosForComparison(c *gin.Context) {
 				AvgPrice:    pos.AvgPrice,
 				AvgPriceUSD: avgPriceUSD,
 				Currency:    currency,
+			}
+
+			// Check if this is a bot position and get is_live status
+			if user.ID == FLIPPERBOT_USER_ID {
+				var botPos FlipperBotPosition
+				if db.Where("symbol = ?", pos.Symbol).First(&botPos).Error == nil {
+					summary.IsLive = botPos.IsLive
+				}
+			} else if user.ID == LUTZ_USER_ID {
+				var botPos LutzPosition
+				if db.Where("symbol = ?", pos.Symbol).First(&botPos).Error == nil {
+					summary.IsLive = botPos.IsLive
+				}
 			}
 
 			if q, ok := quotes[pos.Symbol]; ok {
@@ -3177,6 +3205,7 @@ func getFlipperBotPortfolio(c *gin.Context) {
 		TotalReturnPct float64  `json:"total_return_pct"`
 		CurrentValue  float64   `json:"current_value"`
 		InvestedValue float64   `json:"invested_value"`
+		IsLive        bool      `json:"is_live"`
 	}
 
 	result := make([]PositionWithQuote, len(positions))
@@ -3214,6 +3243,7 @@ func getFlipperBotPortfolio(c *gin.Context) {
 			TotalReturnPct: totalReturnPct,
 			CurrentValue:  currentValue,
 			InvestedValue: investedValue,
+			IsLive:        pos.IsLive,
 		}
 	}
 
@@ -3343,6 +3373,93 @@ func resetFlipperBot(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "FlipperBot reset completed",
 	})
+}
+
+// Update FlipperBot position with real trade data (Admin only)
+func updateFlipperBotPosition(c *gin.Context) {
+	id := c.Param("id")
+
+	var position FlipperBotPosition
+	if err := db.First(&position, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Position not found"})
+		return
+	}
+
+	var req struct {
+		Quantity float64 `json:"quantity"`
+		AvgPrice float64 `json:"avg_price"`
+		IsLive   bool    `json:"is_live"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	// Update position
+	position.Quantity = req.Quantity
+	position.AvgPrice = req.AvgPrice
+	position.IsLive = req.IsLive
+	db.Save(&position)
+
+	// Also update corresponding portfolio position
+	var portfolioPos PortfolioPosition
+	if err := db.Where("user_id = ? AND symbol = ?", FLIPPERBOT_USER_ID, position.Symbol).First(&portfolioPos).Error; err == nil {
+		portfolioPos.Quantity = &req.Quantity
+		portfolioPos.AvgPrice = req.AvgPrice
+		db.Save(&portfolioPos)
+	}
+
+	c.JSON(http.StatusOK, position)
+}
+
+// Update FlipperBot trade with real trade data (Admin only)
+func updateFlipperBotTrade(c *gin.Context) {
+	id := c.Param("id")
+
+	var trade FlipperBotTrade
+	if err := db.First(&trade, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Trade not found"})
+		return
+	}
+
+	var req struct {
+		Quantity float64 `json:"quantity"`
+		Price    float64 `json:"price"`
+		IsLive   bool    `json:"is_live"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	// Update trade
+	trade.Quantity = req.Quantity
+	trade.Price = req.Price
+	trade.IsLive = req.IsLive
+	db.Save(&trade)
+
+	// If BUY trade, update corresponding position
+	if trade.Action == "BUY" {
+		var position FlipperBotPosition
+		if err := db.Where("symbol = ?", trade.Symbol).First(&position).Error; err == nil {
+			position.Quantity = req.Quantity
+			position.AvgPrice = req.Price
+			position.IsLive = req.IsLive
+			db.Save(&position)
+
+			// Also update portfolio position
+			var portfolioPos PortfolioPosition
+			if err := db.Where("user_id = ? AND symbol = ?", FLIPPERBOT_USER_ID, trade.Symbol).First(&portfolioPos).Error; err == nil {
+				portfolioPos.Quantity = &req.Quantity
+				portfolioPos.AvgPrice = req.Price
+				db.Save(&portfolioPos)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, trade)
 }
 
 // ==================== LUTZ BOT (Aggressive Mode) ====================
@@ -3604,6 +3721,7 @@ func getLutzPortfolio(c *gin.Context) {
 		TotalReturn    float64   `json:"total_return"`
 		TotalReturnPct float64   `json:"total_return_pct"`
 		CurrentValue   float64   `json:"current_value"`
+		IsLive         bool      `json:"is_live"`
 	}
 
 	result := make([]PositionWithQuote, 0)
@@ -3639,6 +3757,7 @@ func getLutzPortfolio(c *gin.Context) {
 			TotalReturn:    posReturn,
 			TotalReturnPct: posReturnPct,
 			CurrentValue:   posValue,
+			IsLive:         pos.IsLive,
 		})
 	}
 
@@ -3754,4 +3873,91 @@ func resetLutz(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Lutz reset completed",
 	})
+}
+
+// Update Lutz position with real trade data (Admin only)
+func updateLutzPosition(c *gin.Context) {
+	id := c.Param("id")
+
+	var position LutzPosition
+	if err := db.First(&position, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Position not found"})
+		return
+	}
+
+	var req struct {
+		Quantity float64 `json:"quantity"`
+		AvgPrice float64 `json:"avg_price"`
+		IsLive   bool    `json:"is_live"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	// Update position
+	position.Quantity = req.Quantity
+	position.AvgPrice = req.AvgPrice
+	position.IsLive = req.IsLive
+	db.Save(&position)
+
+	// Also update corresponding portfolio position
+	var portfolioPos PortfolioPosition
+	if err := db.Where("user_id = ? AND symbol = ?", LUTZ_USER_ID, position.Symbol).First(&portfolioPos).Error; err == nil {
+		portfolioPos.Quantity = &req.Quantity
+		portfolioPos.AvgPrice = req.AvgPrice
+		db.Save(&portfolioPos)
+	}
+
+	c.JSON(http.StatusOK, position)
+}
+
+// Update Lutz trade with real trade data (Admin only)
+func updateLutzTrade(c *gin.Context) {
+	id := c.Param("id")
+
+	var trade LutzTrade
+	if err := db.First(&trade, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Trade not found"})
+		return
+	}
+
+	var req struct {
+		Quantity float64 `json:"quantity"`
+		Price    float64 `json:"price"`
+		IsLive   bool    `json:"is_live"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	// Update trade
+	trade.Quantity = req.Quantity
+	trade.Price = req.Price
+	trade.IsLive = req.IsLive
+	db.Save(&trade)
+
+	// If BUY trade, update corresponding position
+	if trade.Action == "BUY" {
+		var position LutzPosition
+		if err := db.Where("symbol = ?", trade.Symbol).First(&position).Error; err == nil {
+			position.Quantity = req.Quantity
+			position.AvgPrice = req.Price
+			position.IsLive = req.IsLive
+			db.Save(&position)
+
+			// Also update portfolio position
+			var portfolioPos PortfolioPosition
+			if err := db.Where("user_id = ? AND symbol = ?", LUTZ_USER_ID, trade.Symbol).First(&portfolioPos).Error; err == nil {
+				portfolioPos.Quantity = &req.Quantity
+				portfolioPos.AvgPrice = req.Price
+				db.Save(&portfolioPos)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, trade)
 }

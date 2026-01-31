@@ -431,7 +431,7 @@ function LutzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
             <div className="mb-4 bg-gradient-to-r from-orange-500/20 to-red-500/20 rounded-xl border border-orange-500/30 p-5">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
-                  <div className="text-sm text-gray-400 mb-1">Portfolio Rendite</div>
+                  <div className="text-sm text-gray-400 mb-1">Portfolio Rendite (Simulation)</div>
                   <div className={`text-4xl md:text-5xl font-bold ${
                     performance.overall_return_pct >= 0 ? 'text-green-400' : 'text-red-400'
                   }`}>
@@ -457,6 +457,50 @@ function LutzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                 </div>
               </div>
             </div>
+
+            {/* Live Rendite Card */}
+            {(() => {
+              const livePositions = portfolio?.positions?.filter(p => p.is_live) || []
+              if (livePositions.length === 0) return null
+              const liveInvested = livePositions.reduce((sum, p) => sum + (p.avg_price * p.quantity), 0)
+              const liveValue = livePositions.reduce((sum, p) => sum + (p.current_price * p.quantity), 0)
+              const liveGain = liveValue - liveInvested
+              const liveReturnPct = liveInvested > 0 ? (liveGain / liveInvested) * 100 : 0
+              return (
+                <div className="mb-4 bg-gradient-to-r from-green-500/20 to-emerald-500/20 rounded-xl border border-green-500/30 p-5">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div>
+                      <div className="text-sm text-green-300 mb-1 flex items-center gap-2">
+                        <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                        Live Rendite ({livePositions.length} Position{livePositions.length !== 1 ? 'en' : ''})
+                      </div>
+                      <div className={`text-3xl md:text-4xl font-bold ${
+                        liveReturnPct >= 0 ? 'text-green-400' : 'text-red-400'
+                      }`}>
+                        {formatPercent(liveReturnPct)}
+                      </div>
+                      <div className="text-sm text-green-300/70 mt-2">
+                        {liveGain >= 0 ? '+' : ''}{formatPrice(liveGain)} Gewinn
+                      </div>
+                    </div>
+                    <div className="flex gap-6">
+                      <div className="text-center">
+                        <div className="text-xs text-green-400/70 mb-1">Investiert</div>
+                        <div className="text-lg font-bold text-green-300">
+                          {formatPrice(liveInvested)}
+                        </div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-xs text-green-400/70 mb-1">Aktueller Wert</div>
+                        <div className="text-lg font-bold text-white">
+                          {formatPrice(liveValue)}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )
+            })()}
 
             {/* Detailed Stats */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-6">
@@ -535,15 +579,23 @@ function LutzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
               </div>
             ) : (
               <div className="divide-y divide-dark-700 max-h-[400px] overflow-auto">
-                {portfolio?.positions?.map((pos) => {
+                {portfolio?.positions?.slice().sort((a, b) => (b.is_live ? 1 : 0) - (a.is_live ? 1 : 0)).map((pos) => {
                   const totalCost = (pos.avg_price || 0) * (pos.quantity || 1)
                   const totalValue = (pos.current_price || 0) * (pos.quantity || 1)
                   const gain = totalValue - totalCost
                   return (
-                    <div key={pos.id} className="p-4 hover:bg-dark-700/50 transition-colors">
+                    <div key={pos.id} className={`p-4 hover:bg-dark-700/50 transition-colors ${pos.is_live ? 'border-l-4 border-green-500 bg-green-500/5' : ''}`}>
                       <div className="flex justify-between items-start mb-2">
                         <div>
-                          <div className="font-semibold text-white">{pos.symbol}</div>
+                          <div className="font-semibold text-white flex items-center gap-2">
+                            {pos.symbol}
+                            {pos.is_live && (
+                              <span className="px-2 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded animate-pulse flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 bg-white rounded-full"></span>
+                                LIVE
+                              </span>
+                            )}
+                          </div>
                           <div className="text-xs text-gray-500 truncate max-w-[150px]">{pos.name}</div>
                         </div>
                         <div className="text-right">
@@ -602,8 +654,8 @@ function LutzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
               </div>
             ) : (
               <div className="divide-y divide-dark-700 max-h-[400px] overflow-auto">
-                {actions.map((action) => (
-                  <div key={action.id} className="p-4 hover:bg-dark-700/50 transition-colors">
+                {actions.slice().sort((a, b) => (b.is_live ? 1 : 0) - (a.is_live ? 1 : 0)).map((action) => (
+                  <div key={action.id} className={`p-4 hover:bg-dark-700/50 transition-colors ${action.is_live ? 'border-l-4 border-green-500 bg-green-500/5' : ''}`}>
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2">
                         <span className={`px-2 py-1 rounded text-xs font-bold ${
@@ -614,6 +666,12 @@ function LutzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                           {action.action}
                         </span>
                         <span className="font-semibold text-white">{action.symbol}</span>
+                        {action.is_live && (
+                          <span className="px-2 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span>
+                            LIVE
+                          </span>
+                        )}
                       </div>
                       <span className="text-gray-400 text-sm">{formatDate(action.signal_date)}</span>
                     </div>

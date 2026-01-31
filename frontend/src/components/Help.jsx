@@ -100,38 +100,53 @@ function Help() {
         },
         {
           subtitle: 'Live-Umrechnung',
-          text: 'Alle Preise werden automatisch mit dem aktuellen Wechselkurs umgerechnet. Die Umrechnung erfolgt in Echtzeit.'
+          text: 'Alle Preise werden mit Live-Wechselkursen umgerechnet. Ausländische Aktien (z.B. Xiaomi, Softbank) werden korrekt von ihrer Heimatwährung (HKD, JPY, etc.) konvertiert.'
+        },
+        {
+          subtitle: 'Unterstützte Börsen',
+          text: 'Europa (EUR), London (GBP), Schweiz (CHF), Hongkong (HKD), Japan (JPY), China (CNY), Korea (KRW), Taiwan (TWD), Indien (INR), Australien (AUD), Kanada (CAD).'
         }
       ]
     },
     {
       id: 'flipperbot-lab',
-      title: 'FlipperBot Lab (Beta)',
+      title: 'FlipperBot Lab (Defensiv)',
       icon: 'M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z',
       content: [
         {
           subtitle: 'Was ist FlipperBot Lab?',
-          text: 'FlipperBot Lab ist ein experimentelles Feature, das automatisiert nach den B-Xtrender Signalen handelt. Der Bot simuliert Trades seit dem 01.01.2026 und kauft bei BUY-Signal jeweils 1 Aktie zum historischen Kurs des Signal-Datums.'
+          text: 'FlipperBot Lab handelt automatisiert nach B-Xtrender Signalen im defensiven Modus. Der Bot simuliert Trades seit 01.01.2026 und kauft bei BUY-Signal 1 Aktie.'
         },
         {
-          subtitle: 'Wie funktioniert es?',
-          text: 'Der Bot prüft alle Aktien im Aktien Tracker. Bei einem BUY-Signal wird 1 Aktie zum Kurs des Signal-Tages gekauft (nur an Werktagen). Bei SELL/WAIT wird die Position verkauft. HOLD-Signale bedeuten, dass die Position gehalten wird.'
+          subtitle: 'LIVE Trades',
+          text: 'Trades können als LIVE markiert werden - diese zeigen echte ausgeführte Trades mit korrigierten Werten (Anzahl, Kaufpreis). LIVE-Positionen werden grün hervorgehoben und die Live-Rendite separat angezeigt.'
         },
         {
-          subtitle: 'Update & Trade',
-          text: 'Klicke auf "Update & Trade", um neue Signale zu verarbeiten. Der Bot prüft dann alle Aktien und führt entsprechende Käufe oder Verkäufe aus. Das Debug-Log zeigt detailliert, welche Entscheidungen getroffen wurden.'
-        },
-        {
-          subtitle: 'Portfolio Rendite',
-          text: 'Oben siehst du die Gesamtrendite des FlipperBot-Portfolios, bestehend aus investiertem Kapital, aktuellem Wert und der prozentualen Rendite. Die Statistiken zeigen Win Rate und Anzahl der Trades.'
+          subtitle: 'Rendite-Anzeige',
+          text: 'Die Simulations-Rendite zeigt die theoretische Performance. Darunter erscheint die Live-Rendite, die nur echte LIVE-Positionen berücksichtigt.'
         },
         {
           subtitle: 'Im Portfolio Vergleich',
-          text: 'Der FlipperBot erscheint auch im Portfolio Vergleich als eigener Nutzer. So kannst du sehen, wie gut die automatische Strategie im Vergleich zu anderen Nutzern abschneidet.'
+          text: 'FlipperBot erscheint im Portfolio Vergleich. LIVE-Positionen sind dort ebenfalls markiert.'
+        }
+      ]
+    },
+    {
+      id: 'lutz-lab',
+      title: 'Lutz Lab (Aggressiv)',
+      icon: 'M13 10V3L4 14h7v7l9-11h-7z',
+      content: [
+        {
+          subtitle: 'Was ist Lutz?',
+          text: 'Lutz ist der aggressive Trading-Bot. Er nutzt kürzere Zeiträume und reagiert schneller auf Signale als FlipperBot.'
         },
         {
-          subtitle: 'Reset',
-          text: 'Mit dem Reset-Button kannst du alle FlipperBot-Daten löschen und von vorne beginnen. Nützlich, wenn du die Strategie neu starten möchtest.'
+          subtitle: 'LIVE Trades',
+          text: 'Wie bei FlipperBot können Trades als LIVE markiert werden. Die Live-Rendite wird separat berechnet und angezeigt.'
+        },
+        {
+          subtitle: 'Im Portfolio Vergleich',
+          text: 'Lutz erscheint ebenfalls im Portfolio Vergleich mit LIVE-Markierung bei echten Positionen.'
         }
       ]
     },
@@ -142,11 +157,7 @@ function Help() {
       content: [
         {
           subtitle: 'Coming Soon',
-          text: 'FlipperBot ist unser kommender Premium-Service für automatisierte Trading-Signale mit Push-Benachrichtigungen, Risikomanagement und mehr.'
-        },
-        {
-          subtitle: 'Benachrichtigung',
-          text: 'Trage dich auf der FlipperBot-Seite in die Warteliste ein, um benachrichtigt zu werden, sobald der Service verfügbar ist.'
+          text: 'FlipperBot Premium ist ein kommender Service für automatisierte Trading-Signale mit Push-Benachrichtigungen.'
         }
       ]
     }

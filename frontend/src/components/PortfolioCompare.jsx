@@ -391,8 +391,13 @@ function PortfolioCompareContent({ token }) {
                                   </thead>
                                   <tbody>
                                     {portfolio.positions.map((pos, idx) => (
-                                      <tr key={idx} className="border-t border-dark-700/50">
-                                        <td className="py-2 font-medium text-white">{pos.symbol}</td>
+                                      <tr key={idx} className={`border-t border-dark-700/50 ${pos.is_live ? 'bg-green-500/5' : ''}`}>
+                                        <td className="py-2 font-medium text-white flex items-center gap-2">
+                                          {pos.symbol}
+                                          {pos.is_live && (
+                                            <span className="px-1.5 py-0.5 bg-green-500 text-white text-[9px] font-bold rounded">LIVE</span>
+                                          )}
+                                        </td>
                                         <td className="py-2 text-gray-400 text-sm truncate max-w-[200px]">{pos.name}</td>
                                         <td className="py-2 text-gray-300">{formatPrice(pos.avg_price_usd)}</td>
                                         <td className="py-2 text-white">{formatPrice(pos.current_price)}</td>
