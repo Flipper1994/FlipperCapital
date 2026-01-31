@@ -3,12 +3,20 @@ import { CURRENCY_SYMBOLS, fetchExchangeRates, getStockCurrency } from '../utils
 
 const CurrencyContext = createContext()
 
-// Fallback rates
+// Fallback rates (approximate values)
 const FALLBACK_RATES = {
   USD: 1,
   EUR: 0.92,
   GBP: 0.79,
-  CHF: 0.88
+  CHF: 0.88,
+  HKD: 7.8,
+  JPY: 150,
+  CNY: 7.2,
+  KRW: 1350,
+  TWD: 32,
+  INR: 83,
+  AUD: 1.55,
+  CAD: 1.36
 }
 
 function getStoredRates() {

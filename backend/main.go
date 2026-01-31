@@ -104,6 +104,16 @@ type Session struct {
 	Expiry  time.Time
 }
 
+// Persistent session in database
+type DBSession struct {
+	Token     string    `gorm:"primaryKey"`
+	UserID    uint      `gorm:"not null"`
+	IsAdmin   bool      `gorm:"default:false"`
+	Expiry    time.Time `gorm:"not null"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 type PortfolioPosition struct {
 	ID           uint       `json:"id" gorm:"primaryKey"`
 	UserID       uint       `json:"user_id" gorm:"index;not null"`
@@ -259,8 +269,74 @@ type LutzPosition struct {
 }
 
 var db *gorm.DB
-var sessions = make(map[string]Session)
+var sessions = make(map[string]Session) // Legacy in-memory cache, DB is source of truth
 var httpClient = &http.Client{Timeout: 10 * time.Second}
+
+// Session helper functions for persistent storage
+func createSession(userID uint, isAdmin bool) string {
+	token := uuid.New().String()
+	expiry := time.Now().Add(7 * 24 * time.Hour)
+
+	// Store in database
+	dbSession := DBSession{
+		Token:   token,
+		UserID:  userID,
+		IsAdmin: isAdmin,
+		Expiry:  expiry,
+	}
+	db.Create(&dbSession)
+
+	// Also cache in memory for performance
+	sessions[token] = Session{
+		UserID:  userID,
+		IsAdmin: isAdmin,
+		Expiry:  expiry,
+	}
+
+	return token
+}
+
+func getSession(token string) (*Session, bool) {
+	// Try memory cache first
+	if session, exists := sessions[token]; exists {
+		if time.Now().Before(session.Expiry) {
+			return &session, true
+		}
+		// Expired in cache, remove it
+		delete(sessions, token)
+	}
+
+	// Check database
+	var dbSession DBSession
+	if err := db.Where("token = ?", token).First(&dbSession).Error; err != nil {
+		return nil, false
+	}
+
+	if time.Now().After(dbSession.Expiry) {
+		// Expired, delete from DB
+		db.Delete(&dbSession)
+		return nil, false
+	}
+
+	// Extend session expiry on each use (rolling session)
+	newExpiry := time.Now().Add(7 * 24 * time.Hour)
+	db.Model(&dbSession).Update("expiry", newExpiry)
+
+	// Update memory cache
+	session := Session{
+		UserID:  dbSession.UserID,
+		IsAdmin: dbSession.IsAdmin,
+		Expiry:  newExpiry,
+	}
+	sessions[token] = session
+
+	return &session, true
+}
+
+func deleteSession(token string) {
+	delete(sessions, token)
+	db.Where("token = ?", token).Delete(&DBSession{})
+}
 
 func main() {
 	dbPath := os.Getenv("DB_PATH")
@@ -274,7 +350,10 @@ func main() {
 		panic("Failed to connect to database: " + err.Error())
 	}
 
-	db.AutoMigrate(&User{}, &Stock{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{})
+	db.AutoMigrate(&User{}, &Stock{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{}, &DBSession{})
+
+	// Clean up expired sessions on startup
+	db.Where("expiry < ?", time.Now()).Delete(&DBSession{})
 
 	// Ensure FlipperBot and Lutz users exist for portfolio comparison
 	ensureFlipperBotUser()
@@ -446,12 +525,7 @@ func register(c *gin.Context) {
 	}
 
 	// Create session
-	token := uuid.New().String()
-	sessions[token] = Session{
-		UserID:  user.ID,
-		IsAdmin: user.IsAdmin,
-		Expiry:  time.Now().Add(7 * 24 * time.Hour),
-	}
+	token := createSession(user.ID, user.IsAdmin)
 
 	c.JSON(http.StatusCreated, gin.H{
 		"success":  true,
@@ -488,12 +562,7 @@ func login(c *gin.Context) {
 		return
 	}
 
-	token := uuid.New().String()
-	sessions[token] = Session{
-		UserID:  user.ID,
-		IsAdmin: user.IsAdmin,
-		Expiry:  time.Now().Add(7 * 24 * time.Hour),
-	}
+	token := createSession(user.ID, user.IsAdmin)
 
 	// Update login count and last active
 	db.Model(&user).Updates(map[string]interface{}{
@@ -515,7 +584,7 @@ func logout(c *gin.Context) {
 	authHeader := c.GetHeader("Authorization")
 	if authHeader != "" {
 		token := strings.TrimPrefix(authHeader, "Bearer ")
-		delete(sessions, token)
+		deleteSession(token)
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
@@ -528,9 +597,8 @@ func verifyToken(c *gin.Context) {
 	}
 
 	token := strings.TrimPrefix(authHeader, "Bearer ")
-	session, exists := sessions[token]
-	if !exists || time.Now().After(session.Expiry) {
-		delete(sessions, token)
+	session, exists := getSession(token)
+	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"valid": false})
 		return
 	}
@@ -567,9 +635,8 @@ func authMiddleware() gin.HandlerFunc {
 		}
 
 		token := strings.TrimPrefix(authHeader, "Bearer ")
-		session, exists := sessions[token]
-		if !exists || time.Now().After(session.Expiry) {
-			delete(sessions, token)
+		session, exists := getSession(token)
+		if !exists {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
 			c.Abort()
 			return
@@ -589,8 +656,8 @@ func optionalAuthMiddleware() gin.HandlerFunc {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader != "" {
 			token := strings.TrimPrefix(authHeader, "Bearer ")
-			session, exists := sessions[token]
-			if exists && !time.Now().After(session.Expiry) {
+			session, exists := getSession(token)
+			if exists {
 				c.Set("userID", session.UserID)
 				c.Set("isAdmin", session.IsAdmin)
 				db.Model(&User{}).Where("id = ?", session.UserID).Update("last_active", time.Now())

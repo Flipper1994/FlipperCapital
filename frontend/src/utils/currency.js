@@ -1,10 +1,18 @@
 // Direct currency conversion utilities - no React context
-// Fallback rates if API fails
+// Fallback rates if API fails (approximate values)
 const FALLBACK_RATES = {
   USD: 1,
   EUR: 0.92,
   GBP: 0.79,
-  CHF: 0.88
+  CHF: 0.88,
+  HKD: 7.8,
+  JPY: 150,
+  CNY: 7.2,
+  KRW: 1350,
+  TWD: 32,
+  INR: 83,
+  AUD: 1.55,
+  CAD: 1.36
 }
 
 export const CURRENCY_SYMBOLS = {
@@ -35,6 +43,38 @@ export function getStockCurrency(symbol) {
   if (s.endsWith('.SW') || s.endsWith('.VX')) {
     return 'CHF'
   }
+  // Hong Kong - HKD
+  if (s.endsWith('.HK')) {
+    return 'HKD'
+  }
+  // Japan - JPY
+  if (s.endsWith('.T') || s.endsWith('.TYO')) {
+    return 'JPY'
+  }
+  // China - CNY
+  if (s.endsWith('.SS') || s.endsWith('.SZ')) {
+    return 'CNY'
+  }
+  // Korea - KRW
+  if (s.endsWith('.KS') || s.endsWith('.KQ')) {
+    return 'KRW'
+  }
+  // Taiwan - TWD
+  if (s.endsWith('.TW') || s.endsWith('.TWO')) {
+    return 'TWD'
+  }
+  // India - INR
+  if (s.endsWith('.NS') || s.endsWith('.BO')) {
+    return 'INR'
+  }
+  // Australia - AUD
+  if (s.endsWith('.AX')) {
+    return 'AUD'
+  }
+  // Canada - CAD
+  if (s.endsWith('.TO') || s.endsWith('.V')) {
+    return 'CAD'
+  }
   // US exchanges or no suffix = USD
   return null
 }
@@ -59,15 +99,42 @@ function getExchangeRates() {
 // Fetch live exchange rates from API
 export async function fetchExchangeRates() {
   try {
-    const res = await fetch('https://api.frankfurter.app/latest?from=USD&to=EUR,GBP,CHF')
-    if (!res.ok) throw new Error('API error')
+    // Frankfurter API for major currencies
+    const res = await fetch('https://api.frankfurter.app/latest?from=USD&to=EUR,GBP,CHF,JPY,AUD,CAD')
+    if (!res.ok) throw new Error('Frankfurter API error')
     const data = await res.json()
 
     const rates = {
       USD: 1,
       EUR: data.rates.EUR,
       GBP: data.rates.GBP,
-      CHF: data.rates.CHF
+      CHF: data.rates.CHF,
+      JPY: data.rates.JPY,
+      AUD: data.rates.AUD,
+      CAD: data.rates.CAD,
+      // Frankfurter doesn't have Asian currencies, use fallbacks initially
+      HKD: FALLBACK_RATES.HKD,
+      CNY: FALLBACK_RATES.CNY,
+      KRW: FALLBACK_RATES.KRW,
+      TWD: FALLBACK_RATES.TWD,
+      INR: FALLBACK_RATES.INR
+    }
+
+    // Try to get Asian currencies from exchangerate-api (free tier)
+    try {
+      const asianRes = await fetch('https://open.er-api.com/v6/latest/USD')
+      if (asianRes.ok) {
+        const asianData = await asianRes.json()
+        if (asianData.rates) {
+          if (asianData.rates.HKD) rates.HKD = asianData.rates.HKD
+          if (asianData.rates.CNY) rates.CNY = asianData.rates.CNY
+          if (asianData.rates.KRW) rates.KRW = asianData.rates.KRW
+          if (asianData.rates.TWD) rates.TWD = asianData.rates.TWD
+          if (asianData.rates.INR) rates.INR = asianData.rates.INR
+        }
+      }
+    } catch {
+      // Use fallbacks for Asian currencies
     }
 
     // Cache rates with timestamp
