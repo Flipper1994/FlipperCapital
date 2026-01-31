@@ -1066,9 +1066,17 @@ func deleteStock(c *gin.Context) {
 // Cached rates from frankfurter.app API
 var exchangeRatesFromUSD = map[string]float64{
 	"USD": 1.0,
-	"EUR": 0.92, // fallback
-	"GBP": 0.79, // fallback
-	"CHF": 0.88, // fallback
+	"EUR": 0.92,  // fallback
+	"GBP": 0.79,  // fallback
+	"CHF": 0.88,  // fallback
+	"HKD": 7.8,   // fallback
+	"JPY": 150.0, // fallback
+	"CNY": 7.2,   // fallback
+	"KRW": 1350,  // fallback
+	"TWD": 32.0,  // fallback
+	"INR": 83.0,  // fallback
+	"AUD": 1.55,  // fallback
+	"CAD": 1.36,  // fallback
 }
 var exchangeRatesLastFetched time.Time
 var exchangeRatesMutex = &sync.Mutex{}
@@ -1080,7 +1088,7 @@ type FrankfurterResponse struct {
 	Rates map[string]float64 `json:"rates"`
 }
 
-// Fetch live exchange rates from frankfurter.app (same API as frontend)
+// Fetch live exchange rates from multiple APIs
 func fetchLiveExchangeRates() {
 	exchangeRatesMutex.Lock()
 	defer exchangeRatesMutex.Unlock()
@@ -1090,11 +1098,43 @@ func fetchLiveExchangeRates() {
 		return
 	}
 
-	apiURL := "https://api.frankfurter.app/latest?from=USD&to=EUR,GBP,CHF"
+	// Try open.er-api.com first (has all currencies)
+	apiURL := "https://open.er-api.com/v6/latest/USD"
 	req, _ := http.NewRequest("GET", apiURL, nil)
 	req.Header.Set("User-Agent", "FlipperCapital/1.0")
 
 	resp, err := httpClient.Do(req)
+	if err == nil && resp.StatusCode == 200 {
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+
+		var erApiResp struct {
+			Rates map[string]float64 `json:"rates"`
+		}
+		if err := json.Unmarshal(body, &erApiResp); err == nil && erApiResp.Rates != nil {
+			// Update all rates we need
+			currencies := []string{"EUR", "GBP", "CHF", "HKD", "JPY", "CNY", "KRW", "TWD", "INR", "AUD", "CAD"}
+			for _, curr := range currencies {
+				if rate, ok := erApiResp.Rates[curr]; ok {
+					exchangeRatesFromUSD[curr] = rate
+				}
+			}
+			exchangeRatesLastFetched = time.Now()
+			fmt.Printf("Updated exchange rates: EUR=%.4f, HKD=%.4f, JPY=%.4f\n",
+				exchangeRatesFromUSD["EUR"], exchangeRatesFromUSD["HKD"], exchangeRatesFromUSD["JPY"])
+			return
+		}
+	}
+	if resp != nil {
+		resp.Body.Close()
+	}
+
+	// Fallback to frankfurter.app for EUR, GBP, CHF
+	apiURL = "https://api.frankfurter.app/latest?from=USD&to=EUR,GBP,CHF,JPY,AUD,CAD"
+	req, _ = http.NewRequest("GET", apiURL, nil)
+	req.Header.Set("User-Agent", "FlipperCapital/1.0")
+
+	resp, err = httpClient.Do(req)
 	if err != nil {
 		fmt.Println("Failed to fetch exchange rates:", err)
 		return
@@ -1152,6 +1192,85 @@ func convertToUSD(amount float64, fromCurrency string) float64 {
 	return amount // Default to USD if unknown
 }
 
+// Detect stock's native trading currency based on exchange suffix
+func getStockCurrency(symbol string) string {
+	s := strings.ToUpper(symbol)
+
+	// European exchanges - EUR
+	if strings.HasSuffix(s, ".PA") || strings.HasSuffix(s, ".DE") || strings.HasSuffix(s, ".F") ||
+		strings.HasSuffix(s, ".AS") || strings.HasSuffix(s, ".BR") || strings.HasSuffix(s, ".MI") ||
+		strings.HasSuffix(s, ".MC") || strings.HasSuffix(s, ".VI") || strings.HasSuffix(s, ".HE") ||
+		strings.HasSuffix(s, ".LS") || strings.HasSuffix(s, ".IR") {
+		return "EUR"
+	}
+	// London - GBP
+	if strings.HasSuffix(s, ".L") {
+		return "GBP"
+	}
+	// Swiss - CHF
+	if strings.HasSuffix(s, ".SW") || strings.HasSuffix(s, ".VX") {
+		return "CHF"
+	}
+	// Hong Kong - HKD
+	if strings.HasSuffix(s, ".HK") {
+		return "HKD"
+	}
+	// Japan - JPY
+	if strings.HasSuffix(s, ".T") || strings.HasSuffix(s, ".TYO") {
+		return "JPY"
+	}
+	// China - CNY
+	if strings.HasSuffix(s, ".SS") || strings.HasSuffix(s, ".SZ") {
+		return "CNY"
+	}
+	// Korea - KRW
+	if strings.HasSuffix(s, ".KS") || strings.HasSuffix(s, ".KQ") {
+		return "KRW"
+	}
+	// Taiwan - TWD
+	if strings.HasSuffix(s, ".TW") || strings.HasSuffix(s, ".TWO") {
+		return "TWD"
+	}
+	// India - INR
+	if strings.HasSuffix(s, ".NS") || strings.HasSuffix(s, ".BO") {
+		return "INR"
+	}
+	// Australia - AUD
+	if strings.HasSuffix(s, ".AX") {
+		return "AUD"
+	}
+	// Canada - CAD
+	if strings.HasSuffix(s, ".TO") || strings.HasSuffix(s, ".V") {
+		return "CAD"
+	}
+	// US exchanges or no suffix = USD
+	return "USD"
+}
+
+// Convert stock price from its native currency to target currency
+func convertStockPrice(price float64, symbol string, toCurrency string) float64 {
+	stockCurrency := getStockCurrency(symbol)
+
+	if stockCurrency == toCurrency {
+		return price // No conversion needed
+	}
+
+	// First convert to USD, then to target currency
+	priceInUSD := price
+	if stockCurrency != "USD" {
+		stockRate := getExchangeRate(stockCurrency)
+		if stockRate > 0 {
+			priceInUSD = price / stockRate
+		}
+	}
+
+	// Then convert from USD to target
+	if toCurrency == "USD" {
+		return priceInUSD
+	}
+	return convertFromUSD(priceInUSD, toCurrency)
+}
+
 // Portfolio functions
 func getPortfolio(c *gin.Context) {
 	userID, _ := c.Get("userID")
@@ -1197,9 +1316,9 @@ func getPortfolio(c *gin.Context) {
 			result[i].Change = q.Change
 			result[i].ChangePercent = q.ChangePercent
 
-			// Calculate returns by converting current USD price to user's currency
-			// This ensures comparison is in the same currency as the user entered their purchase price
-			currentPriceInUserCurrency := convertFromUSD(q.Price, currency)
+			// Calculate returns by converting current stock price to user's currency
+			// Stock price is in the stock's native currency (e.g., HKD for .HK stocks)
+			currentPriceInUserCurrency := convertStockPrice(q.Price, pos.Symbol, currency)
 
 			if pos.AvgPrice > 0 {
 				// Return in user's currency terms
@@ -1207,10 +1326,10 @@ func getPortfolio(c *gin.Context) {
 				result[i].TotalReturnPct = ((currentPriceInUserCurrency - pos.AvgPrice) / pos.AvgPrice) * 100
 			}
 
-			// Calculate values if quantity is set (in USD)
+			// Calculate values if quantity is set (convert to user's currency)
 			if pos.Quantity != nil && *pos.Quantity > 0 {
-				result[i].CurrentValue = q.Price * (*pos.Quantity)
-				result[i].InvestedValue = avgPriceUSD * (*pos.Quantity)
+				result[i].CurrentValue = currentPriceInUserCurrency * (*pos.Quantity)
+				result[i].InvestedValue = pos.AvgPrice * (*pos.Quantity)
 			}
 		}
 	}
@@ -1464,8 +1583,8 @@ func getPortfolioPerformance(c *gin.Context) {
 				if currency == "" {
 					currency = "EUR"
 				}
-				// Convert current USD price to user's currency for proper comparison
-				currentPriceInUserCurrency := convertFromUSD(q.Price, currency)
+				// Convert current stock price to user's currency for proper comparison
+				currentPriceInUserCurrency := convertStockPrice(q.Price, pos.Symbol, currency)
 
 				// Calculate in user's currency
 				totalValue += currentPriceInUserCurrency * (*pos.Quantity)
@@ -1481,8 +1600,8 @@ func getPortfolioPerformance(c *gin.Context) {
 				if currency == "" {
 					currency = "EUR"
 				}
-				// Convert current USD price to user's currency for proper comparison
-				currentPriceInUserCurrency := convertFromUSD(q.Price, currency)
+				// Convert current stock price to user's currency for proper comparison
+				currentPriceInUserCurrency := convertStockPrice(q.Price, pos.Symbol, currency)
 
 				returnPct := ((currentPriceInUserCurrency - pos.AvgPrice) / pos.AvgPrice) * 100
 				totalReturnPct += returnPct
@@ -1580,8 +1699,8 @@ func calculatePeriodChanges(positions []PortfolioPosition, currentQuotes map[str
 			if pos.PurchaseDate != nil && pos.PurchaseDate.After(periodStartDate) {
 				// Position was purchased during this period - calculate from purchase date
 				if q, ok := currentQuotes[pos.Symbol]; ok && q.Price > 0 {
-					// Convert current USD price to user's currency for proper comparison
-					currentPriceInUserCurrency := convertFromUSD(q.Price, currency)
+					// Convert current stock price to user's currency for proper comparison
+					currentPriceInUserCurrency := convertStockPrice(q.Price, pos.Symbol, currency)
 					if pos.AvgPrice > 0 {
 						change := ((currentPriceInUserCurrency - pos.AvgPrice) / pos.AvgPrice) * 100
 						totalChange += change
@@ -1739,8 +1858,8 @@ func getAllPortfoliosForComparison(c *gin.Context) {
 			if q, ok := quotes[pos.Symbol]; ok {
 				summary.CurrentPrice = q.Price
 				summary.ChangePercent = q.ChangePercent
-				// Convert current USD price to user's currency for proper return calculation
-				currentPriceInUserCurrency := convertFromUSD(q.Price, currency)
+				// Convert current stock price to user's currency for proper return calculation
+				currentPriceInUserCurrency := convertStockPrice(q.Price, pos.Symbol, currency)
 				if pos.AvgPrice > 0 {
 					summary.TotalReturnPct = ((currentPriceInUserCurrency - pos.AvgPrice) / pos.AvgPrice) * 100
 					// Calculate weighted values for portfolio return
@@ -1931,12 +2050,12 @@ func calculatePortfolioHistoryForUser(userID uint, period string) []map[string]i
 			for _, pos := range positions {
 				if pos.Quantity != nil && *pos.Quantity > 0 {
 					if price, ok := lastPrices[pos.Symbol]; ok {
-						// Convert USD price to user's currency
+						// Convert stock price to user's currency
 						currency := pos.Currency
 						if currency == "" {
 							currency = "EUR"
 						}
-						priceInUserCurrency := convertFromUSD(price, currency)
+						priceInUserCurrency := convertStockPrice(price, pos.Symbol, currency)
 						portfolioValue += priceInUserCurrency * (*pos.Quantity)
 					}
 				}
@@ -1949,8 +2068,8 @@ func calculatePortfolioHistoryForUser(userID uint, period string) []map[string]i
 					if currency == "" {
 						currency = "EUR"
 					}
-					// Convert USD price to user's currency for proper comparison
-					priceInUserCurrency := convertFromUSD(price, currency)
+					// Convert stock price to user's currency for proper comparison
+					priceInUserCurrency := convertStockPrice(price, pos.Symbol, currency)
 					if pos.AvgPrice > 0 {
 						// Value = initial investment * (current price / purchase price)
 						portfolioValue += 1000 * (priceInUserCurrency / pos.AvgPrice)

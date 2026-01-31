@@ -541,7 +541,7 @@ function PortfolioContent({ token }) {
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">Aktuell</div>
-                        <div className="text-white">{formatPrice(pos.current_price)}</div>
+                        <div className="text-white">{formatPrice(pos.current_price, pos.symbol)}</div>
                       </div>
                       <div>
                         <div className="text-xs text-gray-500">Rendite</div>
@@ -594,7 +594,7 @@ function PortfolioContent({ token }) {
                           <div className="text-gray-400">{pos.quantity || '-'}</div>
                         </td>
                         <td className="py-3 pr-4">
-                          <div className="text-white">{formatPrice(pos.current_price)}</div>
+                          <div className="text-white">{formatPrice(pos.current_price, pos.symbol)}</div>
                           <div className={`text-xs ${pos.change_percent >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                             {formatPercent(pos.change_percent)} heute
                           </div>
@@ -730,7 +730,7 @@ function PortfolioContent({ token }) {
                 </div>
                 <div>
                   <span className="text-gray-500">Aktuell:</span>
-                  <span className="text-white ml-2">{formatPrice(sellingPosition.current_price)}</span>
+                  <span className="text-white ml-2">{formatPrice(sellingPosition.current_price, sellingPosition.symbol)}</span>
                 </div>
               </div>
             </div>

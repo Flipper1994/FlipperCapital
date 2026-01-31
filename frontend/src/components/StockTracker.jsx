@@ -182,6 +182,9 @@ function StockTracker() {
       if (signalFilter === 'SELL_WAIT') {
         return s.monthSignal === 'SELL' || s.monthSignal === 'WAIT'
       }
+      if (signalFilter === 'CHANGED') {
+        return s.signalChanged
+      }
       return s.monthSignal === signalFilter
     }
     return true
@@ -411,7 +414,12 @@ function StockTracker() {
                   {stocksWithMonthSignals.filter(s => s.monthSignal === 'SELL' || s.monthSignal === 'WAIT').length}
                 </div>
               </div>
-              <div className="bg-dark-800 rounded-xl border border-purple-500/30 p-4">
+              <div
+                onClick={() => toggleFilter('CHANGED')}
+                className={`bg-dark-800 rounded-xl border p-4 cursor-pointer transition-all ${
+                  signalFilter === 'CHANGED' ? 'border-purple-500 ring-1 ring-purple-500' : 'border-purple-500/30 hover:border-purple-500/50'
+                }`}
+              >
                 <div className="text-xs text-gray-500 mb-1">Änderungen</div>
                 <div className="text-2xl font-bold text-purple-400">
                   {signalChanges.length}
@@ -426,9 +434,10 @@ function StockTracker() {
                 <span className={`px-2 py-1 text-xs font-bold rounded ${
                   signalFilter === 'BUY' ? 'bg-green-500/20 text-green-400' :
                   signalFilter === 'HOLD' ? 'bg-blue-500/20 text-blue-400' :
+                  signalFilter === 'CHANGED' ? 'bg-purple-500/20 text-purple-400' :
                   'bg-red-500/20 text-red-400'
                 }`}>
-                  {signalFilter === 'SELL_WAIT' ? 'SELL / WAIT' : signalFilter}
+                  {signalFilter === 'SELL_WAIT' ? 'SELL / WAIT' : signalFilter === 'CHANGED' ? 'Änderungen' : signalFilter}
                 </span>
                 <span className="text-gray-500 text-sm">({filteredStocks.length} Aktien)</span>
                 <button
