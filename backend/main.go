@@ -677,66 +677,42 @@ func fetchQuotes(symbols []string) map[string]QuoteData {
 		return result
 	}
 
-	symbolsStr := strings.Join(symbols, ",")
+	// Yahoo limits to 20 symbols per request - batch them
+	const batchSize = 20
+	for i := 0; i < len(symbols); i += batchSize {
+		end := i + batchSize
+		if end > len(symbols) {
+			end = len(symbols)
+		}
+		batch := symbols[i:end]
 
-	// Try v7 quote API first (has sector and market cap)
-	apiURL := fmt.Sprintf("https://query2.finance.yahoo.com/v7/finance/quote?symbols=%s", url.QueryEscape(symbolsStr))
-	req, _ := http.NewRequest("GET", apiURL, nil)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+		// URL encode each symbol individually, then join with commas
+		encodedSymbols := make([]string, len(batch))
+		for j, s := range batch {
+			encodedSymbols[j] = url.QueryEscape(s)
+		}
+		symbolsStr := strings.Join(encodedSymbols, ",")
 
-	resp, err := httpClient.Do(req)
-	if err == nil && resp.StatusCode == 200 {
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
+		// Use spark API (v7 quote API is now blocked by Yahoo)
+		sparkURL := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/spark?symbols=%s&range=1d&interval=1d", symbolsStr)
+		batchResult := trySparkAPI(sparkURL)
 
-		var yahooResp YahooQuoteResponse
-		if err := json.Unmarshal(body, &yahooResp); err == nil && len(yahooResp.QuoteResponse.Result) > 0 {
-			for _, q := range yahooResp.QuoteResponse.Result {
-				result[q.Symbol] = QuoteData{
-					Price:         q.RegularMarketPrice,
-					Change:        q.RegularMarketChange,
-					ChangePercent: q.RegularMarketChangePercent,
-					PrevClose:     q.RegularMarketPreviousClose,
-					Sector:        q.Sector,
-					MarketCap:     q.MarketCap,
-				}
-			}
-			return result
+		// Merge results
+		for k, v := range batchResult {
+			result[k] = v
 		}
 	}
-	if resp != nil {
-		resp.Body.Close()
-	}
 
-	// Fallback to spark API
-	sparkURL := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/spark?symbols=%s&range=1d&interval=1d", url.QueryEscape(symbolsStr))
-	return trySparkAPI(sparkURL)
+	return result
 }
 
-type SparkQuote struct {
-	Symbol   string `json:"symbol"`
-	Response []struct {
-		Meta struct {
-			RegularMarketPrice float64 `json:"regularMarketPrice"`
-			ChartPreviousClose float64 `json:"chartPreviousClose"`
-			PreviousClose      float64 `json:"previousClose"`
-		} `json:"meta"`
-		Timestamp  []int64 `json:"timestamp"`
-		Indicators struct {
-			Quote []struct {
-				Close []float64 `json:"close"`
-			} `json:"quote"`
-		} `json:"indicators"`
-	} `json:"response"`
-}
-
-type SparkAPIResponse struct {
-	Spark struct {
-		Result []SparkQuote `json:"result"`
-		Error  interface{}  `json:"error"`
-	} `json:"spark"`
+// Simple spark response format: {"SYMBOL": {"close": [...], "chartPreviousClose": ...}}
+type SimpleSparkData struct {
+	Symbol             string    `json:"symbol"`
+	Timestamp          []int64   `json:"timestamp"`
+	Close              []float64 `json:"close"`
+	ChartPreviousClose float64   `json:"chartPreviousClose"`
+	PreviousClose      *float64  `json:"previousClose"`
 }
 
 func trySparkAPI(apiURL string) map[string]QuoteData {
@@ -744,41 +720,40 @@ func trySparkAPI(apiURL string) map[string]QuoteData {
 
 	req, _ := http.NewRequest("GET", apiURL, nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
 	resp, err := httpClient.Do(req)
-	if err != nil || resp.StatusCode != 200 {
+	if err != nil {
+		return result
+	}
+	if resp.StatusCode != 200 {
+		resp.Body.Close()
 		return result
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 
-	var sparkResp SparkAPIResponse
+	// Parse as map of symbol -> data
+	var sparkResp map[string]SimpleSparkData
 	if err := json.Unmarshal(body, &sparkResp); err != nil {
 		return result
 	}
 
-	for _, quote := range sparkResp.Spark.Result {
-		if len(quote.Response) > 0 {
-			meta := quote.Response[0].Meta
-			price := meta.RegularMarketPrice
-			prevClose := meta.ChartPreviousClose
-			if prevClose == 0 {
-				prevClose = meta.PreviousClose
-			}
-			// Fallback to last close from indicators if meta price is 0
-			if price == 0 && len(quote.Response[0].Indicators.Quote) > 0 {
-				closes := quote.Response[0].Indicators.Quote[0].Close
-				if len(closes) > 0 {
-					price = closes[len(closes)-1]
-				}
+	for symbol, data := range sparkResp {
+		if len(data.Close) > 0 {
+			price := data.Close[len(data.Close)-1]
+			prevClose := data.ChartPreviousClose
+			if prevClose == 0 && data.PreviousClose != nil {
+				prevClose = *data.PreviousClose
 			}
 			change := price - prevClose
 			changePercent := 0.0
 			if prevClose > 0 {
 				changePercent = (change / prevClose) * 100
 			}
-			result[quote.Symbol] = QuoteData{
+			result[symbol] = QuoteData{
 				Price:         price,
 				Change:        change,
 				ChangePercent: changePercent,

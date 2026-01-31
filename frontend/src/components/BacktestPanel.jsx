@@ -79,7 +79,7 @@ function BacktestPanel({ trades, metrics }) {
             </tr>
           </thead>
           <tbody>
-            {trades.map((trade, idx) => (
+            {[...trades].reverse().map((trade, idx) => (
               <tr key={idx} className="border-b border-dark-700/50 last:border-0">
                 <td className="py-1.5 pr-1">
                   <div className="text-gray-400">{formatDate(trade.entryDate)}</div>

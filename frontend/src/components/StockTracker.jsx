@@ -17,52 +17,52 @@ function generateMonthOptions() {
 }
 
 // Calculate signal for a specific month based on trades
+// Returns signal state AT THE END of the given month
 function calculateSignalForMonth(trades, targetYear, targetMonth, isAggressive) {
-  if (!trades || trades.length === 0) return { signal: 'WAIT', bars: 0 }
+  if (!trades || trades.length === 0) return { signal: 'WAIT', bars: 0, trade: null }
 
-  const targetDate = new Date(targetYear, targetMonth, 1)
-  const nextMonth = new Date(targetYear, targetMonth + 1, 1)
+  const monthStart = new Date(targetYear, targetMonth, 1)
+  const monthEnd = new Date(targetYear, targetMonth + 1, 0, 23, 59, 59) // Last day of month
 
-  // Find trades that affect this month
-  let hasOpenPosition = false
-  let recentBuy = false
-  let recentSell = false
+  let buyTrade = null  // Trade opened this month (and still open at end)
+  let sellTrade = null // Trade closed this month
+  let holdTrade = null // Trade that was open before this month and still open at end
 
   for (const trade of trades) {
     const entryDate = trade.entryDate ? new Date(trade.entryDate * 1000) : null
     const exitDate = trade.exitDate ? new Date(trade.exitDate * 1000) : null
 
-    // Check if position was open during this month
-    if (entryDate && entryDate < nextMonth) {
-      if (!exitDate || exitDate >= targetDate) {
-        hasOpenPosition = true
-      }
-      // Check for recent buy (this month or last month)
-      const entryMonth = entryDate.getMonth()
-      const entryYear = entryDate.getFullYear()
-      if ((entryMonth === targetMonth && entryYear === targetYear) ||
-          (entryMonth === (targetMonth === 0 ? 11 : targetMonth - 1) &&
-           entryYear === (targetMonth === 0 ? targetYear - 1 : targetYear))) {
-        if (!exitDate || exitDate >= targetDate) recentBuy = true
-      }
-    }
+    if (!entryDate) continue
 
-    // Check for recent sell
-    if (exitDate) {
-      const exitMonth = exitDate.getMonth()
-      const exitYear = exitDate.getFullYear()
-      if ((exitMonth === targetMonth && exitYear === targetYear) ||
-          (exitMonth === (targetMonth === 0 ? 11 : targetMonth - 1) &&
-           exitYear === (targetMonth === 0 ? targetYear - 1 : targetYear))) {
-        recentSell = true
-      }
+    // Position is open at end of month if: no exit OR exit is after month end
+    const openAtMonthEnd = !exitDate || exitDate > monthEnd
+
+    // Check if SELL happened IN this month (exit date is within month)
+    if (exitDate && exitDate >= monthStart && exitDate <= monthEnd) {
+      sellTrade = trade
+    }
+    // Check if BUY happened IN this month (entry date is within month, still open at end)
+    else if (entryDate >= monthStart && entryDate <= monthEnd && openAtMonthEnd) {
+      buyTrade = trade
+    }
+    // Check if position was open BEFORE this month started AND still open at end of month
+    // This means: entry before month start, AND (no exit OR exit after month end)
+    else if (entryDate < monthStart && openAtMonthEnd) {
+      holdTrade = trade
     }
   }
 
-  if (recentBuy && hasOpenPosition) return { signal: 'BUY', bars: 1 }
-  if (recentSell && !hasOpenPosition) return { signal: 'SELL', bars: 1 }
-  if (hasOpenPosition) return { signal: 'HOLD', bars: 1 }
-  return { signal: 'WAIT', bars: 1 }
+  // Signal priority: SELL > BUY > HOLD > WAIT
+  if (sellTrade) {
+    return { signal: 'SELL', bars: 1, trade: sellTrade }
+  }
+  if (buyTrade) {
+    return { signal: 'BUY', bars: 1, trade: buyTrade }
+  }
+  if (holdTrade) {
+    return { signal: 'HOLD', bars: 1, trade: holdTrade }
+  }
+  return { signal: 'WAIT', bars: 1, trade: null }
 }
 
 function StockTracker() {
@@ -72,6 +72,7 @@ function StockTracker() {
   const [sortDir, setSortDir] = useState('desc')
   const [selectedStock, setSelectedStock] = useState(null)
   const [signalFilter, setSignalFilter] = useState(null)
+  const [searchQuery, setSearchQuery] = useState('')
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date()
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
@@ -124,6 +125,7 @@ function StockTracker() {
         monthSignal: currentSignal.signal,
         prevMonthSignal: prevSignal.signal,
         signalChanged,
+        currentTrade: currentSignal.trade, // Include trade data for SELL signals
         displaySignal: signalChanged
           ? `${prevSignal.signal} → ${currentSignal.signal}`
           : currentSignal.signal
@@ -131,31 +133,30 @@ function StockTracker() {
     })
   }, [stocks, selectedMonth, isAggressive])
 
+  // Signal priority for sorting
+  const signalPriority = { 'BUY': 0, 'SELL': 1, 'HOLD': 2, 'WAIT': 3 }
+
   // Get all signal changes for the panel
   const signalChanges = useMemo(() => {
     return stocksWithMonthSignals
       .filter(s => s.signalChanged)
       .map(s => {
-        // If it was a SELL signal, find the related trade
+        // Use the trade data from calculateSignalForMonth if available
         let tradeInfo = null
-        if (s.monthSignal === 'SELL' && s.trades) {
-          const [year, month] = selectedMonth.split('-').map(Number)
-          const trade = s.trades.find(t => {
-            if (!t.exitDate) return false
-            const exitDate = new Date(t.exitDate * 1000)
-            return exitDate.getMonth() === month - 1 && exitDate.getFullYear() === year
-          })
-          if (trade) {
-            tradeInfo = {
-              buyPrice: trade.entryPrice,
-              sellPrice: trade.exitPrice,
-              returnPct: trade.returnPct
-            }
+        if (s.currentTrade) {
+          tradeInfo = {
+            buyPrice: s.currentTrade.entryPrice,
+            sellPrice: s.currentTrade.exitPrice,
+            buyDate: s.currentTrade.entryDate,
+            sellDate: s.currentTrade.exitDate,
+            returnPct: s.currentTrade.returnPct,
+            isOpen: s.currentTrade.isOpen || !s.currentTrade.exitDate
           }
         }
         return { ...s, tradeInfo }
       })
-  }, [stocksWithMonthSignals, selectedMonth])
+      .sort((a, b) => signalPriority[a.monthSignal] - signalPriority[b.monthSignal])
+  }, [stocksWithMonthSignals])
 
   const handleSort = (field) => {
     if (sortField === field) {
@@ -166,17 +167,35 @@ function StockTracker() {
     }
   }
 
-  // Filter stocks by signal if filter is active
-  const filteredStocks = signalFilter
-    ? stocksWithMonthSignals.filter(s => {
-        if (signalFilter === 'SELL_WAIT') {
-          return s.monthSignal === 'SELL' || s.monthSignal === 'WAIT'
-        }
-        return s.monthSignal === signalFilter
-      })
-    : stocksWithMonthSignals
+  // Filter stocks by signal and search query
+  const filteredStocks = stocksWithMonthSignals.filter(s => {
+    // Search filter
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase()
+      if (!s.symbol.toLowerCase().includes(query) && !s.name?.toLowerCase().includes(query)) {
+        return false
+      }
+    }
+    // Signal filter
+    if (signalFilter) {
+      if (signalFilter === 'SELL_WAIT') {
+        return s.monthSignal === 'SELL' || s.monthSignal === 'WAIT'
+      }
+      return s.monthSignal === signalFilter
+    }
+    return true
+  })
 
   const sortedStocks = [...filteredStocks].sort((a, b) => {
+    // Default: sort by signal priority first, then by the selected field
+    if (sortField === 'updated_at' && sortDir === 'desc') {
+      // Default view: sort by signal priority
+      const priorityDiff = signalPriority[a.monthSignal] - signalPriority[b.monthSignal]
+      if (priorityDiff !== 0) return priorityDiff
+      // Then by symbol
+      return a.symbol.localeCompare(b.symbol)
+    }
+
     let aVal = a[sortField]
     let bVal = b[sortField]
 
@@ -302,6 +321,30 @@ function StockTracker() {
             BX Trender Signale für {selectedMonthLabel}
             {isAggressive && <span className="text-orange-400"> (Aggressive Signale)</span>}
           </p>
+
+          {/* Search Input */}
+          <div className="mt-3 relative">
+            <input
+              type="text"
+              placeholder="Suche nach Ticker oder Name..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full md:w-80 px-3 py-2 pl-9 bg-dark-700 border border-dark-600 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-accent-500"
+            />
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
 
         {loading ? (
@@ -413,7 +456,7 @@ function StockTracker() {
                       <div className="text-xs text-gray-500 truncate max-w-[180px]">{stock.name}</div>
                     </div>
                     {stock.signalChanged ? (
-                      <span className="px-2 py-1 text-xs font-bold rounded border border-purple-500/50 bg-purple-500/10 text-purple-300">
+                      <span className={`px-2 py-1 text-xs font-bold rounded border ${getSignalStyle(stock.monthSignal)}`}>
                         {stock.prevMonthSignal} → {stock.monthSignal}
                       </span>
                     ) : (
@@ -515,7 +558,7 @@ function StockTracker() {
                         <td className="p-4 text-gray-400 text-sm truncate max-w-[200px]">{stock.name}</td>
                         <td className="p-4">
                           {stock.signalChanged ? (
-                            <span className="px-2 py-1 text-xs font-bold rounded border border-purple-500/50 bg-purple-500/10 text-purple-300">
+                            <span className={`px-2 py-1 text-xs font-bold rounded border ${getSignalStyle(stock.monthSignal)}`}>
                               {stock.prevMonthSignal} → {stock.monthSignal}
                             </span>
                           ) : (
@@ -587,20 +630,33 @@ function StockTracker() {
                           </td>
                           <td className="p-3">
                             {stock.tradeInfo ? (
-                              <div className="text-xs">
-                                <span className="text-green-400">Kauf: ${stock.tradeInfo.buyPrice?.toFixed(2)}</span>
-                                <span className="mx-1 text-gray-500">→</span>
-                                <span className="text-red-400">Verkauf: ${stock.tradeInfo.sellPrice?.toFixed(2)}</span>
+                              <div className="text-xs space-y-1">
+                                <div>
+                                  <span className="text-green-400">Kauf: ${stock.tradeInfo.buyPrice?.toFixed(2)}</span>
+                                  <span className="text-gray-500 ml-1">({formatTradeDate(stock.tradeInfo.buyDate)})</span>
+                                </div>
+                                {stock.tradeInfo.isOpen ? (
+                                  <div>
+                                    <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 text-xs">OPEN</span>
+                                  </div>
+                                ) : stock.tradeInfo.sellPrice ? (
+                                  <div>
+                                    <span className="text-red-400">Verkauf: ${stock.tradeInfo.sellPrice?.toFixed(2)}</span>
+                                    <span className="text-gray-500 ml-1">({formatTradeDate(stock.tradeInfo.sellDate)})</span>
+                                  </div>
+                                ) : null}
                               </div>
                             ) : (
                               <span className="text-gray-500 text-xs">-</span>
                             )}
                           </td>
                           <td className="p-3 text-right">
-                            {stock.tradeInfo ? (
+                            {stock.tradeInfo && !stock.tradeInfo.isOpen && stock.tradeInfo.returnPct !== undefined ? (
                               <span className={`font-bold ${stock.tradeInfo.returnPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                                 {formatPercent(stock.tradeInfo.returnPct)}
                               </span>
+                            ) : stock.tradeInfo?.isOpen ? (
+                              <span className="text-blue-400 text-xs">laufend</span>
                             ) : (
                               <span className="text-gray-500">-</span>
                             )}
@@ -695,9 +751,9 @@ function StockTracker() {
                       </tr>
                     </thead>
                     <tbody>
-                      {selectedStock.trades.map((trade, idx) => (
+                      {[...selectedStock.trades].reverse().map((trade, idx) => (
                         <tr key={idx} className="border-b border-dark-700/50">
-                          <td className="py-2 pr-2 text-gray-500">{idx + 1}</td>
+                          <td className="py-2 pr-2 text-gray-500">{selectedStock.trades.length - idx}</td>
                           <td className="py-2 pr-2">
                             <div className="text-gray-400">{formatTradeDate(trade.entryDate)}</div>
                             <div className="text-green-400 font-medium">${trade.entryPrice?.toFixed(2)}</div>

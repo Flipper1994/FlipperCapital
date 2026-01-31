@@ -48,6 +48,13 @@ function Dashboard({ isAdmin, token }) {
 
   const addStock = async (stock) => {
     try {
+      // Check if stock already exists in watchlist - if so, just select it
+      const existingStock = stocks.find(s => s.symbol.toUpperCase() === stock.symbol.toUpperCase())
+      if (existingStock) {
+        handleSelectStock(existingStock)
+        return { success: true, alreadyExists: true }
+      }
+
       // First validate that chart data is available for BX Trender analysis
       const histRes = await fetch(`/api/history/${stock.symbol}?period=max&interval=1mo`)
       if (!histRes.ok) {
@@ -117,6 +124,10 @@ function Dashboard({ isAdmin, token }) {
 
   // Handle stock selection - also expand performance panel
   const handleSelectStock = useCallback((stock) => {
+    // Save scroll position to prevent jumping to top
+    const scrollY = window.scrollY
+    const scrollX = window.scrollX
+
     setSelectedStock(stock)
     if (stock) {
       setPerformanceExpanded(true)
@@ -125,6 +136,11 @@ function Dashboard({ isAdmin, token }) {
         console.warn('Failed to process stock performance:', err)
       })
     }
+
+    // Restore scroll position after a short delay
+    requestAnimationFrame(() => {
+      window.scrollTo(scrollX, scrollY)
+    })
   }, [])
 
   // Chevron icon component for collapsible sections

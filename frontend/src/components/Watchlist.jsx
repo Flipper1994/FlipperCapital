@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { formatPrice, formatChange } from '../utils/currency'
+import { useTradingMode } from '../context/TradingModeContext'
 
 function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock }) {
   const [query, setQuery] = useState('')
@@ -11,9 +12,11 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock })
   const [addMessage, setAddMessage] = useState('')
   const [addError, setAddError] = useState('')
   const [collapsedSectors, setCollapsedSectors] = useState({})
+  const [signals, setSignals] = useState({})
   const [, forceUpdate] = useState(0)
   const searchRef = useRef(null)
   const debounceRef = useRef(null)
+  const { isAggressive } = useTradingMode()
 
   // Group stocks by sector and sort by market cap
   const groupedStocks = useMemo(() => {
@@ -50,6 +53,25 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock })
     checkCanAddStocks()
   }, [])
 
+  // Fetch signals for all stocks
+  useEffect(() => {
+    const fetchSignals = async () => {
+      try {
+        const endpoint = isAggressive ? '/api/performance/aggressive' : '/api/performance'
+        const res = await fetch(endpoint)
+        const data = await res.json()
+        const signalMap = {}
+        data.forEach(p => {
+          signalMap[p.symbol] = p.signal
+        })
+        setSignals(signalMap)
+      } catch {
+        // Ignore errors
+      }
+    }
+    fetchSignals()
+  }, [isAggressive, stocks])
+
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (searchRef.current && !searchRef.current.contains(e.target)) {
@@ -71,6 +93,16 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock })
       setAddMessage(data.message || '')
     } catch {
       setCanAdd(false)
+    }
+  }
+
+  const getSignalStyle = (signal) => {
+    switch (signal) {
+      case 'BUY': return 'bg-green-500/20 text-green-400'
+      case 'HOLD': return 'bg-blue-500/20 text-blue-400'
+      case 'SELL': return 'bg-red-500/20 text-red-400'
+      case 'WAIT': return 'bg-yellow-500/20 text-yellow-400'
+      default: return 'bg-gray-500/20 text-gray-400'
     }
   }
 
@@ -247,32 +279,37 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock })
                   <div className="divide-y divide-dark-600">
                     {groupedStocks.groups[sector].map((stock) => {
                       const changeData = formatChange(stock.change, stock.change_percent)
+                      const signal = signals[stock.symbol]
                       return (
                         <div
                           key={stock.id}
                           onClick={() => onSelectStock && onSelectStock(stock)}
-                          className="p-3 hover:bg-dark-700 transition-colors group cursor-pointer"
+                          className="px-2 py-1.5 hover:bg-dark-700 transition-colors group cursor-pointer"
                         >
-                          <div className="flex items-start justify-between">
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2">
-                                <span className="font-semibold text-white">{stock.symbol}</span>
-                              </div>
-                              <p className="text-xs text-gray-500 mt-0.5 truncate">{stock.name}</p>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 min-w-0 flex-1">
+                              <span className="font-semibold text-white text-sm">{stock.symbol}</span>
+                              {signal && (
+                                <span className={`px-1 py-0.5 text-[10px] font-bold rounded ${getSignalStyle(signal)}`}>
+                                  {signal}
+                                </span>
+                              )}
                             </div>
-                            <div className="text-right ml-2">
-                              <div className="font-medium text-white">
-                                {formatPrice(stock.price)}
+                            <div className="flex items-center gap-2">
+                              <div className="text-right">
+                                <div className="text-sm font-medium text-white">
+                                  {formatPrice(stock.price)}
+                                </div>
                               </div>
                               {changeData && (
-                                <div className={`text-xs ${changeData.isPositive ? 'text-green-400' : 'text-red-400'}`}>
+                                <div className={`text-xs min-w-[50px] text-right ${changeData.isPositive ? 'text-green-400' : 'text-red-400'}`}>
                                   {changeData.text}
                                 </div>
                               )}
                             </div>
                           </div>
                           {isAdmin && (
-                            <div className="mt-2 pt-2 border-t border-dark-600 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <div className="mt-1 pt-1 border-t border-dark-600 opacity-0 group-hover:opacity-100 transition-opacity">
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation()
