@@ -14,6 +14,31 @@ export const CURRENCY_SYMBOLS = {
   CHF: 'CHF'
 }
 
+// Detect stock's native currency based on exchange suffix
+// Returns null if USD (no conversion needed as that's the base)
+export function getStockCurrency(symbol) {
+  if (!symbol) return null
+  const s = symbol.toUpperCase()
+
+  // European exchanges - EUR
+  if (s.endsWith('.PA') || s.endsWith('.DE') || s.endsWith('.F') ||
+      s.endsWith('.AS') || s.endsWith('.BR') || s.endsWith('.MI') ||
+      s.endsWith('.MC') || s.endsWith('.VI') || s.endsWith('.HE') ||
+      s.endsWith('.LS') || s.endsWith('.IR')) {
+    return 'EUR'
+  }
+  // London - GBP (pence, but Yahoo converts to GBP)
+  if (s.endsWith('.L')) {
+    return 'GBP'
+  }
+  // Swiss - CHF
+  if (s.endsWith('.SW') || s.endsWith('.VX')) {
+    return 'CHF'
+  }
+  // US exchanges or no suffix = USD
+  return null
+}
+
 // Get exchange rates from localStorage or use fallback
 function getExchangeRates() {
   try {
@@ -75,32 +100,60 @@ export function setCurrency(currency) {
   window.dispatchEvent(new Event('currencyChanged'))
 }
 
-export function formatPrice(usdPrice) {
+export function formatPrice(usdPrice, stockSymbol = null) {
   if (usdPrice === null || usdPrice === undefined) return '--'
-  const currency = getCurrency()
+  const targetCurrency = getCurrency()
   const rates = getExchangeRates()
-  const rate = rates[currency] || 1
-  const symbol = CURRENCY_SYMBOLS[currency] || '$'
-  const converted = usdPrice * rate
+  const symbol = CURRENCY_SYMBOLS[targetCurrency] || '$'
 
-  if (currency === 'CHF') {
+  // Check if stock is traded in a non-USD currency
+  const stockCurrency = getStockCurrency(stockSymbol)
+
+  let converted = usdPrice
+  if (stockCurrency) {
+    // Stock is already in EUR/GBP/CHF, convert from that currency to target
+    const stockRate = rates[stockCurrency] || 1
+    const targetRate = rates[targetCurrency] || 1
+    // First convert to USD (divide by stock rate), then to target (multiply by target rate)
+    converted = (usdPrice / stockRate) * targetRate
+  } else {
+    // Stock is in USD, convert directly to target
+    const rate = rates[targetCurrency] || 1
+    converted = usdPrice * rate
+  }
+
+  if (targetCurrency === 'CHF') {
     return `${symbol} ${converted.toLocaleString('de-CH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   }
   return `${symbol}${converted.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
-export function formatChange(usdChange, percent) {
+export function formatChange(usdChange, percent, stockSymbol = null) {
   if (usdChange === undefined || usdChange === null) return null
-  const currency = getCurrency()
+  const targetCurrency = getCurrency()
   const rates = getExchangeRates()
-  const rate = rates[currency] || 1
-  const symbol = CURRENCY_SYMBOLS[currency] || '$'
-  const converted = usdChange * rate
+  const symbol = CURRENCY_SYMBOLS[targetCurrency] || '$'
+
+  // Check if stock is traded in a non-USD currency
+  const stockCurrency = getStockCurrency(stockSymbol)
+
+  let converted = usdChange
+  if (stockCurrency) {
+    // Stock is already in EUR/GBP/CHF, convert from that currency to target
+    const stockRate = rates[stockCurrency] || 1
+    const targetRate = rates[targetCurrency] || 1
+    converted = (usdChange / stockRate) * targetRate
+  } else {
+    // Stock is in USD, convert directly to target
+    const rate = rates[targetCurrency] || 1
+    converted = usdChange * rate
+  }
+
   const isPositive = converted >= 0
   const sign = isPositive ? '+' : ''
 
   return {
-    text: `${sign}${currency === 'CHF' ? 'CHF ' : symbol}${Math.abs(converted).toFixed(2)} (${sign}${percent?.toFixed(2) || '0.00'}%)`,
+    text: `${sign}${targetCurrency === 'CHF' ? 'CHF ' : symbol}${Math.abs(converted).toFixed(2)} (${sign}${percent?.toFixed(2) || '0.00'}%)`,
     isPositive
   }
 }

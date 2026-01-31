@@ -82,12 +82,12 @@ function PortfolioCompareContent({ token }) {
     return `${sign}${value.toFixed(2)}%`
   }
 
-  // Get max return for chart scaling
+  // Get max absolute return for chart scaling
   const maxReturn = Math.max(...portfolios.map(p => Math.abs(p.total_return_pct)), 10)
 
-  // Calculate bar width percentage
+  // Calculate bar width percentage (for half of the container since 0 is in the middle)
   const getBarWidth = (returnPct) => {
-    return Math.min(100, (Math.abs(returnPct) / maxReturn) * 100)
+    return Math.min(50, (Math.abs(returnPct) / maxReturn) * 50)
   }
 
   return (
@@ -166,16 +166,24 @@ function PortfolioCompareContent({ token }) {
                         {portfolio.username}
                       </div>
 
-                      {/* Bar Chart */}
+                      {/* Bar Chart - centered at 0 */}
                       <div className="flex-1 h-8 bg-dark-700 rounded-lg overflow-hidden relative">
+                        {/* Center line */}
+                        <div className="absolute left-1/2 top-0 bottom-0 w-px bg-gray-600" />
+                        {/* Bar */}
                         <div
-                          className="h-full transition-all duration-500"
+                          className="absolute top-0 bottom-0 transition-all duration-500"
                           style={{
                             width: `${getBarWidth(portfolio.total_return_pct)}%`,
-                            backgroundColor: `${lineColor}99` // Add some transparency
+                            backgroundColor: `${lineColor}99`,
+                            ...(portfolio.total_return_pct >= 0
+                              ? { left: '50%' }
+                              : { right: '50%' }
+                            )
                           }}
                         />
-                        <div className="absolute inset-0 flex items-center justify-end pr-2">
+                        {/* Label */}
+                        <div className="absolute inset-0 flex items-center justify-center">
                           <span className={`text-sm font-bold ${
                             portfolio.total_return_pct >= 0 ? 'text-green-400' : 'text-red-400'
                           }`}>

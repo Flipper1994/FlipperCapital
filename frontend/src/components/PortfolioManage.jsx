@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { useCurrency } from '../context/CurrencyContext'
+import { CURRENCY_SYMBOLS } from '../utils/currency'
 import PortfolioChart from './PortfolioChart'
 
 function PortfolioManage() {
@@ -536,10 +537,10 @@ function PortfolioContent({ token }) {
                     <div className="grid grid-cols-2 gap-3 text-sm">
                       <div>
                         <div className="text-xs text-gray-500">Kaufkurs</div>
-                        <div className="text-white">{pos.avg_price.toFixed(2)} {pos.currency || 'EUR'}</div>
+                        <div className="text-white">{CURRENCY_SYMBOLS[pos.currency] || '€'}{pos.avg_price.toFixed(2)}</div>
                       </div>
                       <div>
-                        <div className="text-xs text-gray-500">Aktuell (USD→{currency})</div>
+                        <div className="text-xs text-gray-500">Aktuell</div>
                         <div className="text-white">{formatPrice(pos.current_price)}</div>
                       </div>
                       <div>
@@ -571,7 +572,7 @@ function PortfolioContent({ token }) {
                       <th className="pb-3 pr-4">Symbol</th>
                       <th className="pb-3 pr-4">Kaufkurs</th>
                       <th className="pb-3 pr-4">Anzahl</th>
-                      <th className="pb-3 pr-4">Aktuell (USD→{currency})</th>
+                      <th className="pb-3 pr-4">Aktuell</th>
                       <th className="pb-3 pr-4">Rendite</th>
                       <th className="pb-3 pr-4">Kaufdatum</th>
                       <th className="pb-3"></th>
@@ -586,7 +587,7 @@ function PortfolioContent({ token }) {
                         </td>
                         <td className="py-3 pr-4">
                           <div className="text-white">
-                            {pos.avg_price.toFixed(2)} {pos.currency || 'EUR'}
+                            {CURRENCY_SYMBOLS[pos.currency] || '€'}{pos.avg_price.toFixed(2)}
                           </div>
                         </td>
                         <td className="py-3 pr-4">
@@ -684,10 +685,10 @@ function PortfolioContent({ token }) {
                         <div className="text-xs text-gray-500 truncate max-w-[100px]">{trade.name}</div>
                       </td>
                       <td className="py-2 pr-4 text-green-400">
-                        {trade.buy_price.toFixed(2)} {trade.currency}
+                        {CURRENCY_SYMBOLS[trade.currency] || '€'}{trade.buy_price.toFixed(2)}
                       </td>
                       <td className="py-2 pr-4 text-red-400">
-                        {trade.sell_price.toFixed(2)} {trade.currency}
+                        {CURRENCY_SYMBOLS[trade.currency] || '€'}{trade.sell_price.toFixed(2)}
                       </td>
                       <td className="py-2 pr-4 text-gray-400">
                         {trade.quantity}
@@ -725,7 +726,7 @@ function PortfolioContent({ token }) {
               <div className="grid grid-cols-2 gap-2 text-sm">
                 <div>
                   <span className="text-gray-500">Kaufkurs:</span>
-                  <span className="text-white ml-2">{sellingPosition.avg_price.toFixed(2)} {sellingPosition.currency}</span>
+                  <span className="text-white ml-2">{CURRENCY_SYMBOLS[sellingPosition.currency] || '€'}{sellingPosition.avg_price.toFixed(2)}</span>
                 </div>
                 <div>
                   <span className="text-gray-500">Aktuell:</span>
@@ -736,7 +737,7 @@ function PortfolioContent({ token }) {
 
             <form onSubmit={handleSell}>
               <div className="mb-4">
-                <label className="block text-sm text-gray-400 mb-1">Verkaufspreis ({sellingPosition.currency})</label>
+                <label className="block text-sm text-gray-400 mb-1">Verkaufspreis ({CURRENCY_SYMBOLS[sellingPosition.currency] || '€'})</label>
                 <input
                   type="number"
                   step="0.01"

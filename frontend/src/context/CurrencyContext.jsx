@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect } from 'react'
-import { CURRENCY_SYMBOLS, fetchExchangeRates } from '../utils/currency'
+import { CURRENCY_SYMBOLS, fetchExchangeRates, getStockCurrency } from '../utils/currency'
 
 const CurrencyContext = createContext()
 
@@ -67,11 +67,24 @@ export function useCurrency() {
     get exchangeRate() { return getRate() },
     get currencySymbol() { return getSymbol() },
 
-    formatPrice: (usdPrice) => {
+    formatPrice: (usdPrice, stockSymbol = null) => {
       if (usdPrice === null || usdPrice === undefined) return '--'
-      const rate = exchangeRates[currency] || 1
       const symbol = CURRENCY_SYMBOLS[currency] || '$'
-      const converted = usdPrice * rate
+
+      // Check if stock is traded in a non-USD currency
+      const stockCurrency = getStockCurrency(stockSymbol)
+
+      let converted = usdPrice
+      if (stockCurrency) {
+        // Stock is already in EUR/GBP/CHF, convert from that currency to target
+        const stockRate = exchangeRates[stockCurrency] || 1
+        const targetRate = exchangeRates[currency] || 1
+        converted = (usdPrice / stockRate) * targetRate
+      } else {
+        // Stock is in USD, convert directly to target
+        const rate = exchangeRates[currency] || 1
+        converted = usdPrice * rate
+      }
 
       if (currency === 'CHF') {
         return `${symbol} ${converted.toLocaleString('de-CH', {
@@ -86,17 +99,37 @@ export function useCurrency() {
       })}`
     },
 
-    convertPrice: (usdPrice) => {
+    convertPrice: (usdPrice, stockSymbol = null) => {
       if (usdPrice === null || usdPrice === undefined) return null
+
+      const stockCurrency = getStockCurrency(stockSymbol)
+
+      if (stockCurrency) {
+        const stockRate = exchangeRates[stockCurrency] || 1
+        const targetRate = exchangeRates[currency] || 1
+        return (usdPrice / stockRate) * targetRate
+      }
+
       const rate = exchangeRates[currency] || 1
       return usdPrice * rate
     },
 
-    formatChange: (usdChange, percent) => {
+    formatChange: (usdChange, percent, stockSymbol = null) => {
       if (usdChange === undefined || usdChange === null) return null
-      const rate = exchangeRates[currency] || 1
       const symbol = CURRENCY_SYMBOLS[currency] || '$'
-      const converted = usdChange * rate
+
+      const stockCurrency = getStockCurrency(stockSymbol)
+
+      let converted = usdChange
+      if (stockCurrency) {
+        const stockRate = exchangeRates[stockCurrency] || 1
+        const targetRate = exchangeRates[currency] || 1
+        converted = (usdChange / stockRate) * targetRate
+      } else {
+        const rate = exchangeRates[currency] || 1
+        converted = usdChange * rate
+      }
+
       const isPositive = converted >= 0
       const sign = isPositive ? '+' : ''
 

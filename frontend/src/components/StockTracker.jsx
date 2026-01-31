@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { formatPrice } from '../utils/currency'
+import { useCurrency } from '../context/CurrencyContext'
 import { useTradingMode } from '../context/TradingModeContext'
 
 // Generate month options from current month going back
@@ -79,6 +79,7 @@ function StockTracker() {
   })
   const [, forceUpdate] = useState(0)
   const { mode, isAggressive } = useTradingMode()
+  const { formatPrice } = useCurrency()
 
   const monthOptions = useMemo(() => generateMonthOptions(), [])
 
@@ -246,7 +247,7 @@ function StockTracker() {
   const formatTradeDate = (timestamp) => {
     if (!timestamp) return '-'
     const date = new Date(timestamp * 1000)
-    return date.toLocaleDateString('de-DE', { day: '2-digit', month: 'short', year: '2-digit' })
+    return date.toLocaleDateString('de-DE', { month: 'short', year: 'numeric' })
   }
 
   const formatPercent = (value) => {
@@ -567,7 +568,7 @@ function StockTracker() {
                             </span>
                           )}
                         </td>
-                        <td className="p-4 text-right text-white">{formatPrice(stock.current_price)}</td>
+                        <td className="p-4 text-right text-white">{formatPrice(stock.current_price, stock.symbol)}</td>
                         <td className={`p-4 text-right font-medium ${stock.win_rate >= 50 ? 'text-green-400' : 'text-red-400'}`}>
                           {stock.win_rate?.toFixed(0)}%
                         </td>
@@ -632,16 +633,17 @@ function StockTracker() {
                             {stock.tradeInfo ? (
                               <div className="text-xs space-y-1">
                                 <div>
-                                  <span className="text-green-400">Kauf: ${stock.tradeInfo.buyPrice?.toFixed(2)}</span>
+                                  <span className="text-green-400">Kauf: {formatPrice(stock.tradeInfo.buyPrice, stock.symbol)}</span>
                                   <span className="text-gray-500 ml-1">({formatTradeDate(stock.tradeInfo.buyDate)})</span>
                                 </div>
                                 {stock.tradeInfo.isOpen ? (
                                   <div>
                                     <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 text-xs">OPEN</span>
+                                    <span className="text-gray-400 ml-2">Aktuell: {formatPrice(stock.current_price, stock.symbol)}</span>
                                   </div>
                                 ) : stock.tradeInfo.sellPrice ? (
                                   <div>
-                                    <span className="text-red-400">Verkauf: ${stock.tradeInfo.sellPrice?.toFixed(2)}</span>
+                                    <span className="text-red-400">Verkauf: {formatPrice(stock.tradeInfo.sellPrice, stock.symbol)}</span>
                                     <span className="text-gray-500 ml-1">({formatTradeDate(stock.tradeInfo.sellDate)})</span>
                                   </div>
                                 ) : null}
@@ -655,8 +657,15 @@ function StockTracker() {
                               <span className={`font-bold ${stock.tradeInfo.returnPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                                 {formatPercent(stock.tradeInfo.returnPct)}
                               </span>
-                            ) : stock.tradeInfo?.isOpen ? (
-                              <span className="text-blue-400 text-xs">laufend</span>
+                            ) : stock.tradeInfo?.isOpen && stock.tradeInfo.buyPrice && stock.current_price ? (
+                              (() => {
+                                const currentReturn = ((stock.current_price - stock.tradeInfo.buyPrice) / stock.tradeInfo.buyPrice) * 100
+                                return (
+                                  <span className={`font-bold ${currentReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                    {formatPercent(currentReturn)}
+                                  </span>
+                                )
+                              })()
                             ) : (
                               <span className="text-gray-500">-</span>
                             )}
@@ -703,7 +712,7 @@ function StockTracker() {
               <div className="p-4 border-b border-dark-600 grid grid-cols-3 md:grid-cols-6 gap-3">
                 <div className="bg-dark-700 rounded-lg p-3 text-center">
                   <div className="text-xs text-gray-500">Kurs</div>
-                  <div className="text-lg font-bold text-white">{formatPrice(selectedStock.current_price)}</div>
+                  <div className="text-lg font-bold text-white">{formatPrice(selectedStock.current_price, selectedStock.symbol)}</div>
                 </div>
                 <div className="bg-dark-700 rounded-lg p-3 text-center">
                   <div className="text-xs text-gray-500">Win Rate</div>
@@ -756,18 +765,18 @@ function StockTracker() {
                           <td className="py-2 pr-2 text-gray-500">{selectedStock.trades.length - idx}</td>
                           <td className="py-2 pr-2">
                             <div className="text-gray-400">{formatTradeDate(trade.entryDate)}</div>
-                            <div className="text-green-400 font-medium">${trade.entryPrice?.toFixed(2)}</div>
+                            <div className="text-green-400 font-medium">{formatPrice(trade.entryPrice, selectedStock.symbol)}</div>
                           </td>
                           <td className="py-2 pr-2">
                             {trade.isOpen ? (
                               <div>
                                 <span className="px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 text-xs">OPEN</span>
-                                <div className="text-gray-500 text-xs mt-1">${trade.currentPrice?.toFixed(2)}</div>
+                                <div className="text-gray-500 text-xs mt-1">{formatPrice(trade.currentPrice, selectedStock.symbol)}</div>
                               </div>
                             ) : (
                               <div>
                                 <div className="text-gray-400">{formatTradeDate(trade.exitDate)}</div>
-                                <div className="text-red-400 font-medium">${trade.exitPrice?.toFixed(2)}</div>
+                                <div className="text-red-400 font-medium">{formatPrice(trade.exitPrice, selectedStock.symbol)}</div>
                               </div>
                             )}
                           </td>

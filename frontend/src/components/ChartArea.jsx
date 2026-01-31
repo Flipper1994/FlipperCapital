@@ -149,7 +149,7 @@ function ChartArea({ stock, stocks, onBacktestUpdate, onSelectStock, backtestDat
               <h3 className="text-sm font-medium text-gray-400 mb-3">Schnellauswahl</h3>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 {stocks.slice(0, 4).map((s) => {
-                  const change = formatChange(s.change, s.change_percent)
+                  const change = formatChange(s.change, s.change_percent, s.symbol)
                   return (
                     <div
                       key={s.id}
@@ -157,7 +157,7 @@ function ChartArea({ stock, stocks, onBacktestUpdate, onSelectStock, backtestDat
                       className="bg-dark-800 rounded-xl p-4 cursor-pointer hover:bg-dark-700 transition-all border border-dark-600 hover:border-accent-500 group"
                     >
                       <div className="font-semibold text-white group-hover:text-accent-400 transition-colors">{s.symbol}</div>
-                      <div className="text-lg font-bold text-white mt-1">{formatPrice(s.price)}</div>
+                      <div className="text-lg font-bold text-white mt-1">{formatPrice(s.price, s.symbol)}</div>
                       {change && (
                         <div className={`text-xs mt-1 ${change.isPositive ? 'text-green-400' : 'text-red-400'}`}>
                           {change.text}
@@ -276,7 +276,7 @@ function ChartArea({ stock, stocks, onBacktestUpdate, onSelectStock, backtestDat
     )
   }
 
-  const changeData = formatChange(stock.change, stock.change_percent)
+  const changeData = formatChange(stock.change, stock.change_percent, stock.symbol)
 
   return (
     <div className="h-full flex flex-col">
@@ -315,7 +315,7 @@ function ChartArea({ stock, stocks, onBacktestUpdate, onSelectStock, backtestDat
             ))}
           </div>
           <div className="text-right">
-            <div className="text-3xl font-bold text-white">{formatPrice(stock.price)}</div>
+            <div className="text-3xl font-bold text-white">{formatPrice(stock.price, stock.symbol)}</div>
             {changeData && (
               <div className={`text-sm ${changeData.isPositive ? 'text-green-400' : 'text-red-400'}`}>
                 {changeData.text}

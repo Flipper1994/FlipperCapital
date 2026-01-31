@@ -278,7 +278,7 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock })
                 {!collapsedSectors[sector] && (
                   <div className="divide-y divide-dark-600">
                     {groupedStocks.groups[sector].map((stock) => {
-                      const changeData = formatChange(stock.change, stock.change_percent)
+                      const changeData = formatChange(stock.change, stock.change_percent, stock.symbol)
                       const signal = signals[stock.symbol]
                       return (
                         <div
@@ -298,7 +298,7 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock })
                             <div className="flex items-center gap-2">
                               <div className="text-right">
                                 <div className="text-sm font-medium text-white">
-                                  {formatPrice(stock.price)}
+                                  {formatPrice(stock.price, stock.symbol)}
                                 </div>
                               </div>
                               {changeData && (

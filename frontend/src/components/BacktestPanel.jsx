@@ -1,4 +1,10 @@
-function BacktestPanel({ trades, metrics }) {
+import { useCurrency } from '../context/CurrencyContext'
+
+function BacktestPanel({ trades, metrics, symbol }) {
+  const { formatPrice } = useCurrency()
+
+  const fmtPrice = (price) => formatPrice(price, symbol)
+
   if (!trades || trades.length === 0 || !metrics) {
     return (
       <div className="p-4">
@@ -11,12 +17,7 @@ function BacktestPanel({ trades, metrics }) {
   const formatDate = (timestamp) => {
     if (!timestamp) return '-'
     const date = new Date(timestamp * 1000)
-    return date.toLocaleDateString('en-US', { year: '2-digit', month: 'short' })
-  }
-
-  const formatPrice = (price) => {
-    if (price === null || price === undefined) return '-'
-    return `$${price.toFixed(2)}`
+    return date.toLocaleDateString('de-DE', { year: 'numeric', month: 'short' })
   }
 
   const formatReturn = (returnPct) => {
@@ -83,18 +84,18 @@ function BacktestPanel({ trades, metrics }) {
               <tr key={idx} className="border-b border-dark-700/50 last:border-0">
                 <td className="py-1.5 pr-1">
                   <div className="text-gray-400">{formatDate(trade.entryDate)}</div>
-                  <div className="text-green-400 font-medium">{formatPrice(trade.entryPrice)}</div>
+                  <div className="text-green-400 font-medium">{fmtPrice(trade.entryPrice)}</div>
                 </td>
                 <td className="py-1.5 pr-1">
                   {trade.isOpen ? (
                     <div>
                       <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 text-xs">OPEN</span>
-                      <div className="text-gray-500 text-xs">{formatPrice(trade.currentPrice)}</div>
+                      <div className="text-gray-500 text-xs">{fmtPrice(trade.currentPrice)}</div>
                     </div>
                   ) : (
                     <div>
                       <div className="text-gray-400">{formatDate(trade.exitDate)}</div>
-                      <div className="text-red-400 font-medium">{formatPrice(trade.exitPrice)}</div>
+                      <div className="text-red-400 font-medium">{fmtPrice(trade.exitPrice)}</div>
                     </div>
                   )}
                 </td>

@@ -198,6 +198,7 @@ function Dashboard({ isAdmin, token }) {
               <BacktestPanel
                 trades={backtestData.trades}
                 metrics={backtestData.metrics}
+                symbol={selectedStock?.symbol}
               />
             </div>
           </div>
