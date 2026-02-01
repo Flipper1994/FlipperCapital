@@ -43,10 +43,20 @@ type ActivityLog struct {
 	CreatedAt time.Time `json:"created_at" gorm:"index"`
 }
 
+// Category for organizing stocks in watchlist
+type Category struct {
+	ID        uint      `json:"id" gorm:"primaryKey"`
+	Name      string    `json:"name" gorm:"not null"`
+	SortOrder int       `json:"sort_order" gorm:"default:0"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 type Stock struct {
 	ID            uint      `json:"id" gorm:"primaryKey"`
 	Symbol        string    `json:"symbol" gorm:"not null;uniqueIndex"`
 	Name          string    `json:"name" gorm:"not null"`
+	CategoryID    *uint     `json:"category_id" gorm:"index"`
 	AddedByUserID uint      `json:"added_by_user_id"`
 	AddedByUser   string    `json:"added_by_user"`
 	CreatedAt     time.Time `json:"created_at"`
@@ -63,6 +73,8 @@ type StockWithQuote struct {
 	PrevClose     float64   `json:"prev_close"`
 	Sector        string    `json:"sector"`
 	MarketCap     int64     `json:"market_cap"`
+	CategoryID    *uint     `json:"category_id"`
+	CategoryName  string    `json:"category_name"`
 	CreatedAt     time.Time `json:"created_at"`
 }
 
@@ -388,7 +400,10 @@ func main() {
 		panic("Failed to connect to database: " + err.Error())
 	}
 
-	db.AutoMigrate(&User{}, &Stock{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{}, &DBSession{}, &BotLog{}, &BotTodo{})
+	db.AutoMigrate(&User{}, &Stock{}, &Category{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{}, &DBSession{}, &BotLog{}, &BotTodo{})
+
+	// Ensure "Sonstiges" category exists
+	ensureSonstigesCategory()
 
 	// Ensure is_live columns exist (SQLite doesn't always add new columns)
 	db.Exec("ALTER TABLE flipper_bot_trades ADD COLUMN is_live BOOLEAN DEFAULT 0")
@@ -432,9 +447,17 @@ func main() {
 		api.GET("/stocks", getStocks)
 		api.POST("/stocks", optionalAuthMiddleware(), createStock)
 		api.DELETE("/stocks/:id", authMiddleware(), adminOnly(), deleteStock)
+		api.PUT("/stocks/:id/category", authMiddleware(), adminOnly(), updateStockCategory)
 		api.GET("/search", searchStocks)
 		api.GET("/quote/:symbol", getQuote)
 		api.GET("/history/:symbol", getHistory)
+
+		// Category routes
+		api.GET("/categories", getCategories)
+		api.POST("/categories", authMiddleware(), adminOnly(), createCategory)
+		api.PUT("/categories/:id", authMiddleware(), adminOnly(), updateCategory)
+		api.DELETE("/categories/:id", authMiddleware(), adminOnly(), deleteCategory)
+		api.PUT("/categories/reorder", authMiddleware(), adminOnly(), reorderCategories)
 
 		// Portfolio routes
 		api.GET("/portfolio", authMiddleware(), getPortfolio)
@@ -774,6 +797,14 @@ func getStocks(c *gin.Context) {
 		return
 	}
 
+	// Load all categories for mapping
+	var categories []Category
+	db.Find(&categories)
+	categoryMap := make(map[uint]string)
+	for _, cat := range categories {
+		categoryMap[cat.ID] = cat.Name
+	}
+
 	symbols := make([]string, len(stocks))
 	for i, s := range stocks {
 		symbols[i] = s.Symbol
@@ -784,10 +815,17 @@ func getStocks(c *gin.Context) {
 	result := make([]StockWithQuote, len(stocks))
 	for i, stock := range stocks {
 		result[i] = StockWithQuote{
-			ID:        stock.ID,
-			Symbol:    stock.Symbol,
-			Name:      stock.Name,
-			CreatedAt: stock.CreatedAt,
+			ID:         stock.ID,
+			Symbol:     stock.Symbol,
+			Name:       stock.Name,
+			CategoryID: stock.CategoryID,
+			CreatedAt:  stock.CreatedAt,
+		}
+		// Set category name
+		if stock.CategoryID != nil {
+			if name, ok := categoryMap[*stock.CategoryID]; ok {
+				result[i].CategoryName = name
+			}
 		}
 		if q, ok := quotes[stock.Symbol]; ok {
 			result[i].Price = q.Price
@@ -1109,9 +1147,17 @@ func createStock(c *gin.Context) {
 		name = symbol
 	}
 
+	// Find "Sonstiges" category for default assignment
+	var sonstigesCategory Category
+	var categoryID *uint
+	if err := db.Where("name = ?", "Sonstiges").First(&sonstigesCategory).Error; err == nil {
+		categoryID = &sonstigesCategory.ID
+	}
+
 	stock := Stock{
 		Symbol:        symbol,
 		Name:          name,
+		CategoryID:    categoryID,
 		AddedByUserID: userID.(uint),
 		AddedByUser:   username,
 	}
@@ -5067,4 +5113,154 @@ func deleteLutzTodo(c *gin.Context) {
 	}
 	db.Delete(&todo)
 	c.JSON(http.StatusOK, gin.H{"message": "Todo deleted"})
+}
+
+// Category management functions
+
+// ensureSonstigesCategory ensures the default "Sonstiges" category exists
+func ensureSonstigesCategory() {
+	var count int64
+	db.Model(&Category{}).Count(&count)
+	if count == 0 {
+		// Create default "Sonstiges" category
+		sonstiges := Category{
+			Name:      "Sonstiges",
+			SortOrder: 9999, // Always last
+		}
+		db.Create(&sonstiges)
+	}
+}
+
+// getCategories returns all categories sorted by order
+func getCategories(c *gin.Context) {
+	var categories []Category
+	db.Order("sort_order asc, name asc").Find(&categories)
+	c.JSON(http.StatusOK, categories)
+}
+
+// createCategory creates a new category
+func createCategory(c *gin.Context) {
+	var req struct {
+		Name string `json:"name" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Name is required"})
+		return
+	}
+
+	// Get max sort order
+	var maxOrder int
+	db.Model(&Category{}).Select("COALESCE(MAX(sort_order), 0)").Where("sort_order < 9999").Scan(&maxOrder)
+
+	category := Category{
+		Name:      req.Name,
+		SortOrder: maxOrder + 1,
+	}
+	if err := db.Create(&category).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create category"})
+		return
+	}
+	c.JSON(http.StatusOK, category)
+}
+
+// updateCategory updates a category's name
+func updateCategory(c *gin.Context) {
+	id := c.Param("id")
+	var category Category
+	if err := db.First(&category, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Category not found"})
+		return
+	}
+
+	var req struct {
+		Name string `json:"name" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Name is required"})
+		return
+	}
+
+	category.Name = req.Name
+	db.Save(&category)
+	c.JSON(http.StatusOK, category)
+}
+
+// deleteCategory deletes a category and moves its stocks to "Sonstiges"
+func deleteCategory(c *gin.Context) {
+	id := c.Param("id")
+	var category Category
+	if err := db.First(&category, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Category not found"})
+		return
+	}
+
+	// Don't allow deleting "Sonstiges"
+	if category.Name == "Sonstiges" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot delete default category"})
+		return
+	}
+
+	// Find "Sonstiges" category
+	var sonstiges Category
+	if err := db.Where("name = ?", "Sonstiges").First(&sonstiges).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Default category not found"})
+		return
+	}
+
+	// Move all stocks from this category to "Sonstiges"
+	db.Model(&Stock{}).Where("category_id = ?", category.ID).Update("category_id", sonstiges.ID)
+
+	// Delete category
+	db.Delete(&category)
+	c.JSON(http.StatusOK, gin.H{"message": "Category deleted"})
+}
+
+// reorderCategories updates the sort order of categories
+func reorderCategories(c *gin.Context) {
+	var req struct {
+		Order []uint `json:"order" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Order array is required"})
+		return
+	}
+
+	for i, id := range req.Order {
+		db.Model(&Category{}).Where("id = ?", id).Update("sort_order", i+1)
+	}
+
+	// Ensure "Sonstiges" stays at the end
+	db.Model(&Category{}).Where("name = ?", "Sonstiges").Update("sort_order", 9999)
+
+	c.JSON(http.StatusOK, gin.H{"message": "Order updated"})
+}
+
+// updateStockCategory updates the category of a stock
+func updateStockCategory(c *gin.Context) {
+	id := c.Param("id")
+	var stock Stock
+	if err := db.First(&stock, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Stock not found"})
+		return
+	}
+
+	var req struct {
+		CategoryID *uint `json:"category_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	// If no category provided, set to "Sonstiges"
+	if req.CategoryID == nil {
+		var sonstiges Category
+		if err := db.Where("name = ?", "Sonstiges").First(&sonstiges).Error; err == nil {
+			req.CategoryID = &sonstiges.ID
+		}
+	}
+
+	stock.CategoryID = req.CategoryID
+	db.Save(&stock)
+	c.JSON(http.StatusOK, gin.H{"message": "Stock category updated"})
 }

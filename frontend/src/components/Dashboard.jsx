@@ -234,6 +234,7 @@ function Dashboard({ isAdmin, token }) {
               onAdd={addStock}
               onDelete={deleteStock}
               onSelectStock={handleSelectStock}
+              onCategoryChange={() => fetchStocks(false)}
             />
           </div>
         </div>
