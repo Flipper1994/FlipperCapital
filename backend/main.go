@@ -513,6 +513,9 @@ func main() {
 		api.POST("/lutz/todos/:id/execute", authMiddleware(), adminOnly(), executeLutzTodo)
 		api.POST("/lutz/sync", authMiddleware(), adminOnly(), syncLutz)
 		api.GET("/lutz/completed-trades", authMiddleware(), getLutzCompletedTrades)
+
+		// Performance page - combined view of both bots
+		api.GET("/performance/history", authMiddleware(), getPerformanceHistory)
 	}
 
 	r.Run(":8080")
@@ -3584,6 +3587,116 @@ func getFlipperBotCompletedTrades(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, completed)
+}
+
+// getPerformanceHistory returns trade history from StockPerformance (defensive) and AggressiveStockPerformance (aggressive)
+func getPerformanceHistory(c *gin.Context) {
+	type TradeEntry struct {
+		ID           uint    `json:"id"`
+		Mode         string  `json:"mode"` // "defensive" or "aggressive"
+		Symbol       string  `json:"symbol"`
+		Name         string  `json:"name"`
+		EntryPrice   float64 `json:"entry_price"`
+		ExitPrice    float64 `json:"exit_price"`
+		CurrentPrice float64 `json:"current_price"`
+		EntryDate    int64   `json:"entry_date"`
+		ExitDate     int64   `json:"exit_date"`
+		Status       string  `json:"status"` // "OPEN" or "CLOSED"
+		ReturnPct    float64 `json:"return_pct"`
+	}
+
+	var entries []TradeEntry
+	var idCounter uint = 1
+
+	// Get defensive stock performances
+	var defensiveStocks []StockPerformance
+	db.Find(&defensiveStocks)
+
+	for _, stock := range defensiveStocks {
+		if stock.TradesJSON == "" {
+			continue
+		}
+		var trades []TradeData
+		if err := json.Unmarshal([]byte(stock.TradesJSON), &trades); err != nil {
+			continue
+		}
+
+		for _, trade := range trades {
+			entry := TradeEntry{
+				ID:         idCounter,
+				Mode:       "defensive",
+				Symbol:     stock.Symbol,
+				Name:       stock.Name,
+				EntryPrice: trade.EntryPrice,
+				EntryDate:  trade.EntryDate,
+				ReturnPct:  trade.ReturnPct,
+			}
+			idCounter++
+
+			if trade.IsOpen {
+				entry.Status = "OPEN"
+				if trade.CurrentPrice != nil {
+					entry.CurrentPrice = *trade.CurrentPrice
+				}
+			} else {
+				entry.Status = "CLOSED"
+				if trade.ExitPrice != nil {
+					entry.ExitPrice = *trade.ExitPrice
+				}
+				if trade.ExitDate != nil {
+					entry.ExitDate = *trade.ExitDate
+				}
+			}
+
+			entries = append(entries, entry)
+		}
+	}
+
+	// Get aggressive stock performances
+	var aggressiveStocks []AggressiveStockPerformance
+	db.Find(&aggressiveStocks)
+
+	for _, stock := range aggressiveStocks {
+		if stock.TradesJSON == "" {
+			continue
+		}
+		var trades []TradeData
+		if err := json.Unmarshal([]byte(stock.TradesJSON), &trades); err != nil {
+			continue
+		}
+
+		for _, trade := range trades {
+			entry := TradeEntry{
+				ID:         idCounter,
+				Mode:       "aggressive",
+				Symbol:     stock.Symbol,
+				Name:       stock.Name,
+				EntryPrice: trade.EntryPrice,
+				EntryDate:  trade.EntryDate,
+				ReturnPct:  trade.ReturnPct,
+			}
+			idCounter++
+
+			if trade.IsOpen {
+				entry.Status = "OPEN"
+				if trade.CurrentPrice != nil {
+					entry.CurrentPrice = *trade.CurrentPrice
+				}
+			} else {
+				entry.Status = "CLOSED"
+				if trade.ExitPrice != nil {
+					entry.ExitPrice = *trade.ExitPrice
+				}
+				if trade.ExitDate != nil {
+					entry.ExitDate = *trade.ExitDate
+				}
+			}
+
+			entries = append(entries, entry)
+		}
+	}
+
+	c.JSON(http.StatusOK, entries)
 }
 
 // Update FlipperBot position with real trade data (Admin only)

@@ -4,6 +4,7 @@ function Sidebar({ isLoggedIn, isAdmin, user, isOpen, onClose }) {
   const navItems = [
     { path: '/', label: 'Dashboard', icon: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6' },
     { path: '/tracker', label: 'Aktien Tracker', icon: 'M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z' },
+    { path: '/performance', label: 'Performance', icon: 'M13 7h8m0 0v8m0-8l-8 8-4-4-6 6', requiresAuth: true, showLockIfNotAuth: true },
     { path: '/flipperbot', label: 'FlipperBot', icon: 'M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z', premium: true },
     { path: '/flipperbot-lab', label: 'FlipperBot Lab', icon: 'M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z', beta: true },
     { path: '/lutz-lab', label: 'Lutz Lab', icon: 'M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z', aggressive: true },
@@ -63,20 +64,22 @@ function Sidebar({ isLoggedIn, isAdmin, user, isOpen, onClose }) {
         <nav className="flex-1 p-4">
           <ul className="space-y-2">
             {navItems.map((item) => {
-              // Skip auth-required items if not logged in
-              if (item.requiresAuth && !isLoggedIn) return null
+              // Skip auth-required items if not logged in (unless showLockIfNotAuth)
+              if (item.requiresAuth && !isLoggedIn && !item.showLockIfNotAuth) return null
               // Skip admin-only items if not admin (but show adminOnly items to everyone)
               if (item.requiresAdmin && !isAdmin) return null
 
               // For adminOnly items: show to everyone but indicate locked state
               const isLocked = item.adminOnly && !isAdmin
+              // For showLockIfNotAuth items: show locked if not logged in
+              const isAuthLocked = item.showLockIfNotAuth && !isLoggedIn
 
               return (
                 <li key={item.path}>
-                  {isLocked ? (
+                  {(isLocked || isAuthLocked) ? (
                     <div
                       className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-gray-500 cursor-not-allowed opacity-60"
-                      title="Nur für Admins verfügbar"
+                      title={isAuthLocked ? "Anmeldung erforderlich" : "Nur für Admins verfügbar"}
                     >
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d={item.icon} />

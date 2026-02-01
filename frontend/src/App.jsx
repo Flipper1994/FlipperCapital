@@ -14,6 +14,7 @@ import AdminPanel from './components/AdminPanel'
 import FlipperBot from './components/FlipperBot'
 import FlipperBotLab from './components/FlipperBotLab'
 import LutzLab from './components/LutzLab'
+import Performance from './components/Performance'
 import Help from './components/Help'
 
 function App() {
@@ -124,6 +125,10 @@ function App() {
               <Route
                 path="/tracker"
                 element={<StockTracker />}
+              />
+              <Route
+                path="/performance"
+                element={<Performance token={token} />}
               />
               <Route
                 path="/admin"
