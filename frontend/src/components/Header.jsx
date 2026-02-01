@@ -1,11 +1,25 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { getCurrency, setCurrency, EXCHANGE_RATES } from '../utils/currency'
 import { useTradingMode } from '../context/TradingModeContext'
 
 function Header({ isLoggedIn, isAdmin, user, onLogout, sidebarOpen, setSidebarOpen }) {
   const [currency, setCurrencyState] = useState(getCurrency())
-  const availableCurrencies = Object.keys(EXCHANGE_RATES)
+  const [showMoreCurrencies, setShowMoreCurrencies] = useState(false)
+  const dropdownRef = useRef(null)
+  const allCurrencies = Object.keys(EXCHANGE_RATES)
+  const primaryCurrencies = ['USD', 'EUR']
+  const otherCurrencies = allCurrencies.filter(c => !primaryCurrencies.includes(c))
   const { mode, toggleMode, isAggressive } = useTradingMode()
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+        setShowMoreCurrencies(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
 
   useEffect(() => {
     const handleChange = () => setCurrencyState(getCurrency())
@@ -74,17 +88,42 @@ function Header({ isLoggedIn, isAdmin, user, onLogout, sidebarOpen, setSidebarOp
             )}
           </button>
           <div className="flex items-center bg-dark-700/80 rounded-lg p-0.5 md:p-1 backdrop-blur-sm">
-            {availableCurrencies.map((curr) => (
+            {primaryCurrencies.map((curr) => (
               <button
                 key={curr}
                 onClick={() => handleCurrencyChange(curr)}
-                className={`${curr === 'USD' || curr === 'EUR' ? '' : 'hidden md:block'} px-2 md:px-3 py-1 md:py-1.5 text-xs md:text-sm font-medium rounded-md transition-all ${
+                className={`px-2 md:px-3 py-1 md:py-1.5 text-xs md:text-sm font-medium rounded-md transition-all ${
                   currency === curr ? 'bg-accent-500 text-white' : 'text-gray-300 hover:text-white'
                 }`}
               >
                 {curr}
               </button>
             ))}
+            <div className="relative" ref={dropdownRef}>
+              <button
+                onClick={() => setShowMoreCurrencies(!showMoreCurrencies)}
+                className={`px-2 md:px-3 py-1 md:py-1.5 text-xs md:text-sm font-medium rounded-md transition-all ${
+                  otherCurrencies.includes(currency) ? 'bg-accent-500 text-white' : 'text-gray-300 hover:text-white'
+                }`}
+              >
+                {otherCurrencies.includes(currency) ? currency : '...'}
+              </button>
+              {showMoreCurrencies && (
+                <div className="absolute right-0 top-full mt-1 bg-dark-800 border border-dark-600 rounded-lg shadow-xl z-[100] min-w-[80px]">
+                  {otherCurrencies.map((curr) => (
+                    <button
+                      key={curr}
+                      onClick={() => { handleCurrencyChange(curr); setShowMoreCurrencies(false) }}
+                      className={`block w-full px-3 py-2 text-xs md:text-sm text-left transition-colors ${
+                        currency === curr ? 'bg-accent-500 text-white' : 'text-gray-300 hover:bg-dark-700 hover:text-white'
+                      }`}
+                    >
+                      {curr}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
           {isLoggedIn && (
             <div className="flex items-center gap-2 md:gap-3">

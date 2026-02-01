@@ -14,7 +14,13 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
   const [logs, setLogs] = useState([])
   const [showLogs, setShowLogs] = useState(true)
   const [hasUserPortfolio, setHasUserPortfolio] = useState(false)
+  const [pendingActions, setPendingActions] = useState([])
+  const [loadingPending, setLoadingPending] = useState(false)
+  const [debugTab, setDebugTab] = useState('todo')
   const [checkingAccess, setCheckingAccess] = useState(true)
+  const [showCompletedTrades, setShowCompletedTrades] = useState(false)
+  const [completedTrades, setCompletedTrades] = useState([])
+  const [loadingCompletedTrades, setLoadingCompletedTrades] = useState(false)
   const logEndRef = useRef(null)
   const { formatPrice } = useCurrency()
 
@@ -46,6 +52,8 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
   useEffect(() => {
     if (isLoggedIn && hasUserPortfolio) {
       fetchData()
+      fetchPendingActions()
+      fetchLogs()
     } else {
       setLoading(false)
     }
@@ -106,12 +114,139 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
       }
 
       await fetchData()
+      if (isAdmin) {
+        fetchPendingActions()
+        fetchLogs()
+      }
     } catch (err) {
       console.error('Failed to update FlipperBot:', err)
       setUpdateResult({ error: 'Update failed' })
       setLogs(prev => [...prev, { level: 'ERROR', message: 'Update fehlgeschlagen: ' + err.message, time: new Date().toLocaleTimeString('de-DE') }])
     } finally {
       setUpdating(false)
+    }
+  }
+
+  const fetchPendingActions = async () => {
+    if (!isAdmin) return
+    setLoadingPending(true)
+    try {
+      // Fetch todos from DB (persistent)
+      const res = await fetch('/api/flipperbot/todos', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      setPendingActions(data || [])
+      // Also trigger pending check to create new todos
+      await fetch('/api/flipperbot/pending', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+    } catch (err) {
+      console.error('Failed to fetch pending actions:', err)
+    } finally {
+      setLoadingPending(false)
+    }
+  }
+
+  const fetchLogs = async () => {
+    if (!isAdmin) return
+    try {
+      const res = await fetch('/api/flipperbot/logs', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      // Transform to match existing format
+      const formattedLogs = (data || []).map(log => ({
+        level: log.level,
+        message: log.message,
+        time: new Date(log.created_at).toLocaleTimeString('de-DE')
+      })).reverse() // oldest first
+      setLogs(formattedLogs)
+    } catch (err) {
+      console.error('Failed to fetch logs:', err)
+    }
+  }
+
+  const fetchCompletedTrades = async () => {
+    setLoadingCompletedTrades(true)
+    try {
+      const res = await fetch('/api/flipperbot/completed-trades', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      setCompletedTrades(data || [])
+    } catch (err) {
+      console.error('Failed to fetch completed trades:', err)
+    } finally {
+      setLoadingCompletedTrades(false)
+    }
+  }
+
+  const handleShowCompletedTrades = () => {
+    setShowCompletedTrades(true)
+    fetchCompletedTrades()
+  }
+
+  const handleMarkDone = async (todoId) => {
+    try {
+      await fetch(`/api/flipperbot/todos/${todoId}/done`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      fetchPendingActions()
+    } catch (err) {
+      console.error('Failed to mark todo done:', err)
+    }
+  }
+
+  const handleExecuteTodo = async (todoId, type, symbol) => {
+    if (!confirm(`${type} für ${symbol} wirklich ausführen? Der Trade wird zum aktuellen Kurs durchgeführt.`)) {
+      return
+    }
+    try {
+      const res = await fetch(`/api/flipperbot/todos/${todoId}/execute`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      if (res.ok) {
+        fetchPendingActions()
+        fetchData() // Refresh portfolio and actions
+        setLogs(prev => [...prev, {
+          level: 'ACTION',
+          message: `${type} ${symbol} ausgeführt @ $${data.price?.toFixed(2)}`,
+          time: new Date().toLocaleTimeString('de-DE')
+        }])
+      } else {
+        alert(data.error || 'Fehler beim Ausführen')
+      }
+    } catch (err) {
+      console.error('Failed to execute todo:', err)
+      alert('Fehler beim Ausführen des Trades')
+    }
+  }
+
+  const handleReopenTodo = async (todoId) => {
+    try {
+      await fetch(`/api/flipperbot/todos/${todoId}/reopen`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      fetchPendingActions()
+    } catch (err) {
+      console.error('Failed to reopen todo:', err)
+    }
+  }
+
+  const handleDeleteTodo = async (todoId) => {
+    try {
+      await fetch(`/api/flipperbot/todos/${todoId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      fetchPendingActions()
+    } catch (err) {
+      console.error('Failed to delete todo:', err)
     }
   }
 
@@ -331,7 +466,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                       </svg>
-                      Update & Trade
+                      Signale prüfen
                     </>
                   )}
                 </button>
@@ -355,7 +490,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                   </svg>
-                  Update & Trade
+                  Signale prüfen
                 </div>
                 <div
                   className="flex items-center gap-2 px-4 py-2.5 bg-gray-600/30 text-gray-500 rounded-lg cursor-not-allowed font-medium"
@@ -524,9 +659,12 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                 }`}>
                   {formatPrice(performance.realized_profit)}
                 </div>
-                <div className="text-xs text-gray-500 mt-1">
+                <button
+                  onClick={handleShowCompletedTrades}
+                  className="text-xs text-accent-400 hover:text-accent-300 mt-1 underline cursor-pointer"
+                >
                   {performance.total_trades || 0} abgeschl. Trades
-                </div>
+                </button>
               </div>
               <div className="bg-dark-800 rounded-xl border border-dark-600 p-4">
                 <div className="text-xs text-gray-500 mb-1">Win Rate</div>
@@ -554,7 +692,14 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
           {/* Portfolio */}
           <div className="bg-dark-800 rounded-xl border border-dark-600 overflow-hidden">
             <div className="p-4 border-b border-dark-600">
-              <h2 className="text-lg font-semibold text-white">Aktuelle Positionen</h2>
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-white">Aktuelle Positionen</h2>
+                {portfolio?.positions && (
+                  <span className="px-2 py-1 bg-accent-500/20 text-accent-400 text-sm font-medium rounded">
+                    {portfolio.positions.length} offen
+                  </span>
+                )}
+              </div>
               {portfolio && (
                 <div className="flex items-center gap-4 mt-2 text-sm">
                   <span className="text-gray-400">
@@ -575,14 +720,16 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                   </svg>
                 </div>
                 <p className="text-gray-500">Keine offenen Positionen</p>
-                <p className="text-gray-600 text-sm mt-1">Klicke "Update & Trade" um Signale zu verarbeiten</p>
+                <p className="text-gray-600 text-sm mt-1">Klicke "Signale prüfen" um Signale zu verarbeiten</p>
               </div>
             ) : (
               <div className="divide-y divide-dark-700 max-h-[400px] overflow-auto">
                 {portfolio?.positions?.slice().sort((a, b) => (b.is_live ? 1 : 0) - (a.is_live ? 1 : 0)).map((pos) => {
-                  const totalCost = (pos.avg_price || 0) * (pos.quantity || 1)
+                  // Use invested_eur if available (exact 100€), otherwise calculate
+                  const totalCostUSD = (pos.avg_price || 0) * (pos.quantity || 1)
                   const totalValue = (pos.current_price || 0) * (pos.quantity || 1)
-                  const gain = totalValue - totalCost
+                  const gain = totalValue - totalCostUSD
+                  const hasInvestedEUR = pos.invested_eur && pos.invested_eur > 0
                   return (
                     <div key={pos.id} className={`p-4 hover:bg-dark-700/50 transition-colors ${pos.is_live ? 'border-l-4 border-green-500 bg-green-500/5' : ''}`}>
                       <div className="flex justify-between items-start mb-2">
@@ -618,7 +765,11 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                         </div>
                         <div>
                           <span className="text-gray-500 block">Gesamt Kauf</span>
-                          <span className="text-gray-300">{formatPrice(totalCost)}</span>
+                          <span className="text-gray-300">
+                            {hasInvestedEUR
+                              ? `${pos.invested_eur.toFixed(2)} €`
+                              : formatPrice(totalCostUSD)}
+                          </span>
                         </div>
                         <div>
                           <span className="text-gray-500 block">Aktueller Wert</span>
@@ -705,59 +856,185 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                 <li>Kauft 1 Aktie bei BUY-Signal, verkauft bei SELL-Signal</li>
                 <li>Startdatum: 01.01.2026 (keine Trades davor)</li>
                 <li>Sichtbar im Portfolio-Vergleich als "FlipperBot"</li>
-                <li>Klicke "Update & Trade" um neue Signale zu verarbeiten</li>
+                <li>Klicke "Signale prüfen" um neue Signale zu verarbeiten</li>
               </ul>
             </div>
           </div>
         </div>
 
-        {/* Log Box */}
+        {/* Debug Panel with Tabs */}
         <div className="mt-6 bg-dark-800 rounded-xl border border-dark-600 overflow-hidden">
-          <button
-            onClick={() => setShowLogs(!showLogs)}
-            className="w-full flex items-center justify-between p-4 hover:bg-dark-700/50 transition-colors"
-          >
-            <div className="flex items-center gap-3">
-              <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          {/* Tab Header */}
+          <div className="flex border-b border-dark-600">
+            <button
+              onClick={() => { setDebugTab('todo'); if (isAdmin) fetchPendingActions() }}
+              className={`flex-1 px-4 py-3 text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
+                debugTab === 'todo'
+                  ? 'bg-dark-700 text-white border-b-2 border-accent-500'
+                  : 'text-gray-400 hover:text-white hover:bg-dark-700/50'
+              }`}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
               </svg>
-              <span className="font-medium text-white">Debug Log</span>
-              {logs.length > 0 && (
-                <span className="text-xs text-gray-500">({logs.length} Einträge)</span>
-              )}
-              {!isAdmin && (
-                <span className="text-xs text-gray-500 flex items-center gap-1">
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                  </svg>
-                  Nur für Admins
+              TODO: Offene Aktionen
+              {pendingActions.filter(a => !a.done).length > 0 && (
+                <span className="px-1.5 py-0.5 bg-yellow-500/20 text-yellow-400 text-xs rounded-full">
+                  {pendingActions.filter(a => !a.done).length}
                 </span>
               )}
-            </div>
-            <svg
-              className={`w-5 h-5 text-gray-400 transition-transform ${showLogs ? 'rotate-180' : ''}`}
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
+            </button>
+            <button
+              onClick={() => setDebugTab('log')}
+              className={`flex-1 px-4 py-3 text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
+                debugTab === 'log'
+                  ? 'bg-dark-700 text-white border-b-2 border-accent-500'
+                  : 'text-gray-400 hover:text-white hover:bg-dark-700/50'
+              }`}
             >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              Debug Log
+              {logs.length > 0 && (
+                <span className="text-xs text-gray-500">({logs.length})</span>
+              )}
+            </button>
+          </div>
 
-          {showLogs && (
+          {/* TODO Tab Content */}
+          {debugTab === 'todo' && (
+            <div className="p-4">
+              {!isAdmin ? (
+                <div className="text-gray-500 text-center py-8">
+                  <svg className="w-10 h-10 mx-auto mb-3 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                  <p className="font-medium text-gray-400">Nur für Administratoren</p>
+                </div>
+              ) : loadingPending ? (
+                <div className="text-center py-8">
+                  <div className="w-6 h-6 border-2 border-accent-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                </div>
+              ) : pendingActions.length === 0 ? (
+                <div className="text-center py-8 text-gray-500">
+                  <svg className="w-12 h-12 mx-auto mb-3 text-green-500/50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <p className="text-green-400 font-medium">Keine Aktionen</p>
+                  <p className="text-gray-600 text-sm mt-1">Keine Todo-Einträge vorhanden</p>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-[400px] overflow-auto">
+                  {pendingActions.map((action) => (
+                    <div
+                      key={action.id}
+                      className={`p-3 rounded-lg border ${
+                        action.done
+                          ? 'bg-dark-700/50 border-dark-600 opacity-60'
+                          : action.type === 'SELL'
+                            ? 'bg-red-500/10 border-red-500/30'
+                            : 'bg-green-500/10 border-green-500/30'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          {action.done && (
+                            <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                          )}
+                          <span className={`px-2 py-1 rounded text-xs font-bold ${
+                            action.done
+                              ? 'bg-gray-500/20 text-gray-400'
+                              : action.type === 'SELL'
+                                ? 'bg-red-500/20 text-red-400'
+                                : 'bg-green-500/20 text-green-400'
+                          }`}>
+                            {action.type}
+                          </span>
+                          <span className={`font-semibold ${action.done ? 'text-gray-400 line-through' : 'text-white'}`}>
+                            {action.symbol}
+                          </span>
+                          <span className="text-gray-500 text-sm">{action.name}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-gray-500">
+                            {action.done
+                              ? action.decision === 'executed'
+                                ? '✓ Ausgeführt'
+                                : '✗ Verworfen'
+                              : `Signal seit ${action.signal_since}`}
+                          </span>
+                          {action.done && isAdmin && (
+                            <>
+                              <button
+                                onClick={() => handleReopenTodo(action.id)}
+                                className="px-2 py-1 text-xs bg-dark-600 text-gray-300 rounded hover:bg-dark-500 transition-colors"
+                                title="Wiedereröffnen"
+                              >
+                                ↩
+                              </button>
+                              <button
+                                onClick={() => handleDeleteTodo(action.id)}
+                                className="px-2 py-1 text-xs bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors"
+                                title="Löschen"
+                              >
+                                ✕
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      {!action.done && (
+                        <>
+                          <div className="text-sm text-gray-400 mb-2">
+                            {action.reason}
+                            {action.quantity > 0 && (
+                              <span className="ml-2 text-gray-500">
+                                ({action.quantity.toFixed(4)} Anteile @ {formatPrice(action.price || action.avg_price)})
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-gray-600 mb-3">
+                            Signal: {action.signal} ({action.signal_bars} Bars)
+                          </div>
+                          {isAdmin && (
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => handleExecuteTodo(action.id, action.type, action.symbol)}
+                                className={`flex-1 px-3 py-1.5 text-xs font-medium rounded transition-colors ${
+                                  action.type === 'BUY'
+                                    ? 'bg-green-500 text-white hover:bg-green-400'
+                                    : 'bg-red-500 text-white hover:bg-red-400'
+                                }`}
+                              >
+                                {action.type === 'BUY' ? '✓ Kaufen' : '✓ Verkaufen'}
+                              </button>
+                              <button
+                                onClick={() => handleMarkDone(action.id)}
+                                className="flex-1 px-3 py-1.5 text-xs font-medium bg-dark-600 text-gray-300 rounded hover:bg-dark-500 transition-colors"
+                              >
+                                ✗ Verwerfen
+                              </button>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Debug Log Tab Content */}
+          {debugTab === 'log' && (
             <div className="border-t border-dark-600">
               <div className="bg-dark-900 p-4 max-h-[300px] overflow-auto font-mono text-xs">
-                {!isAdmin ? (
-                  <div className="text-gray-500 text-center py-8">
-                    <svg className="w-10 h-10 mx-auto mb-3 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                    </svg>
-                    <p className="font-medium text-gray-400">Debug Log nur für Administratoren</p>
-                    <p className="text-gray-600 mt-1">Diese Funktion ist Admins vorbehalten</p>
-                  </div>
-                ) : logs.length === 0 ? (
+                {logs.length === 0 ? (
                   <div className="text-gray-500 text-center py-4">
-                    Klicke "Update & Trade" um Logs zu sehen
+                    Klicke "Signale prüfen" um Logs zu sehen
                   </div>
                 ) : (
                   <div className="space-y-1">
@@ -788,6 +1065,78 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
           )}
         </div>
       </div>
+
+      {/* Completed Trades Modal */}
+      {showCompletedTrades && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-dark-800 rounded-xl border border-dark-600 max-w-2xl w-full max-h-[80vh] overflow-hidden">
+            <div className="p-4 border-b border-dark-600 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-white">Abgeschlossene Trades</h3>
+              <button
+                onClick={() => setShowCompletedTrades(false)}
+                className="text-gray-400 hover:text-white"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto max-h-[calc(80vh-80px)]">
+              {loadingCompletedTrades ? (
+                <div className="text-center py-8 text-gray-400">Lade...</div>
+              ) : completedTrades.length === 0 ? (
+                <div className="text-center py-8 text-gray-500">Keine abgeschlossenen Trades</div>
+              ) : (
+                <div className="space-y-3">
+                  {completedTrades.map((trade, idx) => (
+                    <div
+                      key={idx}
+                      className={`p-4 rounded-lg border ${
+                        trade.profit_loss >= 0
+                          ? 'bg-green-500/10 border-green-500/30'
+                          : 'bg-red-500/10 border-red-500/30'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-white">{trade.symbol}</span>
+                          <span className="text-sm text-gray-400">{trade.name}</span>
+                          {trade.is_live && (
+                            <span className="px-1.5 py-0.5 text-xs bg-blue-500/20 text-blue-400 rounded">LIVE</span>
+                          )}
+                        </div>
+                        <div className={`font-bold ${trade.profit_loss >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {trade.profit_loss >= 0 ? '+' : ''}{formatPrice(trade.profit_loss)}
+                          <span className="text-sm ml-1">
+                            ({trade.profit_loss_pct >= 0 ? '+' : ''}{trade.profit_loss_pct?.toFixed(2)}%)
+                          </span>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <span className="text-gray-500">Kauf: </span>
+                          <span className="text-gray-300">
+                            {formatPrice(trade.buy_price)} am {new Date(trade.buy_date).toLocaleDateString('de-DE')}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">Verkauf: </span>
+                          <span className="text-gray-300">
+                            {formatPrice(trade.sell_price)} am {new Date(trade.sell_date).toLocaleDateString('de-DE')}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="text-xs text-gray-500 mt-1">
+                        {trade.quantity?.toFixed(4)} Anteile
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

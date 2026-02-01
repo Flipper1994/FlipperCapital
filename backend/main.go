@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -214,7 +215,8 @@ type FlipperBotPosition struct {
 	Name         string     `json:"name"`
 	Quantity     float64    `json:"quantity" gorm:"default:1"`
 	AvgPrice     float64    `json:"avg_price" gorm:"not null"`
-	IsLive       bool       `json:"is_live" gorm:"default:false"` // True if this is a real executed position
+	InvestedEUR  float64    `json:"invested_eur" gorm:"default:0"` // Exact EUR amount invested
+	IsLive       bool       `json:"is_live" gorm:"default:false"`  // True if this is a real executed position
 	BuyDate      time.Time  `json:"buy_date" gorm:"not null"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
@@ -261,15 +263,47 @@ type LutzTrade struct {
 
 // LutzPosition tracks current open positions of the Lutz bot
 type LutzPosition struct {
+	ID          uint      `json:"id" gorm:"primaryKey"`
+	Symbol      string    `json:"symbol" gorm:"uniqueIndex;not null"`
+	Name        string    `json:"name"`
+	Quantity    float64   `json:"quantity" gorm:"default:1"`
+	AvgPrice    float64   `json:"avg_price" gorm:"not null"`
+	InvestedEUR float64   `json:"invested_eur" gorm:"default:0"` // Exact EUR amount invested
+	IsLive      bool      `json:"is_live" gorm:"default:false"`  // True if this is a real executed position
+	BuyDate     time.Time `json:"buy_date" gorm:"not null"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// BotLog stores debug logs for bots (persistent)
+type BotLog struct {
 	ID        uint      `json:"id" gorm:"primaryKey"`
-	Symbol    string    `json:"symbol" gorm:"uniqueIndex;not null"`
-	Name      string    `json:"name"`
-	Quantity  float64   `json:"quantity" gorm:"default:1"`
-	AvgPrice  float64   `json:"avg_price" gorm:"not null"`
-	IsLive    bool      `json:"is_live" gorm:"default:false"` // True if this is a real executed position
-	BuyDate   time.Time `json:"buy_date" gorm:"not null"`
+	Bot       string    `json:"bot" gorm:"index;not null"` // "flipperbot" or "lutz"
+	Level     string    `json:"level" gorm:"not null"`     // INFO, WARN, ERROR, ACTION, SKIP, DEBUG
+	Message   string    `json:"message" gorm:"not null"`
+	SessionID string    `json:"session_id" gorm:"index"`   // Groups logs from same update run
 	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// BotTodo stores pending actions for bots (persistent)
+type BotTodo struct {
+	ID          uint       `json:"id" gorm:"primaryKey"`
+	Bot         string     `json:"bot" gorm:"index;not null"` // "flipperbot" or "lutz"
+	Type        string     `json:"type" gorm:"not null"`      // BUY or SELL
+	Symbol      string     `json:"symbol" gorm:"not null"`
+	Name        string     `json:"name"`
+	Quantity    float64    `json:"quantity"`
+	AvgPrice    float64    `json:"avg_price"`   // For SELL: position's avg buy price
+	Price       float64    `json:"price"`       // Execution price (buy price or sell price)
+	Signal      string     `json:"signal"`
+	SignalBars  int        `json:"signal_bars"`
+	SignalSince string     `json:"signal_since"`
+	Reason      string     `json:"reason"`
+	Done        bool       `json:"done" gorm:"default:false"`
+	Decision    string     `json:"decision"`    // executed, discarded, deleted
+	DoneAt      *time.Time `json:"done_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 var db *gorm.DB
@@ -354,7 +388,7 @@ func main() {
 		panic("Failed to connect to database: " + err.Error())
 	}
 
-	db.AutoMigrate(&User{}, &Stock{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{}, &DBSession{})
+	db.AutoMigrate(&User{}, &Stock{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{}, &DBSession{}, &BotLog{}, &BotTodo{})
 
 	// Ensure is_live columns exist (SQLite doesn't always add new columns)
 	db.Exec("ALTER TABLE flipper_bot_trades ADD COLUMN is_live BOOLEAN DEFAULT 0")
@@ -439,6 +473,8 @@ func main() {
 		api.GET("/admin/stats", authMiddleware(), adminOnly(), getAdminStats)
 		api.GET("/admin/traffic", authMiddleware(), adminOnly(), getAdminTraffic)
 		api.GET("/admin/update-all-stocks", authMiddleware(), adminOnly(), updateAllWatchlistStocks)
+		api.GET("/admin/tracked-diff", authMiddleware(), adminOnly(), getTrackedDiff)
+		api.DELETE("/admin/tracked/:symbol", authMiddleware(), adminOnly(), deleteTrackedStock)
 
 		// FlipperBot routes - Defensive mode (view: all users, actions: admin only)
 		api.GET("/flipperbot/update", authMiddleware(), adminOnly(), flipperBotUpdate)
@@ -448,6 +484,16 @@ func main() {
 		api.POST("/flipperbot/reset", authMiddleware(), adminOnly(), resetFlipperBot)
 		api.PUT("/flipperbot/position/:id", authMiddleware(), adminOnly(), updateFlipperBotPosition)
 		api.PUT("/flipperbot/trade/:id", authMiddleware(), adminOnly(), updateFlipperBotTrade)
+		api.DELETE("/flipperbot/trade/:id", authMiddleware(), adminOnly(), deleteFlipperBotTrade)
+		api.GET("/flipperbot/pending", authMiddleware(), adminOnly(), getFlipperBotPending)
+		api.GET("/flipperbot/logs", authMiddleware(), getFlipperBotLogs)
+		api.GET("/flipperbot/todos", authMiddleware(), getFlipperBotTodos)
+		api.PUT("/flipperbot/todos/:id/done", authMiddleware(), adminOnly(), markFlipperBotTodoDone)
+		api.PUT("/flipperbot/todos/:id/reopen", authMiddleware(), adminOnly(), reopenFlipperBotTodo)
+		api.DELETE("/flipperbot/todos/:id", authMiddleware(), adminOnly(), deleteFlipperBotTodo)
+		api.POST("/flipperbot/todos/:id/execute", authMiddleware(), adminOnly(), executeFlipperBotTodo)
+		api.POST("/flipperbot/sync", authMiddleware(), adminOnly(), syncFlipperBot)
+		api.GET("/flipperbot/completed-trades", authMiddleware(), getFlipperBotCompletedTrades)
 
 		// Lutz routes - Aggressive mode bot (view: all users, actions: admin only)
 		api.GET("/lutz/update", authMiddleware(), adminOnly(), lutzUpdate)
@@ -457,6 +503,16 @@ func main() {
 		api.POST("/lutz/reset", authMiddleware(), adminOnly(), resetLutz)
 		api.PUT("/lutz/position/:id", authMiddleware(), adminOnly(), updateLutzPosition)
 		api.PUT("/lutz/trade/:id", authMiddleware(), adminOnly(), updateLutzTrade)
+		api.DELETE("/lutz/trade/:id", authMiddleware(), adminOnly(), deleteLutzTrade)
+		api.GET("/lutz/pending", authMiddleware(), adminOnly(), getLutzPending)
+		api.GET("/lutz/logs", authMiddleware(), getLutzLogs)
+		api.GET("/lutz/todos", authMiddleware(), getLutzTodos)
+		api.PUT("/lutz/todos/:id/done", authMiddleware(), adminOnly(), markLutzTodoDone)
+		api.PUT("/lutz/todos/:id/reopen", authMiddleware(), adminOnly(), reopenLutzTodo)
+		api.DELETE("/lutz/todos/:id", authMiddleware(), adminOnly(), deleteLutzTodo)
+		api.POST("/lutz/todos/:id/execute", authMiddleware(), adminOnly(), executeLutzTodo)
+		api.POST("/lutz/sync", authMiddleware(), adminOnly(), syncLutz)
+		api.GET("/lutz/completed-trades", authMiddleware(), getLutzCompletedTrades)
 	}
 
 	r.Run(":8080")
@@ -2870,6 +2926,59 @@ func updateAllWatchlistStocks(c *gin.Context) {
 	})
 }
 
+// getTrackedDiff returns tracked stocks that are NOT in the watchlist
+func getTrackedDiff(c *gin.Context) {
+	// Get all watchlist symbols
+	var watchlistStocks []Stock
+	db.Find(&watchlistStocks)
+	watchlistSymbols := make(map[string]bool)
+	for _, s := range watchlistStocks {
+		watchlistSymbols[s.Symbol] = true
+	}
+
+	// Get defensive tracked stocks not in watchlist
+	var defensivePerfs []StockPerformance
+	db.Find(&defensivePerfs)
+	var defensiveDiff []StockPerformance
+	for _, p := range defensivePerfs {
+		if !watchlistSymbols[p.Symbol] {
+			defensiveDiff = append(defensiveDiff, p)
+		}
+	}
+
+	// Get aggressive tracked stocks not in watchlist
+	var aggressivePerfs []AggressiveStockPerformance
+	db.Find(&aggressivePerfs)
+	var aggressiveDiff []AggressiveStockPerformance
+	for _, p := range aggressivePerfs {
+		if !watchlistSymbols[p.Symbol] {
+			aggressiveDiff = append(aggressiveDiff, p)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"defensive":  defensiveDiff,
+		"aggressive": aggressiveDiff,
+	})
+}
+
+// deleteTrackedStock deletes a tracked stock from both performance tables
+func deleteTrackedStock(c *gin.Context) {
+	symbol := c.Param("symbol")
+	if symbol == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Symbol required"})
+		return
+	}
+
+	// Delete from defensive performance
+	db.Where("symbol = ?", symbol).Delete(&StockPerformance{})
+
+	// Delete from aggressive performance
+	db.Where("symbol = ?", symbol).Delete(&AggressiveStockPerformance{})
+
+	c.JSON(http.StatusOK, gin.H{"message": "Deleted", "symbol": symbol})
+}
+
 // ========================================
 // FlipperBot Functions
 // ========================================
@@ -2911,6 +3020,7 @@ func ensureLutzUser() {
 func flipperBotUpdate(c *gin.Context) {
 	startDate, _ := time.Parse("2006-01-02", FLIPPERBOT_START_DATE)
 	now := time.Now()
+	sessionID := uuid.New().String()
 
 	// Detailed log for debugging
 	var logs []map[string]interface{}
@@ -2924,6 +3034,8 @@ func flipperBotUpdate(c *gin.Context) {
 			entry[k] = v
 		}
 		logs = append(logs, entry)
+		// Also persist to DB
+		saveBotLog("flipperbot", level, message, sessionID)
 	}
 
 	addLog("INFO", "FlipperBot Update gestartet", map[string]interface{}{
@@ -2982,14 +3094,14 @@ func flipperBotUpdate(c *gin.Context) {
 		if stock.Signal == "BUY" {
 			// BUY signal is active - we should enter a position if we don't have one
 			if !hasPosition {
-				// Check if BUY signal started after our start date
+				// NEW RULE: No retroactive trades! Always use TODAY's date and current price
+				today := time.Now().Truncate(24 * time.Hour)
+				tradeDate := adjustToTradingDay(today)
+
+				// Skip if signal started before our start date (bot wasn't active then)
 				if signalStartDate.Before(startDate) {
-					// Signal started before 01.01.2026 - adjust to start date
-					addLog("INFO", fmt.Sprintf("%s: BUY-Signal startete vor %s, verwende Startdatum",
+					addLog("INFO", fmt.Sprintf("%s: BUY-Signal startete vor %s, Trade heute zum aktuellen Kurs",
 						stock.Symbol, FLIPPERBOT_START_DATE), nil)
-					signalStartDate = startDate
-					// Adjust start date to trading day if needed
-					signalStartDate = adjustToTradingDay(signalStartDate)
 				}
 
 				// Check if we already have a buy trade for this stock
@@ -3010,60 +3122,30 @@ func flipperBotUpdate(c *gin.Context) {
 					}
 				}
 
-				// Get historical price at signal start date
-				buyPrice := getPriceAtDate(stock.Symbol, signalStartDate)
-				if buyPrice <= 0 {
-					// Fallback to current price if historical not available
-					if quote, ok := quotes[stock.Symbol]; ok && quote.Price > 0 {
-						buyPrice = quote.Price
-						addLog("WARN", fmt.Sprintf("%s: Kein historischer Preis für %s, nutze aktuellen Preis $%.2f",
-							stock.Symbol, signalStartDate.Format("2006-01-02"), buyPrice), nil)
-					} else {
-						addLog("ERROR", fmt.Sprintf("%s: Kein Preis verfügbar - überspringe", stock.Symbol), nil)
-						continue
-					}
+				// ALWAYS use current price - no retroactive trades!
+				var buyPrice float64
+				if quote, ok := quotes[stock.Symbol]; ok && quote.Price > 0 {
+					buyPrice = quote.Price
+				} else {
+					addLog("ERROR", fmt.Sprintf("%s: Kein aktueller Preis verfügbar - überspringe", stock.Symbol), nil)
+					continue
 				}
+
+				// Use today's date for the trade
+				signalStartDate = tradeDate
 
 				// Calculate quantity: invest 100 EUR worth
 				investmentEUR := 100.0
 				investmentUSD := convertToUSD(investmentEUR, "EUR")
 				qty := investmentUSD / buyPrice
 
-				// Execute BUY
-				addLog("ACTION", fmt.Sprintf("%s: KAUFE %.4f Anteile @ $%.2f (100€ = $%.2f, Signal-Datum: %s)",
-					stock.Symbol, qty, buyPrice, investmentUSD, signalStartDate.Format("2006-01-02")), nil)
+				// Create TODO instead of executing trade
+				addLog("TODO", fmt.Sprintf("%s: BUY-Vorschlag erstellt - %.4f Anteile @ $%.2f (100€ = $%.2f)",
+					stock.Symbol, qty, buyPrice, investmentUSD), nil)
 
-				newTrade := FlipperBotTrade{
-					Symbol:     stock.Symbol,
-					Name:       stock.Name,
-					Action:     "BUY",
-					Quantity:   qty,
-					Price:      buyPrice,
-					SignalDate: signalStartDate,
-					ExecutedAt: now,
-				}
-				db.Create(&newTrade)
-
-				newPosition := FlipperBotPosition{
-					Symbol:   stock.Symbol,
-					Name:     stock.Name,
-					Quantity: qty,
-					AvgPrice: buyPrice,
-					BuyDate:  signalStartDate,
-				}
-				db.Create(&newPosition)
-
-				// Add to portfolio for comparison
-				portfolioPos := PortfolioPosition{
-					UserID:       FLIPPERBOT_USER_ID,
-					Symbol:       stock.Symbol,
-					Name:         stock.Name,
-					PurchaseDate: &signalStartDate,
-					AvgPrice:     buyPrice,
-					Currency:     "USD",
-					Quantity:     &qty,
-				}
-				db.Create(&portfolioPos)
+				saveBotTodo("flipperbot", "BUY", stock.Symbol, stock.Name, qty, 0, buyPrice,
+					stock.Signal, stock.SignalBars, signalStartDate.Format("2006-01-02"),
+					fmt.Sprintf("BUY Signal aktiv seit %d Bars", stock.SignalBars))
 
 				actions = append(actions, map[string]interface{}{
 					"action":   "BUY",
@@ -3072,6 +3154,7 @@ func flipperBotUpdate(c *gin.Context) {
 					"price":    buyPrice,
 					"date":     signalStartDate.Format("2006-01-02"),
 					"quantity": qty,
+					"is_todo":  true,
 				})
 			} else {
 				addLog("SKIP", fmt.Sprintf("%s: BUY-Signal aktiv, Position bereits vorhanden", stock.Symbol), nil)
@@ -3129,28 +3212,17 @@ func flipperBotUpdate(c *gin.Context) {
 					continue
 				}
 
-				// Execute SELL
+				// Create TODO instead of executing trade
 				profitLoss := (sellPrice - existingPosition.AvgPrice) * existingPosition.Quantity
 				profitLossPct := ((sellPrice - existingPosition.AvgPrice) / existingPosition.AvgPrice) * 100
 
-				addLog("ACTION", fmt.Sprintf("%s: VERKAUFE %.4f Anteile @ $%.2f (Gewinn: $%.2f / %.2f%%)",
+				addLog("TODO", fmt.Sprintf("%s: SELL-Vorschlag erstellt - %.4f Anteile @ $%.2f (erwarteter Gewinn: $%.2f / %.2f%%)",
 					stock.Symbol, existingPosition.Quantity, sellPrice, profitLoss, profitLossPct), nil)
 
-				newTrade := FlipperBotTrade{
-					Symbol:        stock.Symbol,
-					Name:          stock.Name,
-					Action:        "SELL",
-					Quantity:      existingPosition.Quantity,
-					Price:         sellPrice,
-					SignalDate:    sellDate,
-					ExecutedAt:    now,
-					ProfitLoss:    &profitLoss,
-					ProfitLossPct: &profitLossPct,
-				}
-				db.Create(&newTrade)
-
-				db.Delete(&existingPosition)
-				db.Where("user_id = ? AND symbol = ?", FLIPPERBOT_USER_ID, stock.Symbol).Delete(&PortfolioPosition{})
+				saveBotTodo("flipperbot", "SELL", stock.Symbol, stock.Name, existingPosition.Quantity,
+					existingPosition.AvgPrice, sellPrice, stock.Signal, stock.SignalBars,
+					sellDate.Format("2006-01-02"),
+					fmt.Sprintf("SELL Signal - erwarteter Gewinn: $%.2f (%.2f%%)", profitLoss, profitLossPct))
 
 				actions = append(actions, map[string]interface{}{
 					"action":          "SELL",
@@ -3161,6 +3233,7 @@ func flipperBotUpdate(c *gin.Context) {
 					"quantity":        existingPosition.Quantity,
 					"profit_loss":     profitLoss,
 					"profit_loss_pct": profitLossPct,
+					"is_todo":         true,
 				})
 			} else {
 				addLog("SKIP", fmt.Sprintf("%s: Signal ist %s, keine Position zum Verkaufen", stock.Symbol, stock.Signal), nil)
@@ -3170,13 +3243,14 @@ func flipperBotUpdate(c *gin.Context) {
 		}
 	}
 
-	addLog("INFO", fmt.Sprintf("Update abgeschlossen: %d Aktionen ausgeführt", len(actions)), nil)
+	addLog("INFO", fmt.Sprintf("Update abgeschlossen: %d Vorschläge erstellt", len(actions)), nil)
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":      "FlipperBot update completed",
-		"actions":      actions,
-		"action_count": len(actions),
-		"logs":         logs,
+		"message":       "FlipperBot update completed",
+		"actions":       actions,
+		"action_count":  len(actions),
+		"logs":          logs,
+		"todos_created": len(actions),
 	})
 }
 
@@ -3375,6 +3449,143 @@ func resetFlipperBot(c *gin.Context) {
 	})
 }
 
+// syncFlipperBot synchronizes positions with trades
+func syncFlipperBot(c *gin.Context) {
+	var results []map[string]interface{}
+
+	// Get all BUY trades
+	var buyTrades []FlipperBotTrade
+	db.Where("action = ?", "BUY").Order("signal_date asc").Find(&buyTrades)
+
+	// Get all SELL trades
+	var sellTrades []FlipperBotTrade
+	db.Where("action = ?", "SELL").Find(&sellTrades)
+
+	// Build map of sells by symbol
+	sellsBySymbol := make(map[string][]FlipperBotTrade)
+	for _, sell := range sellTrades {
+		sellsBySymbol[sell.Symbol] = append(sellsBySymbol[sell.Symbol], sell)
+	}
+
+	// For each symbol, check if there's an open position (BUY without matching SELL)
+	openBuys := make(map[string]FlipperBotTrade)
+	for _, buy := range buyTrades {
+		sells := sellsBySymbol[buy.Symbol]
+		hasSellAfter := false
+		for _, sell := range sells {
+			if sell.SignalDate.After(buy.SignalDate) || sell.SignalDate.Equal(buy.SignalDate) {
+				hasSellAfter = true
+				break
+			}
+		}
+		if !hasSellAfter {
+			// This is an open buy - keep the latest one
+			if existing, ok := openBuys[buy.Symbol]; ok {
+				if buy.SignalDate.After(existing.SignalDate) {
+					openBuys[buy.Symbol] = buy
+				}
+			} else {
+				openBuys[buy.Symbol] = buy
+			}
+		}
+	}
+
+	// Delete all existing positions and recreate from open buys
+	db.Where("1 = 1").Delete(&FlipperBotPosition{})
+	db.Where("user_id = ?", FLIPPERBOT_USER_ID).Delete(&PortfolioPosition{})
+
+	for symbol, buy := range openBuys {
+		// Create position
+		pos := FlipperBotPosition{
+			Symbol:   symbol,
+			Name:     buy.Name,
+			Quantity: buy.Quantity,
+			AvgPrice: buy.Price,
+			IsLive:   buy.IsLive,
+			BuyDate:  buy.SignalDate,
+		}
+		db.Create(&pos)
+
+		// Create portfolio position
+		portfolioPos := PortfolioPosition{
+			UserID:       FLIPPERBOT_USER_ID,
+			Symbol:       symbol,
+			Name:         buy.Name,
+			PurchaseDate: &buy.SignalDate,
+			AvgPrice:     buy.Price,
+			Currency:     "USD",
+			Quantity:     &buy.Quantity,
+		}
+		db.Create(&portfolioPos)
+
+		results = append(results, map[string]interface{}{
+			"symbol":   symbol,
+			"quantity": buy.Quantity,
+			"price":    buy.Price,
+			"date":     buy.SignalDate.Format("2006-01-02"),
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":          "Sync completed",
+		"positions_synced": len(results),
+		"positions":        results,
+	})
+}
+
+// getFlipperBotCompletedTrades returns completed trades (BUY + SELL pairs)
+func getFlipperBotCompletedTrades(c *gin.Context) {
+	var trades []FlipperBotTrade
+	db.Where("action = ?", "SELL").Order("signal_date desc").Find(&trades)
+
+	type CompletedTrade struct {
+		Symbol        string    `json:"symbol"`
+		Name          string    `json:"name"`
+		BuyDate       time.Time `json:"buy_date"`
+		BuyPrice      float64   `json:"buy_price"`
+		SellDate      time.Time `json:"sell_date"`
+		SellPrice     float64   `json:"sell_price"`
+		Quantity      float64   `json:"quantity"`
+		ProfitLoss    float64   `json:"profit_loss"`
+		ProfitLossPct float64   `json:"profit_loss_pct"`
+		IsLive        bool      `json:"is_live"`
+	}
+
+	var completed []CompletedTrade
+	for _, sell := range trades {
+		// Find the matching BUY
+		var buy FlipperBotTrade
+		if err := db.Where("symbol = ? AND action = ? AND signal_date < ?",
+			sell.Symbol, "BUY", sell.SignalDate).
+			Order("signal_date desc").First(&buy).Error; err == nil {
+
+			pl := 0.0
+			plPct := 0.0
+			if sell.ProfitLoss != nil {
+				pl = *sell.ProfitLoss
+			}
+			if sell.ProfitLossPct != nil {
+				plPct = *sell.ProfitLossPct
+			}
+
+			completed = append(completed, CompletedTrade{
+				Symbol:        sell.Symbol,
+				Name:          sell.Name,
+				BuyDate:       buy.SignalDate,
+				BuyPrice:      buy.Price,
+				SellDate:      sell.SignalDate,
+				SellPrice:     sell.Price,
+				Quantity:      sell.Quantity,
+				ProfitLoss:    pl,
+				ProfitLossPct: plPct,
+				IsLive:        sell.IsLive,
+			})
+		}
+	}
+
+	c.JSON(http.StatusOK, completed)
+}
+
 // Update FlipperBot position with real trade data (Admin only)
 func updateFlipperBotPosition(c *gin.Context) {
 	id := c.Param("id")
@@ -3462,11 +3673,514 @@ func updateFlipperBotTrade(c *gin.Context) {
 	c.JSON(http.StatusOK, trade)
 }
 
+// deleteFlipperBotTrade deletes a trade and its associated position
+func deleteFlipperBotTrade(c *gin.Context) {
+	id := c.Param("id")
+
+	var trade FlipperBotTrade
+	if err := db.First(&trade, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Trade not found"})
+		return
+	}
+
+	symbol := trade.Symbol
+
+	// Delete the trade
+	db.Delete(&trade)
+
+	// If it was a BUY trade, also delete the position
+	if trade.Action == "BUY" {
+		db.Where("symbol = ?", symbol).Delete(&FlipperBotPosition{})
+		db.Where("user_id = ? AND symbol = ?", FLIPPERBOT_USER_ID, symbol).Delete(&PortfolioPosition{})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Trade deleted", "symbol": symbol})
+}
+
+// getFlipperBotPending returns pending actions (positions to sell, stocks to buy)
+func getFlipperBotPending(c *gin.Context) {
+	var pending []map[string]interface{}
+
+	// Get all current positions
+	var positions []FlipperBotPosition
+	db.Find(&positions)
+
+	// Get tracked stocks performance data
+	var trackedStocks []StockPerformance
+	db.Find(&trackedStocks)
+
+	// Create a map for quick lookup
+	stockSignals := make(map[string]StockPerformance)
+	for _, s := range trackedStocks {
+		stockSignals[s.Symbol] = s
+	}
+
+	// Check positions that need to be sold (signal changed to SELL)
+	for _, pos := range positions {
+		if perf, ok := stockSignals[pos.Symbol]; ok {
+			if perf.Signal == "SELL" {
+				signalSince := time.Now().AddDate(0, -perf.SignalBars, 0).Format("2006-01-02")
+				pending = append(pending, map[string]interface{}{
+					"type":         "SELL",
+					"symbol":       pos.Symbol,
+					"name":         pos.Name,
+					"quantity":     pos.Quantity,
+					"avg_price":    pos.AvgPrice,
+					"signal":       perf.Signal,
+					"signal_bars":  perf.SignalBars,
+					"signal_since": signalSince,
+					"reason":       "Position hat SELL-Signal",
+				})
+				// Create/update todo
+				saveBotTodo("flipperbot", "SELL", pos.Symbol, pos.Name, pos.Quantity, pos.AvgPrice, 0, perf.Signal, perf.SignalBars, signalSince, "Position hat SELL-Signal")
+			}
+		}
+	}
+
+	// Check tracked stocks with BUY signal that we don't own yet
+	positionSymbols := make(map[string]bool)
+	for _, p := range positions {
+		positionSymbols[p.Symbol] = true
+	}
+
+	for _, stock := range trackedStocks {
+		if stock.Signal == "BUY" && !positionSymbols[stock.Symbol] {
+			// Check if we already have a buy trade without subsequent sell
+			var existingBuy FlipperBotTrade
+			alreadyBought := db.Where("symbol = ? AND action = ?", stock.Symbol, "BUY").
+				Order("signal_date desc").First(&existingBuy).Error == nil
+
+			if alreadyBought {
+				var lastSell FlipperBotTrade
+				hasSoldAfter := db.Where("symbol = ? AND action = ? AND signal_date > ?",
+					stock.Symbol, "SELL", existingBuy.SignalDate).First(&lastSell).Error == nil
+				if !hasSoldAfter {
+					continue // Already bought, skip
+				}
+			}
+
+			signalSince := time.Now().AddDate(0, -stock.SignalBars, 0).Format("2006-01-02")
+			pending = append(pending, map[string]interface{}{
+				"type":         "BUY",
+				"symbol":       stock.Symbol,
+				"name":         stock.Name,
+				"signal":       stock.Signal,
+				"signal_bars":  stock.SignalBars,
+				"signal_since": signalSince,
+				"reason":       "Neues BUY-Signal erkannt",
+			})
+			// Create/update todo
+			saveBotTodo("flipperbot", "BUY", stock.Symbol, stock.Name, 0, 0, 0, stock.Signal, stock.SignalBars, signalSince, "Neues BUY-Signal erkannt")
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"pending": pending,
+		"count":   len(pending),
+	})
+}
+
+// getFlipperBotLogs returns the last 100 logs for FlipperBot
+func getFlipperBotLogs(c *gin.Context) {
+	var logs []BotLog
+	db.Where("bot = ?", "flipperbot").Order("created_at desc").Limit(100).Find(&logs)
+	c.JSON(http.StatusOK, logs)
+}
+
+// getFlipperBotTodos returns all todos for FlipperBot (open first, then done)
+func getFlipperBotTodos(c *gin.Context) {
+	var todos []BotTodo
+	db.Where("bot = ?", "flipperbot").Order("done asc, created_at desc").Find(&todos)
+	c.JSON(http.StatusOK, todos)
+}
+
+// markFlipperBotTodoDone marks a todo as done (discarded)
+func markFlipperBotTodoDone(c *gin.Context) {
+	id := c.Param("id")
+	var todo BotTodo
+	if err := db.First(&todo, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+		return
+	}
+	now := time.Now()
+	todo.Done = true
+	todo.Decision = "discarded"
+	todo.DoneAt = &now
+	db.Save(&todo)
+	c.JSON(http.StatusOK, todo)
+}
+
+// reopenFlipperBotTodo reopens a done todo
+func reopenFlipperBotTodo(c *gin.Context) {
+	id := c.Param("id")
+	var todo BotTodo
+	if err := db.First(&todo, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+		return
+	}
+	if !todo.Done {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Todo is not done"})
+		return
+	}
+	todo.Done = false
+	todo.Decision = ""
+	todo.DoneAt = nil
+	todo.UpdatedAt = time.Now()
+	db.Save(&todo)
+	c.JSON(http.StatusOK, todo)
+}
+
+// deleteFlipperBotTodo deletes a done todo
+func deleteFlipperBotTodo(c *gin.Context) {
+	id := c.Param("id")
+	var todo BotTodo
+	if err := db.First(&todo, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+		return
+	}
+	db.Delete(&todo)
+	c.JSON(http.StatusOK, gin.H{"message": "Todo deleted"})
+}
+
+// executeFlipperBotTodo executes a pending todo (actually performs the trade)
+func executeFlipperBotTodo(c *gin.Context) {
+	id := c.Param("id")
+	var todo BotTodo
+	if err := db.First(&todo, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+		return
+	}
+
+	if todo.Done {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Todo already completed"})
+		return
+	}
+
+	if todo.Bot != "flipperbot" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Wrong bot type"})
+		return
+	}
+
+	now := time.Now()
+	today := now.Truncate(24 * time.Hour)
+	tradeDate := adjustToTradingDay(today)
+
+	// Fetch fresh price
+	quotes := fetchQuotes([]string{todo.Symbol})
+	currentPrice := todo.Price
+	if quote, ok := quotes[todo.Symbol]; ok && quote.Price > 0 {
+		currentPrice = quote.Price
+	}
+
+	if todo.Type == "BUY" {
+		// Calculate quantity for exactly 100 EUR investment
+		investmentEUR := 100.0
+		investmentUSD := convertToUSD(investmentEUR, "EUR")
+		// Calculate quantity and round to 6 decimal places
+		qty := investmentUSD / currentPrice
+		qty = math.Round(qty*1000000) / 1000000
+		// Recalculate price so that qty * actualPrice = exactly investmentUSD
+		actualPrice := investmentUSD / qty
+
+		// Create trade
+		newTrade := FlipperBotTrade{
+			Symbol:     todo.Symbol,
+			Name:       todo.Name,
+			Action:     "BUY",
+			Quantity:   qty,
+			Price:      actualPrice,
+			SignalDate: tradeDate,
+			ExecutedAt: now,
+		}
+		db.Create(&newTrade)
+
+		// Create position
+		newPosition := FlipperBotPosition{
+			Symbol:      todo.Symbol,
+			Name:        todo.Name,
+			Quantity:    qty,
+			AvgPrice:    actualPrice,
+			InvestedEUR: investmentEUR,
+			BuyDate:     tradeDate,
+		}
+		db.Create(&newPosition)
+
+		// Add to portfolio
+		portfolioPos := PortfolioPosition{
+			UserID:       FLIPPERBOT_USER_ID,
+			Symbol:       todo.Symbol,
+			Name:         todo.Name,
+			PurchaseDate: &tradeDate,
+			AvgPrice:     actualPrice,
+			Currency:     "USD",
+			Quantity:     &qty,
+		}
+		db.Create(&portfolioPos)
+
+		// Mark todo as done with decision
+		todo.Done = true
+		todo.Decision = "executed"
+		todo.DoneAt = &now
+		db.Save(&todo)
+
+		c.JSON(http.StatusOK, gin.H{
+			"message":        "BUY executed",
+			"symbol":         todo.Symbol,
+			"quantity":       qty,
+			"price":          actualPrice,
+			"invested_eur":   investmentEUR,
+			"invested_usd":   investmentUSD,
+			"trade_id":       newTrade.ID,
+		})
+	} else if todo.Type == "SELL" {
+		// Get current position
+		var position FlipperBotPosition
+		if err := db.Where("symbol = ?", todo.Symbol).First(&position).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "No position found to sell"})
+			return
+		}
+
+		profitLoss := (currentPrice - position.AvgPrice) * position.Quantity
+		profitLossPct := ((currentPrice - position.AvgPrice) / position.AvgPrice) * 100
+
+		// Create trade
+		newTrade := FlipperBotTrade{
+			Symbol:        todo.Symbol,
+			Name:          todo.Name,
+			Action:        "SELL",
+			Quantity:      position.Quantity,
+			Price:         currentPrice,
+			SignalDate:    tradeDate,
+			ExecutedAt:    now,
+			ProfitLoss:    &profitLoss,
+			ProfitLossPct: &profitLossPct,
+		}
+		db.Create(&newTrade)
+
+		// Delete position
+		db.Delete(&position)
+		db.Where("user_id = ? AND symbol = ?", FLIPPERBOT_USER_ID, todo.Symbol).Delete(&PortfolioPosition{})
+
+		// Mark todo as done with decision
+		todo.Done = true
+		todo.Decision = "executed"
+		todo.DoneAt = &now
+		db.Save(&todo)
+
+		c.JSON(http.StatusOK, gin.H{
+			"message":         "SELL executed",
+			"symbol":          todo.Symbol,
+			"quantity":        position.Quantity,
+			"price":           currentPrice,
+			"profit_loss":     profitLoss,
+			"profit_loss_pct": profitLossPct,
+			"trade_id":        newTrade.ID,
+		})
+	} else {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Unknown todo type"})
+	}
+}
+
+// executeLutzTodo executes a pending Lutz todo
+func executeLutzTodo(c *gin.Context) {
+	id := c.Param("id")
+	var todo BotTodo
+	if err := db.First(&todo, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+		return
+	}
+
+	if todo.Done {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Todo already completed"})
+		return
+	}
+
+	if todo.Bot != "lutz" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Wrong bot type"})
+		return
+	}
+
+	now := time.Now()
+	today := now.Truncate(24 * time.Hour)
+	tradeDate := adjustToTradingDay(today)
+
+	// Fetch fresh price
+	quotes := fetchQuotes([]string{todo.Symbol})
+	currentPrice := todo.Price
+	if quote, ok := quotes[todo.Symbol]; ok && quote.Price > 0 {
+		currentPrice = quote.Price
+	}
+
+	if todo.Type == "BUY" {
+		// Calculate quantity for exactly 100 EUR investment
+		investmentEUR := 100.0
+		investmentUSD := convertToUSD(investmentEUR, "EUR")
+		qty := investmentUSD / currentPrice
+		qty = math.Round(qty*1000000) / 1000000
+		// Recalculate price so that qty * actualPrice = exactly investmentUSD
+		actualPrice := investmentUSD / qty
+
+		newTrade := LutzTrade{
+			Symbol:     todo.Symbol,
+			Name:       todo.Name,
+			Action:     "BUY",
+			Quantity:   qty,
+			Price:      actualPrice,
+			SignalDate: tradeDate,
+			ExecutedAt: now,
+		}
+		db.Create(&newTrade)
+
+		newPosition := LutzPosition{
+			Symbol:      todo.Symbol,
+			Name:        todo.Name,
+			Quantity:    qty,
+			AvgPrice:    actualPrice,
+			InvestedEUR: investmentEUR,
+			BuyDate:     tradeDate,
+		}
+		db.Create(&newPosition)
+
+		portfolioPos := PortfolioPosition{
+			UserID:       LUTZ_USER_ID,
+			Symbol:       todo.Symbol,
+			Name:         todo.Name,
+			PurchaseDate: &tradeDate,
+			AvgPrice:     actualPrice,
+			Currency:     "USD",
+			Quantity:     &qty,
+		}
+		db.Create(&portfolioPos)
+
+		todo.Done = true
+		todo.Decision = "executed"
+		todo.DoneAt = &now
+		db.Save(&todo)
+
+		c.JSON(http.StatusOK, gin.H{
+			"message":      "BUY executed",
+			"symbol":       todo.Symbol,
+			"quantity":     qty,
+			"price":        actualPrice,
+			"invested_eur": investmentEUR,
+			"invested_usd": investmentUSD,
+			"trade_id":     newTrade.ID,
+		})
+	} else if todo.Type == "SELL" {
+		var position LutzPosition
+		if err := db.Where("symbol = ?", todo.Symbol).First(&position).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "No position found to sell"})
+			return
+		}
+
+		profitLoss := (currentPrice - position.AvgPrice) * position.Quantity
+		profitLossPct := ((currentPrice - position.AvgPrice) / position.AvgPrice) * 100
+
+		newTrade := LutzTrade{
+			Symbol:        todo.Symbol,
+			Name:          todo.Name,
+			Action:        "SELL",
+			Quantity:      position.Quantity,
+			Price:         currentPrice,
+			SignalDate:    tradeDate,
+			ExecutedAt:    now,
+			ProfitLoss:    &profitLoss,
+			ProfitLossPct: &profitLossPct,
+		}
+		db.Create(&newTrade)
+
+		db.Delete(&position)
+		db.Where("user_id = ? AND symbol = ?", LUTZ_USER_ID, todo.Symbol).Delete(&PortfolioPosition{})
+
+		todo.Done = true
+		todo.Decision = "executed"
+		todo.DoneAt = &now
+		db.Save(&todo)
+
+		c.JSON(http.StatusOK, gin.H{
+			"message":         "SELL executed",
+			"symbol":          todo.Symbol,
+			"quantity":        position.Quantity,
+			"price":           currentPrice,
+			"profit_loss":     profitLoss,
+			"profit_loss_pct": profitLossPct,
+			"trade_id":        newTrade.ID,
+		})
+	} else {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Unknown todo type"})
+	}
+}
+
+// saveBotLog saves a log entry to the database
+func saveBotLog(bot, level, message, sessionID string) {
+	log := BotLog{
+		Bot:       bot,
+		Level:     level,
+		Message:   message,
+		SessionID: sessionID,
+	}
+	db.Create(&log)
+}
+
+// saveBotTodo creates or updates a todo entry. If a done todo exists, it reopens it.
+func saveBotTodo(bot, todoType, symbol, name string, quantity, avgPrice, price float64, signal string, signalBars int, signalSince, reason string) {
+	// Check if there's already an open todo for this symbol and type
+	var existing BotTodo
+	if err := db.Where("bot = ? AND symbol = ? AND type = ? AND done = ?", bot, symbol, todoType, false).First(&existing).Error; err == nil {
+		// Update existing open todo
+		existing.Quantity = quantity
+		existing.AvgPrice = avgPrice
+		existing.Price = price
+		existing.Signal = signal
+		existing.SignalBars = signalBars
+		existing.SignalSince = signalSince
+		existing.UpdatedAt = time.Now()
+		db.Save(&existing)
+		return
+	}
+
+	// Check if there's a done todo for this symbol and type - reopen it
+	var doneTodo BotTodo
+	if err := db.Where("bot = ? AND symbol = ? AND type = ? AND done = ?", bot, symbol, todoType, true).First(&doneTodo).Error; err == nil {
+		// Reopen the done todo
+		doneTodo.Quantity = quantity
+		doneTodo.AvgPrice = avgPrice
+		doneTodo.Price = price
+		doneTodo.Signal = signal
+		doneTodo.SignalBars = signalBars
+		doneTodo.SignalSince = signalSince
+		doneTodo.Reason = reason
+		doneTodo.Done = false
+		doneTodo.DoneAt = nil
+		doneTodo.UpdatedAt = time.Now()
+		db.Save(&doneTodo)
+		return
+	}
+
+	// Create new todo
+	todo := BotTodo{
+		Bot:         bot,
+		Type:        todoType,
+		Symbol:      symbol,
+		Name:        name,
+		Quantity:    quantity,
+		AvgPrice:    avgPrice,
+		Price:       price,
+		Signal:      signal,
+		SignalBars:  signalBars,
+		SignalSince: signalSince,
+		Reason:      reason,
+		Done:        false,
+	}
+	db.Create(&todo)
+}
+
 // ==================== LUTZ BOT (Aggressive Mode) ====================
 
 func lutzUpdate(c *gin.Context) {
 	startDate, _ := time.Parse("2006-01-02", FLIPPERBOT_START_DATE)
 	now := time.Now()
+	sessionID := uuid.New().String()
 
 	var logs []map[string]interface{}
 	addLog := func(level, message string, data map[string]interface{}) {
@@ -3479,6 +4193,8 @@ func lutzUpdate(c *gin.Context) {
 			entry[k] = v
 		}
 		logs = append(logs, entry)
+		// Also persist to DB
+		saveBotLog("lutz", level, message, sessionID)
 	}
 
 	addLog("INFO", "Lutz Update gestartet (Aggressiver Modus)", map[string]interface{}{
@@ -3536,10 +4252,12 @@ func lutzUpdate(c *gin.Context) {
 		// - SELL signal ONLY -> sell (WAIT means already out, don't sell)
 		if stock.Signal == "BUY" {
 			if !hasPosition {
+				// NEW RULE: No retroactive trades! Always use TODAY's date and current price
+				today := time.Now().Truncate(24 * time.Hour)
+				tradeDate := adjustToTradingDay(today)
+
 				if signalStartDate.Before(startDate) {
-					addLog("INFO", fmt.Sprintf("%s: Signal startete vor %s, verwende Startdatum", stock.Symbol, FLIPPERBOT_START_DATE), nil)
-					signalStartDate = startDate
-					signalStartDate = adjustToTradingDay(signalStartDate)
+					addLog("INFO", fmt.Sprintf("%s: Signal startete vor %s, Trade heute zum aktuellen Kurs", stock.Symbol, FLIPPERBOT_START_DATE), nil)
 				}
 
 				var existingBuy LutzTrade
@@ -3557,54 +4275,30 @@ func lutzUpdate(c *gin.Context) {
 					}
 				}
 
-				buyPrice := getPriceAtDate(stock.Symbol, signalStartDate)
-				if buyPrice <= 0 {
-					if quote, ok := quotes[stock.Symbol]; ok && quote.Price > 0 {
-						buyPrice = quote.Price
-					} else {
-						addLog("ERROR", fmt.Sprintf("%s: Kein Preis verfügbar", stock.Symbol), nil)
-						continue
-					}
+				// ALWAYS use current price - no retroactive trades!
+				var buyPrice float64
+				if quote, ok := quotes[stock.Symbol]; ok && quote.Price > 0 {
+					buyPrice = quote.Price
+				} else {
+					addLog("ERROR", fmt.Sprintf("%s: Kein aktueller Preis verfügbar", stock.Symbol), nil)
+					continue
 				}
+
+				// Use today's date for the trade
+				signalStartDate = tradeDate
 
 				// Calculate quantity: invest 100 EUR worth
 				investmentEUR := 100.0
 				investmentUSD := convertToUSD(investmentEUR, "EUR")
 				qty := investmentUSD / buyPrice
 
-				addLog("ACTION", fmt.Sprintf("%s: KAUFE %.4f Anteile @ $%.2f (100€ = $%.2f, Signal-Datum: %s)",
-					stock.Symbol, qty, buyPrice, investmentUSD, signalStartDate.Format("2006-01-02")), nil)
+				// Create TODO instead of executing trade
+				addLog("TODO", fmt.Sprintf("%s: BUY-Vorschlag erstellt - %.4f Anteile @ $%.2f (100€ = $%.2f)",
+					stock.Symbol, qty, buyPrice, investmentUSD), nil)
 
-				newTrade := LutzTrade{
-					Symbol:     stock.Symbol,
-					Name:       stock.Name,
-					Action:     "BUY",
-					Quantity:   qty,
-					Price:      buyPrice,
-					SignalDate: signalStartDate,
-					ExecutedAt: now,
-				}
-				db.Create(&newTrade)
-
-				newPosition := LutzPosition{
-					Symbol:   stock.Symbol,
-					Name:     stock.Name,
-					Quantity: qty,
-					AvgPrice: buyPrice,
-					BuyDate:  signalStartDate,
-				}
-				db.Create(&newPosition)
-
-				portfolioPos := PortfolioPosition{
-					UserID:       LUTZ_USER_ID,
-					Symbol:       stock.Symbol,
-					Name:         stock.Name,
-					PurchaseDate: &signalStartDate,
-					AvgPrice:     buyPrice,
-					Currency:     "USD",
-					Quantity:     &qty,
-				}
-				db.Create(&portfolioPos)
+				saveBotTodo("lutz", "BUY", stock.Symbol, stock.Name, qty, 0, buyPrice,
+					stock.Signal, stock.SignalBars, signalStartDate.Format("2006-01-02"),
+					fmt.Sprintf("BUY Signal aktiv seit %d Bars", stock.SignalBars))
 
 				actions = append(actions, map[string]interface{}{
 					"action":   "BUY",
@@ -3613,6 +4307,7 @@ func lutzUpdate(c *gin.Context) {
 					"price":    buyPrice,
 					"date":     signalStartDate.Format("2006-01-02"),
 					"quantity": qty,
+					"is_todo":  true,
 				})
 			} else {
 				addLog("SKIP", fmt.Sprintf("%s: Position bereits vorhanden", stock.Symbol), nil)
@@ -3651,26 +4346,17 @@ func lutzUpdate(c *gin.Context) {
 					continue
 				}
 
+				// Create TODO instead of executing trade
 				profitLoss := (sellPrice - existingPosition.AvgPrice) * existingPosition.Quantity
 				profitLossPct := ((sellPrice - existingPosition.AvgPrice) / existingPosition.AvgPrice) * 100
 
-				addLog("ACTION", fmt.Sprintf("%s: VERKAUFE %.4f Anteile @ $%.2f (Gewinn: $%.2f / %.2f%%)",
+				addLog("TODO", fmt.Sprintf("%s: SELL-Vorschlag erstellt - %.4f Anteile @ $%.2f (erwarteter Gewinn: $%.2f / %.2f%%)",
 					stock.Symbol, existingPosition.Quantity, sellPrice, profitLoss, profitLossPct), nil)
 
-				newTrade := LutzTrade{
-					Symbol:        stock.Symbol,
-					Name:          stock.Name,
-					Action:        "SELL",
-					Quantity:      existingPosition.Quantity,
-					Price:         sellPrice,
-					SignalDate:    sellDate,
-					ExecutedAt:    now,
-					ProfitLoss:    &profitLoss,
-					ProfitLossPct: &profitLossPct,
-				}
-				db.Create(&newTrade)
-				db.Delete(&existingPosition)
-				db.Where("user_id = ? AND symbol = ?", LUTZ_USER_ID, stock.Symbol).Delete(&PortfolioPosition{})
+				saveBotTodo("lutz", "SELL", stock.Symbol, stock.Name, existingPosition.Quantity,
+					existingPosition.AvgPrice, sellPrice, stock.Signal, stock.SignalBars,
+					sellDate.Format("2006-01-02"),
+					fmt.Sprintf("SELL Signal - erwarteter Gewinn: $%.2f (%.2f%%)", profitLoss, profitLossPct))
 
 				actions = append(actions, map[string]interface{}{
 					"action":          "SELL",
@@ -3681,6 +4367,7 @@ func lutzUpdate(c *gin.Context) {
 					"quantity":        existingPosition.Quantity,
 					"profit_loss":     profitLoss,
 					"profit_loss_pct": profitLossPct,
+					"is_todo":         true,
 				})
 			} else {
 				addLog("SKIP", fmt.Sprintf("%s: Keine Position zum Verkaufen", stock.Symbol), nil)
@@ -3688,13 +4375,14 @@ func lutzUpdate(c *gin.Context) {
 		}
 	}
 
-	addLog("INFO", fmt.Sprintf("Lutz Update abgeschlossen: %d Aktionen", len(actions)), nil)
+	addLog("INFO", fmt.Sprintf("Lutz Update abgeschlossen: %d Vorschläge erstellt", len(actions)), nil)
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":      "Lutz update completed",
-		"actions":      actions,
-		"action_count": len(actions),
-		"logs":         logs,
+		"message":       "Lutz update completed",
+		"actions":       actions,
+		"action_count":  len(actions),
+		"logs":          logs,
+		"todos_created": len(actions),
 	})
 }
 
@@ -3875,6 +4563,143 @@ func resetLutz(c *gin.Context) {
 	})
 }
 
+// syncLutz synchronizes positions with trades
+func syncLutz(c *gin.Context) {
+	var results []map[string]interface{}
+
+	// Get all BUY trades
+	var buyTrades []LutzTrade
+	db.Where("action = ?", "BUY").Order("signal_date asc").Find(&buyTrades)
+
+	// Get all SELL trades
+	var sellTrades []LutzTrade
+	db.Where("action = ?", "SELL").Find(&sellTrades)
+
+	// Build map of sells by symbol
+	sellsBySymbol := make(map[string][]LutzTrade)
+	for _, sell := range sellTrades {
+		sellsBySymbol[sell.Symbol] = append(sellsBySymbol[sell.Symbol], sell)
+	}
+
+	// For each symbol, check if there's an open position (BUY without matching SELL)
+	openBuys := make(map[string]LutzTrade)
+	for _, buy := range buyTrades {
+		sells := sellsBySymbol[buy.Symbol]
+		hasSellAfter := false
+		for _, sell := range sells {
+			if sell.SignalDate.After(buy.SignalDate) || sell.SignalDate.Equal(buy.SignalDate) {
+				hasSellAfter = true
+				break
+			}
+		}
+		if !hasSellAfter {
+			// This is an open buy - keep the latest one
+			if existing, ok := openBuys[buy.Symbol]; ok {
+				if buy.SignalDate.After(existing.SignalDate) {
+					openBuys[buy.Symbol] = buy
+				}
+			} else {
+				openBuys[buy.Symbol] = buy
+			}
+		}
+	}
+
+	// Delete all existing positions and recreate from open buys
+	db.Where("1 = 1").Delete(&LutzPosition{})
+	db.Where("user_id = ?", LUTZ_USER_ID).Delete(&PortfolioPosition{})
+
+	for symbol, buy := range openBuys {
+		// Create position
+		pos := LutzPosition{
+			Symbol:   symbol,
+			Name:     buy.Name,
+			Quantity: buy.Quantity,
+			AvgPrice: buy.Price,
+			IsLive:   buy.IsLive,
+			BuyDate:  buy.SignalDate,
+		}
+		db.Create(&pos)
+
+		// Create portfolio position
+		portfolioPos := PortfolioPosition{
+			UserID:       LUTZ_USER_ID,
+			Symbol:       symbol,
+			Name:         buy.Name,
+			PurchaseDate: &buy.SignalDate,
+			AvgPrice:     buy.Price,
+			Currency:     "USD",
+			Quantity:     &buy.Quantity,
+		}
+		db.Create(&portfolioPos)
+
+		results = append(results, map[string]interface{}{
+			"symbol":   symbol,
+			"quantity": buy.Quantity,
+			"price":    buy.Price,
+			"date":     buy.SignalDate.Format("2006-01-02"),
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":          "Sync completed",
+		"positions_synced": len(results),
+		"positions":        results,
+	})
+}
+
+// getLutzCompletedTrades returns completed trades (BUY + SELL pairs)
+func getLutzCompletedTrades(c *gin.Context) {
+	var trades []LutzTrade
+	db.Where("action = ?", "SELL").Order("signal_date desc").Find(&trades)
+
+	type CompletedTrade struct {
+		Symbol        string    `json:"symbol"`
+		Name          string    `json:"name"`
+		BuyDate       time.Time `json:"buy_date"`
+		BuyPrice      float64   `json:"buy_price"`
+		SellDate      time.Time `json:"sell_date"`
+		SellPrice     float64   `json:"sell_price"`
+		Quantity      float64   `json:"quantity"`
+		ProfitLoss    float64   `json:"profit_loss"`
+		ProfitLossPct float64   `json:"profit_loss_pct"`
+		IsLive        bool      `json:"is_live"`
+	}
+
+	var completed []CompletedTrade
+	for _, sell := range trades {
+		// Find the matching BUY
+		var buy LutzTrade
+		if err := db.Where("symbol = ? AND action = ? AND signal_date < ?",
+			sell.Symbol, "BUY", sell.SignalDate).
+			Order("signal_date desc").First(&buy).Error; err == nil {
+
+			pl := 0.0
+			plPct := 0.0
+			if sell.ProfitLoss != nil {
+				pl = *sell.ProfitLoss
+			}
+			if sell.ProfitLossPct != nil {
+				plPct = *sell.ProfitLossPct
+			}
+
+			completed = append(completed, CompletedTrade{
+				Symbol:        sell.Symbol,
+				Name:          sell.Name,
+				BuyDate:       buy.SignalDate,
+				BuyPrice:      buy.Price,
+				SellDate:      sell.SignalDate,
+				SellPrice:     sell.Price,
+				Quantity:      sell.Quantity,
+				ProfitLoss:    pl,
+				ProfitLossPct: plPct,
+				IsLive:        sell.IsLive,
+			})
+		}
+	}
+
+	c.JSON(http.StatusOK, completed)
+}
+
 // Update Lutz position with real trade data (Admin only)
 func updateLutzPosition(c *gin.Context) {
 	id := c.Param("id")
@@ -3960,4 +4785,173 @@ func updateLutzTrade(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, trade)
+}
+
+// deleteLutzTrade deletes a trade and its associated position
+func deleteLutzTrade(c *gin.Context) {
+	id := c.Param("id")
+
+	var trade LutzTrade
+	if err := db.First(&trade, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Trade not found"})
+		return
+	}
+
+	symbol := trade.Symbol
+
+	// Delete the trade
+	db.Delete(&trade)
+
+	// If it was a BUY trade, also delete the position
+	if trade.Action == "BUY" {
+		db.Where("symbol = ?", symbol).Delete(&LutzPosition{})
+		db.Where("user_id = ? AND symbol = ?", LUTZ_USER_ID, symbol).Delete(&PortfolioPosition{})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Trade deleted", "symbol": symbol})
+}
+
+// getLutzPending returns pending actions for Lutz (aggressive mode)
+func getLutzPending(c *gin.Context) {
+	var pending []map[string]interface{}
+
+	// Get all current positions
+	var positions []LutzPosition
+	db.Find(&positions)
+
+	// Get tracked stocks performance data (aggressive mode)
+	var trackedStocks []AggressiveStockPerformance
+	db.Find(&trackedStocks)
+
+	// Create a map for quick lookup
+	stockSignals := make(map[string]AggressiveStockPerformance)
+	for _, s := range trackedStocks {
+		stockSignals[s.Symbol] = s
+	}
+
+	// Check positions that need to be sold (signal changed to SELL)
+	for _, pos := range positions {
+		if perf, ok := stockSignals[pos.Symbol]; ok {
+			if perf.Signal == "SELL" {
+				signalSince := time.Now().AddDate(0, -perf.SignalBars, 0).Format("2006-01-02")
+				pending = append(pending, map[string]interface{}{
+					"type":         "SELL",
+					"symbol":       pos.Symbol,
+					"name":         pos.Name,
+					"quantity":     pos.Quantity,
+					"avg_price":    pos.AvgPrice,
+					"signal":       perf.Signal,
+					"signal_bars":  perf.SignalBars,
+					"signal_since": signalSince,
+					"reason":       "Position hat SELL-Signal",
+				})
+				// Create/update todo
+				saveBotTodo("lutz", "SELL", pos.Symbol, pos.Name, pos.Quantity, pos.AvgPrice, 0, perf.Signal, perf.SignalBars, signalSince, "Position hat SELL-Signal")
+			}
+		}
+	}
+
+	// Check tracked stocks with BUY signal that we don't own yet
+	positionSymbols := make(map[string]bool)
+	for _, p := range positions {
+		positionSymbols[p.Symbol] = true
+	}
+
+	for _, stock := range trackedStocks {
+		if stock.Signal == "BUY" && !positionSymbols[stock.Symbol] {
+			// Check if we already have a buy trade without subsequent sell
+			var existingBuy LutzTrade
+			alreadyBought := db.Where("symbol = ? AND action = ?", stock.Symbol, "BUY").
+				Order("signal_date desc").First(&existingBuy).Error == nil
+
+			if alreadyBought {
+				var lastSell LutzTrade
+				hasSoldAfter := db.Where("symbol = ? AND action = ? AND signal_date > ?",
+					stock.Symbol, "SELL", existingBuy.SignalDate).First(&lastSell).Error == nil
+				if !hasSoldAfter {
+					continue // Already bought, skip
+				}
+			}
+
+			signalSince := time.Now().AddDate(0, -stock.SignalBars, 0).Format("2006-01-02")
+			pending = append(pending, map[string]interface{}{
+				"type":         "BUY",
+				"symbol":       stock.Symbol,
+				"name":         stock.Name,
+				"signal":       stock.Signal,
+				"signal_bars":  stock.SignalBars,
+				"signal_since": signalSince,
+				"reason":       "Neues BUY-Signal erkannt",
+			})
+			// Create/update todo
+			saveBotTodo("lutz", "BUY", stock.Symbol, stock.Name, 0, 0, 0, stock.Signal, stock.SignalBars, signalSince, "Neues BUY-Signal erkannt")
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"pending": pending,
+		"count":   len(pending),
+	})
+}
+
+// getLutzLogs returns the last 100 logs for Lutz
+func getLutzLogs(c *gin.Context) {
+	var logs []BotLog
+	db.Where("bot = ?", "lutz").Order("created_at desc").Limit(100).Find(&logs)
+	c.JSON(http.StatusOK, logs)
+}
+
+// getLutzTodos returns all todos for Lutz (open first, then done)
+func getLutzTodos(c *gin.Context) {
+	var todos []BotTodo
+	db.Where("bot = ?", "lutz").Order("done asc, created_at desc").Find(&todos)
+	c.JSON(http.StatusOK, todos)
+}
+
+// markLutzTodoDone marks a todo as done (discarded)
+func markLutzTodoDone(c *gin.Context) {
+	id := c.Param("id")
+	var todo BotTodo
+	if err := db.First(&todo, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+		return
+	}
+	now := time.Now()
+	todo.Done = true
+	todo.Decision = "discarded"
+	todo.DoneAt = &now
+	db.Save(&todo)
+	c.JSON(http.StatusOK, todo)
+}
+
+// reopenLutzTodo reopens a done todo
+func reopenLutzTodo(c *gin.Context) {
+	id := c.Param("id")
+	var todo BotTodo
+	if err := db.First(&todo, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+		return
+	}
+	if !todo.Done {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Todo is not done"})
+		return
+	}
+	todo.Done = false
+	todo.Decision = ""
+	todo.DoneAt = nil
+	todo.UpdatedAt = time.Now()
+	db.Save(&todo)
+	c.JSON(http.StatusOK, todo)
+}
+
+// deleteLutzTodo deletes a done todo
+func deleteLutzTodo(c *gin.Context) {
+	id := c.Param("id")
+	var todo BotTodo
+	if err := db.First(&todo, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+		return
+	}
+	db.Delete(&todo)
+	c.JSON(http.StatusOK, gin.H{"message": "Todo deleted"})
 }

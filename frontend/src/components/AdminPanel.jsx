@@ -17,6 +17,9 @@ function AdminPanel() {
   const [activityFilter, setActivityFilter] = useState('')
   const [updatingStocks, setUpdatingStocks] = useState(false)
   const [updateProgress, setUpdateProgress] = useState(null)
+  const [showTrackedDiff, setShowTrackedDiff] = useState(false)
+  const [trackedDiff, setTrackedDiff] = useState({ defensive: [], aggressive: [] })
+  const [loadingDiff, setLoadingDiff] = useState(false)
   const { mode, isAggressive } = useTradingMode()
   const { formatPrice, convertPrice, convertToUSD, currencySymbol } = useCurrency()
 
@@ -197,6 +200,27 @@ function AdminPanel() {
     }
   }
 
+  const handleDeleteTrade = async (bot, tradeId, symbol, action) => {
+    const msg = action === 'BUY'
+      ? `Trade löschen? Die Position für ${symbol} wird ebenfalls gelöscht.`
+      : `Trade für ${symbol} löschen?`
+    if (!confirm(msg)) return
+    try {
+      const res = await fetch(`/api/${bot}/trade/${tradeId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) {
+        fetchBotData()
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Fehler beim Löschen')
+      }
+    } catch (err) {
+      console.error('Failed to delete trade:', err)
+    }
+  }
+
   const handleDeleteUser = async (userId) => {
     if (!confirm('Nutzer wirklich löschen? Alle Portfolio-Daten werden ebenfalls gelöscht.')) return
     try {
@@ -259,6 +283,42 @@ function AdminPanel() {
     if (diff < 86400000) return `vor ${Math.floor(diff / 3600000)} Std`
     if (diff < 604800000) return `vor ${Math.floor(diff / 86400000)} Tagen`
     return formatDate(dateStr)
+  }
+
+  const fetchTrackedDiff = async () => {
+    setLoadingDiff(true)
+    try {
+      const res = await fetch('/api/admin/tracked-diff', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      setTrackedDiff(data)
+    } catch (err) {
+      console.error('Failed to fetch tracked diff:', err)
+    } finally {
+      setLoadingDiff(false)
+    }
+  }
+
+  const handleDeleteTracked = async (symbol) => {
+    if (!confirm(`"${symbol}" aus den getrackten Aktien löschen?`)) return
+    try {
+      const res = await fetch(`/api/admin/tracked/${encodeURIComponent(symbol)}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) {
+        fetchTrackedDiff()
+        fetchStats()
+      }
+    } catch (err) {
+      console.error('Failed to delete tracked stock:', err)
+    }
+  }
+
+  const handleOpenTrackedDiff = () => {
+    setShowTrackedDiff(true)
+    fetchTrackedDiff()
   }
 
   const handleUpdateAllStocks = async () => {
@@ -472,10 +532,14 @@ function AdminPanel() {
                     <div className="text-xs text-gray-500 mb-1">Portfolio Positionen</div>
                     <div className="text-3xl font-bold text-white">{stats.positions}</div>
                   </div>
-                  <div className="bg-dark-800 rounded-xl border border-dark-600 p-4">
+                  <button
+                    onClick={handleOpenTrackedDiff}
+                    className="bg-dark-800 rounded-xl border border-dark-600 p-4 text-left hover:border-accent-500 transition-colors w-full"
+                  >
                     <div className="text-xs text-gray-500 mb-1">Getrackte Aktien</div>
                     <div className="text-3xl font-bold text-white">{stats.tracked_stocks}</div>
-                  </div>
+                    <div className="text-xs text-gray-500 mt-1">Klicken für Details</div>
+                  </button>
                 </div>
 
                 {/* Week Stats */}
@@ -953,20 +1017,37 @@ function AdminPanel() {
                                   )}
                                 </td>
                                 <td className="p-3">
-                                  <button
-                                    onClick={() => setEditingItem({
-                                      type: 'trade',
-                                      id: trade.id,
-                                      quantity: trade.quantity,
-                                      price: convertPrice(trade.price)?.toFixed(2) || trade.price,
-                                      is_live: trade.is_live || false
-                                    })}
-                                    className="p-1.5 text-gray-400 hover:text-accent-400 transition-colors"
-                                  >
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                                    </svg>
-                                  </button>
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      onClick={() => setEditingItem({
+                                        type: 'trade',
+                                        id: trade.id,
+                                        quantity: trade.quantity,
+                                        price: convertPrice(trade.price)?.toFixed(2) || trade.price,
+                                        is_live: trade.is_live || false
+                                      })}
+                                      className="p-1.5 text-gray-400 hover:text-accent-400 transition-colors"
+                                      title="Bearbeiten"
+                                    >
+                                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                                      </svg>
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteTrade(
+                                        botTab === 'flipper' ? 'flipperbot' : 'lutz',
+                                        trade.id,
+                                        trade.symbol,
+                                        trade.action
+                                      )}
+                                      className="p-1.5 text-gray-400 hover:text-red-400 transition-colors"
+                                      title="Löschen"
+                                    >
+                                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                      </svg>
+                                    </button>
+                                  </div>
                                 </td>
                               </>
                             )}
@@ -988,6 +1069,97 @@ function AdminPanel() {
           </>
         )}
       </div>
+
+      {/* Tracked Diff Modal */}
+      {showTrackedDiff && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-dark-800 rounded-xl border border-dark-600 w-full max-w-2xl max-h-[80vh] overflow-hidden">
+            <div className="flex items-center justify-between p-4 border-b border-dark-600">
+              <div>
+                <h2 className="text-lg font-semibold text-white">Getrackte Aktien - Differenz</h2>
+                <p className="text-xs text-gray-500">Aktien die getrackt werden, aber nicht mehr in der Watchlist sind</p>
+              </div>
+              <button
+                onClick={() => setShowTrackedDiff(false)}
+                className="p-2 text-gray-400 hover:text-white transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto max-h-[60vh]">
+              {loadingDiff ? (
+                <div className="text-center py-8">
+                  <div className="w-6 h-6 border-2 border-accent-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {/* Defensive */}
+                  <div>
+                    <h3 className="text-sm font-medium text-blue-400 mb-2">Defensiv ({trackedDiff.defensive?.length || 0})</h3>
+                    {trackedDiff.defensive?.length > 0 ? (
+                      <div className="space-y-1">
+                        {trackedDiff.defensive.map((s) => (
+                          <div key={s.symbol} className="flex items-center justify-between bg-dark-700 rounded-lg px-3 py-2">
+                            <div>
+                              <span className="font-medium text-white">{s.symbol}</span>
+                              <span className="text-gray-500 text-sm ml-2">{s.name}</span>
+                            </div>
+                            <button
+                              onClick={() => handleDeleteTracked(s.symbol)}
+                              className="p-1.5 text-gray-400 hover:text-red-400 transition-colors"
+                              title="Löschen"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-gray-500 text-sm">Keine Differenz</p>
+                    )}
+                  </div>
+                  {/* Aggressive */}
+                  <div>
+                    <h3 className="text-sm font-medium text-orange-400 mb-2">Aggressiv ({trackedDiff.aggressive?.length || 0})</h3>
+                    {trackedDiff.aggressive?.length > 0 ? (
+                      <div className="space-y-1">
+                        {trackedDiff.aggressive.map((s) => (
+                          <div key={s.symbol} className="flex items-center justify-between bg-dark-700 rounded-lg px-3 py-2">
+                            <div>
+                              <span className="font-medium text-white">{s.symbol}</span>
+                              <span className="text-gray-500 text-sm ml-2">{s.name}</span>
+                            </div>
+                            <button
+                              onClick={() => handleDeleteTracked(s.symbol)}
+                              className="p-1.5 text-gray-400 hover:text-red-400 transition-colors"
+                              title="Löschen"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-gray-500 text-sm">Keine Differenz</p>
+                    )}
+                  </div>
+                  {(trackedDiff.defensive?.length === 0 && trackedDiff.aggressive?.length === 0) && (
+                    <div className="text-center py-8 text-gray-500">
+                      Alle getrackten Aktien sind auch in der Watchlist
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
