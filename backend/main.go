@@ -3529,7 +3529,7 @@ func fixFlipperBotDB(c *gin.Context) {
 
 	for _, trade := range trades {
 		if trade.Action == "BUY" {
-			if existing, ok := openBuys[trade.Symbol]; ok {
+			if _, ok := openBuys[trade.Symbol]; ok {
 				// Already have an open buy for this symbol - this is a duplicate
 				duplicatesToDelete = append(duplicatesToDelete, trade.ID)
 			} else {
