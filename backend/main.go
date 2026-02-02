@@ -411,6 +411,12 @@ func main() {
 	db.Exec("ALTER TABLE lutz_trades ADD COLUMN is_live BOOLEAN DEFAULT 0")
 	db.Exec("ALTER TABLE lutz_positions ADD COLUMN is_live BOOLEAN DEFAULT 0")
 
+	// One-time fix: Set is_live=true for all executed trades/positions (fixes missing IsLive bug)
+	db.Exec("UPDATE flipper_bot_trades SET is_live = 1 WHERE is_live = 0 AND executed_at IS NOT NULL")
+	db.Exec("UPDATE flipper_bot_positions SET is_live = 1 WHERE is_live = 0")
+	db.Exec("UPDATE lutz_trades SET is_live = 1 WHERE is_live = 0 AND executed_at IS NOT NULL")
+	db.Exec("UPDATE lutz_positions SET is_live = 1 WHERE is_live = 0")
+
 	// Clean up expired sessions on startup
 	db.Where("expiry < ?", time.Now()).Delete(&DBSession{})
 
@@ -4050,10 +4056,11 @@ func executeFlipperBotTodo(c *gin.Context) {
 			Price:      actualPrice,
 			SignalDate: tradeDate,
 			ExecutedAt: now,
+			IsLive:     true,
 		}
 		db.Create(&newTrade)
 
-		// Create position
+		// Create position (use FirstOrCreate to handle existing positions)
 		newPosition := FlipperBotPosition{
 			Symbol:      todo.Symbol,
 			Name:        todo.Name,
@@ -4061,8 +4068,12 @@ func executeFlipperBotTodo(c *gin.Context) {
 			AvgPrice:    actualPrice,
 			InvestedEUR: investmentEUR,
 			BuyDate:     tradeDate,
+			IsLive:      true,
 		}
-		db.Create(&newPosition)
+		if err := db.Where("symbol = ?", todo.Symbol).FirstOrCreate(&newPosition).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create position: " + err.Error()})
+			return
+		}
 
 		// Add to portfolio
 		portfolioPos := PortfolioPosition{
@@ -4113,6 +4124,7 @@ func executeFlipperBotTodo(c *gin.Context) {
 			ExecutedAt:    now,
 			ProfitLoss:    &profitLoss,
 			ProfitLossPct: &profitLossPct,
+			IsLive:        true,
 		}
 		db.Create(&newTrade)
 
@@ -4187,6 +4199,7 @@ func executeLutzTodo(c *gin.Context) {
 			Price:      actualPrice,
 			SignalDate: tradeDate,
 			ExecutedAt: now,
+			IsLive:     true,
 		}
 		db.Create(&newTrade)
 
@@ -4197,8 +4210,12 @@ func executeLutzTodo(c *gin.Context) {
 			AvgPrice:    actualPrice,
 			InvestedEUR: investmentEUR,
 			BuyDate:     tradeDate,
+			IsLive:      true,
 		}
-		db.Create(&newPosition)
+		if err := db.Where("symbol = ?", todo.Symbol).FirstOrCreate(&newPosition).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create position: " + err.Error()})
+			return
+		}
 
 		portfolioPos := PortfolioPosition{
 			UserID:       LUTZ_USER_ID,
@@ -4245,6 +4262,7 @@ func executeLutzTodo(c *gin.Context) {
 			ExecutedAt:    now,
 			ProfitLoss:    &profitLoss,
 			ProfitLossPct: &profitLossPct,
+			IsLive:        true,
 		}
 		db.Create(&newTrade)
 
