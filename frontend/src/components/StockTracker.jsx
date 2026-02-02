@@ -77,10 +77,12 @@ function StockTracker() {
   const { mode, isAggressive } = useTradingMode()
   const { formatPrice } = useCurrency()
 
-  // Selected month - default to current month (evaluated on page load)
+  // Selected month - default to PREVIOUS month (signal is based on last completed month)
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date()
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+    const prevMonth = now.getMonth() === 0 ? 12 : now.getMonth()
+    const prevYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear()
+    return `${prevYear}-${String(prevMonth).padStart(2, '0')}`
   })
 
   // Generate month options on each page load
@@ -325,7 +327,7 @@ function StockTracker() {
             </select>
           </div>
           <p className="text-gray-500 text-sm mt-1">
-            BX Trender Signale für {selectedMonthLabel}
+            BX Trender Signale basierend auf abgeschlossenem Monat
             {isAggressive && <span className="text-orange-400"> (Aggressive Signale)</span>}
           </p>
 
@@ -468,15 +470,9 @@ function StockTracker() {
                       <div className="font-semibold text-white">{stock.symbol}</div>
                       <div className="text-xs text-gray-500 truncate max-w-[180px]">{stock.name}</div>
                     </div>
-                    {stock.signalChanged ? (
-                      <span className={`px-2 py-1 text-xs font-bold rounded border ${getSignalStyle(stock.monthSignal)}`}>
-                        {stock.prevMonthSignal} → {stock.monthSignal}
-                      </span>
-                    ) : (
-                      <span className={`px-2 py-1 text-xs font-bold rounded border ${getSignalStyle(stock.monthSignal)}`}>
-                        {stock.monthSignal}
-                      </span>
-                    )}
+                    <span className={`px-2 py-1 text-xs font-bold rounded border ${getSignalStyle(stock.monthSignal)}`}>
+                      {stock.monthSignal}
+                    </span>
                   </div>
                   <div className="grid grid-cols-3 gap-2 text-sm">
                     <div>
@@ -570,15 +566,9 @@ function StockTracker() {
                         <td className="p-4 font-medium text-white">{stock.symbol}</td>
                         <td className="p-4 text-gray-400 text-sm truncate max-w-[200px]">{stock.name}</td>
                         <td className="p-4">
-                          {stock.signalChanged ? (
-                            <span className={`px-2 py-1 text-xs font-bold rounded border ${getSignalStyle(stock.monthSignal)}`}>
-                              {stock.prevMonthSignal} → {stock.monthSignal}
-                            </span>
-                          ) : (
-                            <span className={`px-2 py-1 text-xs font-bold rounded border ${getSignalStyle(stock.monthSignal)}`}>
-                              {stock.monthSignal}
-                            </span>
-                          )}
+                          <span className={`px-2 py-1 text-xs font-bold rounded border ${getSignalStyle(stock.monthSignal)}`}>
+                            {stock.monthSignal}
+                          </span>
                         </td>
                         <td className="p-4 text-right text-white">{formatPrice(stock.current_price, stock.symbol)}</td>
                         <td className={`p-4 text-right font-medium ${stock.win_rate >= 50 ? 'text-green-400' : 'text-red-400'}`}>

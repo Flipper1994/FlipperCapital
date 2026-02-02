@@ -411,12 +411,6 @@ func main() {
 	db.Exec("ALTER TABLE lutz_trades ADD COLUMN is_live BOOLEAN DEFAULT 0")
 	db.Exec("ALTER TABLE lutz_positions ADD COLUMN is_live BOOLEAN DEFAULT 0")
 
-	// One-time fix: Set is_live=true for all executed trades/positions (fixes missing IsLive bug)
-	db.Exec("UPDATE flipper_bot_trades SET is_live = 1 WHERE is_live = 0 AND executed_at IS NOT NULL")
-	db.Exec("UPDATE flipper_bot_positions SET is_live = 1 WHERE is_live = 0")
-	db.Exec("UPDATE lutz_trades SET is_live = 1 WHERE is_live = 0 AND executed_at IS NOT NULL")
-	db.Exec("UPDATE lutz_positions SET is_live = 1 WHERE is_live = 0")
-
 	// Clean up expired sessions on startup
 	db.Where("expiry < ?", time.Now()).Delete(&DBSession{})
 
@@ -523,6 +517,7 @@ func main() {
 		api.POST("/flipperbot/todos/:id/execute", authMiddleware(), adminOnly(), executeFlipperBotTodo)
 		api.POST("/flipperbot/sync", authMiddleware(), adminOnly(), syncFlipperBot)
 		api.GET("/flipperbot/completed-trades", authMiddleware(), getFlipperBotCompletedTrades)
+		api.POST("/flipperbot/fix-db", authMiddleware(), adminOnly(), fixFlipperBotDB)
 
 		// Lutz routes - Aggressive mode bot (view: all users, actions: admin only)
 		api.GET("/lutz/update", authMiddleware(), adminOnly(), lutzUpdate)
@@ -3504,6 +3499,108 @@ func resetFlipperBot(c *gin.Context) {
 	})
 }
 
+// fixFlipperBotDB fixes corrupt data in the database
+func fixFlipperBotDB(c *gin.Context) {
+	var fixes []string
+
+	// 1. Delete trades with invalid quantity (inf, 0, negative)
+	result := db.Where("quantity <= 0 OR quantity > 1000000").Delete(&FlipperBotTrade{})
+	if result.RowsAffected > 0 {
+		fixes = append(fixes, fmt.Sprintf("Deleted %d invalid trades (bad quantity)", result.RowsAffected))
+	}
+
+	// 2. Delete positions with invalid quantity or price
+	result = db.Where("quantity <= 0 OR quantity > 1000000 OR avg_price <= 0").Delete(&FlipperBotPosition{})
+	if result.RowsAffected > 0 {
+		fixes = append(fixes, fmt.Sprintf("Deleted %d invalid positions", result.RowsAffected))
+	}
+
+	// 3. Find and remove duplicate trades (keep only first BUY per symbol without subsequent SELL)
+	var trades []FlipperBotTrade
+	db.Order("id asc").Find(&trades)
+
+	// Track which symbols have open positions (BUY without SELL after)
+	type tradeInfo struct {
+		id         uint
+		signalDate time.Time
+	}
+	openBuys := make(map[string]tradeInfo)
+	duplicatesToDelete := []uint{}
+
+	for _, trade := range trades {
+		if trade.Action == "BUY" {
+			if existing, ok := openBuys[trade.Symbol]; ok {
+				// Already have an open buy for this symbol - this is a duplicate
+				duplicatesToDelete = append(duplicatesToDelete, trade.ID)
+			} else {
+				openBuys[trade.Symbol] = tradeInfo{id: trade.ID, signalDate: trade.SignalDate}
+			}
+		} else if trade.Action == "SELL" {
+			// SELL closes the position
+			delete(openBuys, trade.Symbol)
+		}
+	}
+
+	if len(duplicatesToDelete) > 0 {
+		db.Where("id IN ?", duplicatesToDelete).Delete(&FlipperBotTrade{})
+		fixes = append(fixes, fmt.Sprintf("Deleted %d duplicate BUY trades", len(duplicatesToDelete)))
+	}
+
+	// 4. Remove orphaned positions (no matching BUY trade)
+	var positions []FlipperBotPosition
+	db.Find(&positions)
+	for _, pos := range positions {
+		var buyTrade FlipperBotTrade
+		if db.Where("symbol = ? AND action = ?", pos.Symbol, "BUY").First(&buyTrade).Error != nil {
+			db.Delete(&pos)
+			fixes = append(fixes, fmt.Sprintf("Deleted orphaned position: %s", pos.Symbol))
+		}
+	}
+
+	// 5. Sync positions with trades (rebuild from trades)
+	// Get fresh list of open buys
+	openBuys = make(map[string]tradeInfo)
+	db.Order("id asc").Find(&trades)
+
+	for _, trade := range trades {
+		if trade.Action == "BUY" {
+			openBuys[trade.Symbol] = tradeInfo{id: trade.ID, signalDate: trade.SignalDate}
+		} else if trade.Action == "SELL" {
+			delete(openBuys, trade.Symbol)
+		}
+	}
+
+	// Ensure positions exist for all open buys
+	for symbol := range openBuys {
+		var pos FlipperBotPosition
+		if db.Where("symbol = ?", symbol).First(&pos).Error != nil {
+			// Position missing - get trade and recreate
+			var trade FlipperBotTrade
+			if db.Where("symbol = ? AND action = ?", symbol, "BUY").Order("id desc").First(&trade).Error == nil {
+				newPos := FlipperBotPosition{
+					Symbol:   symbol,
+					Name:     trade.Name,
+					Quantity: trade.Quantity,
+					AvgPrice: trade.Price,
+					BuyDate:  trade.SignalDate,
+					IsLive:   trade.IsLive,
+				}
+				db.Create(&newPos)
+				fixes = append(fixes, fmt.Sprintf("Recreated position: %s", symbol))
+			}
+		}
+	}
+
+	if len(fixes) == 0 {
+		fixes = append(fixes, "No issues found - database is clean")
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Database fix completed",
+		"fixes":   fixes,
+	})
+}
+
 // syncFlipperBot synchronizes positions with trades
 func syncFlipperBot(c *gin.Context) {
 	var results []map[string]interface{}
@@ -4037,7 +4134,20 @@ func executeFlipperBotTodo(c *gin.Context) {
 		currentPrice = quote.Price
 	}
 
+	// Validate price - prevent division by zero
+	if currentPrice <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid price - cannot execute trade with price <= 0"})
+		return
+	}
+
 	if todo.Type == "BUY" {
+		// Check if position already exists - prevent duplicate buys
+		var existingPos FlipperBotPosition
+		if db.Where("symbol = ?", todo.Symbol).First(&existingPos).Error == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Position already exists for " + todo.Symbol})
+			return
+		}
+
 		// Calculate quantity for exactly 100 EUR investment
 		investmentEUR := 100.0
 		investmentUSD := convertToUSD(investmentEUR, "EUR")
@@ -4047,7 +4157,7 @@ func executeFlipperBotTodo(c *gin.Context) {
 		// Recalculate price so that qty * actualPrice = exactly investmentUSD
 		actualPrice := investmentUSD / qty
 
-		// Create trade
+		// Create trade (IsLive=false, Admin sets to true manually for real trades)
 		newTrade := FlipperBotTrade{
 			Symbol:     todo.Symbol,
 			Name:       todo.Name,
@@ -4056,11 +4166,10 @@ func executeFlipperBotTodo(c *gin.Context) {
 			Price:      actualPrice,
 			SignalDate: tradeDate,
 			ExecutedAt: now,
-			IsLive:     true,
 		}
 		db.Create(&newTrade)
 
-		// Create position (use FirstOrCreate to handle existing positions)
+		// Create position (IsLive=false, Admin sets to true manually for real trades)
 		newPosition := FlipperBotPosition{
 			Symbol:      todo.Symbol,
 			Name:        todo.Name,
@@ -4068,9 +4177,8 @@ func executeFlipperBotTodo(c *gin.Context) {
 			AvgPrice:    actualPrice,
 			InvestedEUR: investmentEUR,
 			BuyDate:     tradeDate,
-			IsLive:      true,
 		}
-		if err := db.Where("symbol = ?", todo.Symbol).FirstOrCreate(&newPosition).Error; err != nil {
+		if err := db.Create(&newPosition).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create position: " + err.Error()})
 			return
 		}
@@ -4113,7 +4221,7 @@ func executeFlipperBotTodo(c *gin.Context) {
 		profitLoss := (currentPrice - position.AvgPrice) * position.Quantity
 		profitLossPct := ((currentPrice - position.AvgPrice) / position.AvgPrice) * 100
 
-		// Create trade
+		// Create trade (IsLive=false, Admin sets to true manually for real trades)
 		newTrade := FlipperBotTrade{
 			Symbol:        todo.Symbol,
 			Name:          todo.Name,
@@ -4124,7 +4232,6 @@ func executeFlipperBotTodo(c *gin.Context) {
 			ExecutedAt:    now,
 			ProfitLoss:    &profitLoss,
 			ProfitLossPct: &profitLossPct,
-			IsLive:        true,
 		}
 		db.Create(&newTrade)
 
@@ -4182,7 +4289,20 @@ func executeLutzTodo(c *gin.Context) {
 		currentPrice = quote.Price
 	}
 
+	// Validate price - prevent division by zero
+	if currentPrice <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid price - cannot execute trade with price <= 0"})
+		return
+	}
+
 	if todo.Type == "BUY" {
+		// Check if position already exists - prevent duplicate buys
+		var existingPos LutzPosition
+		if db.Where("symbol = ?", todo.Symbol).First(&existingPos).Error == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Position already exists for " + todo.Symbol})
+			return
+		}
+
 		// Calculate quantity for exactly 100 EUR investment
 		investmentEUR := 100.0
 		investmentUSD := convertToUSD(investmentEUR, "EUR")
@@ -4199,7 +4319,6 @@ func executeLutzTodo(c *gin.Context) {
 			Price:      actualPrice,
 			SignalDate: tradeDate,
 			ExecutedAt: now,
-			IsLive:     true,
 		}
 		db.Create(&newTrade)
 
@@ -4210,9 +4329,8 @@ func executeLutzTodo(c *gin.Context) {
 			AvgPrice:    actualPrice,
 			InvestedEUR: investmentEUR,
 			BuyDate:     tradeDate,
-			IsLive:      true,
 		}
-		if err := db.Where("symbol = ?", todo.Symbol).FirstOrCreate(&newPosition).Error; err != nil {
+		if err := db.Create(&newPosition).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create position: " + err.Error()})
 			return
 		}
@@ -4262,7 +4380,6 @@ func executeLutzTodo(c *gin.Context) {
 			ExecutedAt:    now,
 			ProfitLoss:    &profitLoss,
 			ProfitLossPct: &profitLossPct,
-			IsLive:        true,
 		}
 		db.Create(&newTrade)
 

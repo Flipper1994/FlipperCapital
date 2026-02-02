@@ -357,17 +357,20 @@ export function calculateMetrics(trades) {
 
 // Calculate signal based on BX Trender bars (for defensive mode)
 // or based on trade history (for aggressive mode)
+// IMPORTANT: Signal is based on PREVIOUS MONTH (last completed bar), not current month
 export function calculateSignal(shortData, isAggressive = false, trades = []) {
-  if (shortData.length < 3) return { signal: 'WAIT', bars: 0 }
+  if (shortData.length < 4) return { signal: 'WAIT', bars: 0 }
 
-  const lastIdx = shortData.length - 1
-  const lastValue = shortData[lastIdx].value
-  const prevValue = shortData[lastIdx - 1].value
-  const isPositive = lastValue > 0
+  // Use second-to-last bar (previous month = last completed month)
+  // Last bar is current month (still open/changing)
+  const prevMonthIdx = shortData.length - 2
+  const prevMonthValue = shortData[prevMonthIdx].value
+  const prevPrevValue = shortData[prevMonthIdx - 1].value
+  const isPositive = prevMonthValue > 0
 
-  // Count consecutive bars of the same sign from the end
+  // Count consecutive bars of the same sign from the previous month backwards
   let consecutiveBars = 1
-  for (let i = shortData.length - 2; i >= 0; i--) {
+  for (let i = prevMonthIdx - 1; i >= 0; i--) {
     const val = shortData[i].value
     if ((val > 0) === isPositive) {
       consecutiveBars++
@@ -378,28 +381,23 @@ export function calculateSignal(shortData, isAggressive = false, trades = []) {
 
   if (isAggressive) {
     // AGGRESSIVE MODE SIGNALS (based on trade history):
-    // BUY: BUY triggered this/last month AND open position exists
-    // SELL: SELL triggered this/last month AND no open position
+    // Signal is based on PREVIOUS MONTH (last completed month)
+    // BUY: BUY triggered last/prev month AND open position exists
+    // SELL: SELL triggered last/prev month AND no open position
     // HOLD: No recent BUY but open position exists
     // WAIT: No open position and no recent SELL
 
     const now = new Date()
-    const thisMonth = now.getMonth()
-    const thisYear = now.getFullYear()
-    const lastMonth = thisMonth === 0 ? 11 : thisMonth - 1
-    const lastMonthYear = thisMonth === 0 ? thisYear - 1 : thisYear
+    // We look at last month and month before (since current month is ignored)
+    const lastMonth = now.getMonth() === 0 ? 11 : now.getMonth() - 1
+    const lastMonthYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear()
+    const prevMonth = lastMonth === 0 ? 11 : lastMonth - 1
+    const prevMonthYear = lastMonth === 0 ? lastMonthYear - 1 : lastMonthYear
 
     // Check for open position
     const hasOpenPosition = trades.some(t => t.isOpen)
 
-    // Find the last trade (most recent)
-    const sortedTrades = [...trades].sort((a, b) => {
-      const dateA = a.exitDate || a.entryDate
-      const dateB = b.exitDate || b.entryDate
-      return dateB - dateA
-    })
-
-    // Check for recent BUY (this month or last month with open position)
+    // Check for recent BUY/SELL (last month or month before)
     let recentBuy = false
     let recentSell = false
     let buyBars = 0
@@ -411,12 +409,12 @@ export function calculateSignal(shortData, isAggressive = false, trades = []) {
         const entryMonth = entryDate.getMonth()
         const entryYear = entryDate.getFullYear()
 
-        const isThisMonth = entryMonth === thisMonth && entryYear === thisYear
         const isLastMonth = entryMonth === lastMonth && entryYear === lastMonthYear
+        const isPrevMonth = entryMonth === prevMonth && entryYear === prevMonthYear
 
-        if ((isThisMonth || isLastMonth) && trade.isOpen) {
+        if ((isLastMonth || isPrevMonth) && trade.isOpen) {
           recentBuy = true
-          buyBars = isThisMonth ? 1 : 2
+          buyBars = isLastMonth ? 1 : 2
         }
       }
 
@@ -425,12 +423,12 @@ export function calculateSignal(shortData, isAggressive = false, trades = []) {
         const exitMonth = exitDate.getMonth()
         const exitYear = exitDate.getFullYear()
 
-        const isThisMonth = exitMonth === thisMonth && exitYear === thisYear
         const isLastMonth = exitMonth === lastMonth && exitYear === lastMonthYear
+        const isPrevMonth = exitMonth === prevMonth && exitYear === prevMonthYear
 
-        if (isThisMonth || isLastMonth) {
+        if (isLastMonth || isPrevMonth) {
           recentSell = true
-          sellBars = isThisMonth ? 1 : 2
+          sellBars = isLastMonth ? 1 : 2
         }
       }
     }

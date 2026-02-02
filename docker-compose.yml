@@ -18,7 +18,7 @@ services:
       - ADMIN_PASSWORD=admin123
       - DB_PATH=/data/watchlist.db
     volumes:
-      - backend-data:/data
+      - ./watchlist.db:/data/watchlist.db
     networks:
       - flipper-network
 
@@ -39,6 +39,3 @@ services:
 networks:
   flipper-network:
     driver: bridge
-
-volumes:
-  backend-data:
