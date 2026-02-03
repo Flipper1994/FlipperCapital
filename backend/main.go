@@ -6816,56 +6816,191 @@ func resetQuant(c *gin.Context) {
 }
 
 func quantBackfill(c *gin.Context) {
-	var buyTrades []QuantTrade
-	db.Where("action = ?", "BUY").Order("executed_at asc").Find(&buyTrades)
-
-	var sellTrades []QuantTrade
-	db.Where("action = ?", "SELL").Find(&sellTrades)
-
-	sellsBySymbol := make(map[string][]QuantTrade)
-	for _, sell := range sellTrades {
-		sellsBySymbol[sell.Symbol] = append(sellsBySymbol[sell.Symbol], sell)
+	var req struct {
+		UntilDate string `json:"until_date"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "until_date required"})
+		return
 	}
 
-	openBuys := make(map[string]QuantTrade)
-	for _, buy := range buyTrades {
-		sells := sellsBySymbol[buy.Symbol]
-		hasSellAfter := false
-		for _, sell := range sells {
-			if sell.ExecutedAt.After(buy.ExecutedAt) {
-				hasSellAfter = true
-				break
+	fromDate, err := time.Parse("2006-01-02", req.UntilDate)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid date format (use YYYY-MM-DD)"})
+		return
+	}
+
+	now := time.Now()
+	sessionID := uuid.New().String()
+	var logs []map[string]interface{}
+	addLog := func(level, message string) {
+		entry := map[string]interface{}{
+			"level":   level,
+			"message": message,
+			"time":    time.Now().Format("15:04:05"),
+		}
+		logs = append(logs, entry)
+		saveBotLog("quant", level, message, sessionID)
+	}
+
+	addLog("INFO", fmt.Sprintf("Quant Backfill gestartet ab %s bis heute", req.UntilDate))
+
+	// Get all tracked stocks with their quant performance data
+	var trackedStocks []QuantStockPerformance
+	db.Find(&trackedStocks)
+
+	if len(trackedStocks) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"message":        "No tracked stocks found",
+			"trades_created": 0,
+			"logs":           logs,
+		})
+		return
+	}
+
+	var tradesCreated int
+	var positionsCreated int
+
+	for _, stock := range trackedStocks {
+		if stock.TradesJSON == "" {
+			continue
+		}
+
+		var historicalTrades []TradeData
+		if err := json.Unmarshal([]byte(stock.TradesJSON), &historicalTrades); err != nil {
+			addLog("ERROR", fmt.Sprintf("%s: Fehler beim Parsen der Trades: %v", stock.Symbol, err))
+			continue
+		}
+
+		for _, trade := range historicalTrades {
+			entryTime := time.Unix(trade.EntryDate, 0)
+
+			if entryTime.Year() < 2020 || entryTime.Year() > 2030 {
+				continue
+			}
+			if entryTime.Before(fromDate) {
+				continue
+			}
+			if entryTime.After(now) {
+				continue
+			}
+
+			var existingBuy QuantTrade
+			dateStart := entryTime.Truncate(24 * time.Hour)
+			dateEnd := dateStart.Add(24 * time.Hour)
+			alreadyExists := db.Where("symbol = ? AND action = ? AND signal_date >= ? AND signal_date < ?",
+				stock.Symbol, "BUY", dateStart, dateEnd).First(&existingBuy).Error == nil
+			if alreadyExists {
+				continue
+			}
+
+			investmentEUR := 100.0
+			investmentUSD := convertToUSD(investmentEUR, "EUR")
+			qty := math.Round((investmentUSD/trade.EntryPrice)*1000000) / 1000000
+			if qty <= 0 || trade.EntryPrice <= 0 {
+				continue
+			}
+
+			buyTrade := QuantTrade{
+				Symbol:     stock.Symbol,
+				Name:       stock.Name,
+				Action:     "BUY",
+				Quantity:   qty,
+				Price:      trade.EntryPrice,
+				SignalDate: entryTime,
+				ExecutedAt: now,
+			}
+			db.Create(&buyTrade)
+			tradesCreated++
+			addLog("ACTION", fmt.Sprintf("%s: BUY erstellt @ $%.2f am %s", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
+
+			if trade.ExitDate != nil && trade.ExitPrice != nil {
+				exitTime := time.Unix(*trade.ExitDate, 0)
+
+				if !exitTime.After(now) {
+					profitLoss := (*trade.ExitPrice - trade.EntryPrice) * qty
+					profitLossPct := trade.ReturnPct
+
+					sellTrade := QuantTrade{
+						Symbol:        stock.Symbol,
+						Name:          stock.Name,
+						Action:        "SELL",
+						Quantity:      qty,
+						Price:         *trade.ExitPrice,
+						SignalDate:    exitTime,
+						ExecutedAt:    now,
+						ProfitLoss:    &profitLoss,
+						ProfitLossPct: &profitLossPct,
+					}
+					db.Create(&sellTrade)
+					tradesCreated++
+					addLog("ACTION", fmt.Sprintf("%s: SELL erstellt @ $%.2f am %s (%.2f%%)", stock.Symbol, *trade.ExitPrice, exitTime.Format("2006-01-02"), profitLossPct))
+				} else {
+					var existingPos QuantPosition
+					if db.Where("symbol = ?", stock.Symbol).First(&existingPos).Error != nil {
+						newPos := QuantPosition{
+							Symbol:      stock.Symbol,
+							Name:        stock.Name,
+							Quantity:    qty,
+							AvgPrice:    trade.EntryPrice,
+							InvestedEUR: investmentEUR,
+							BuyDate:     entryTime,
+						}
+						db.Create(&newPos)
+						positionsCreated++
+
+						portfolioPos := PortfolioPosition{
+							UserID:       QUANT_USER_ID,
+							Symbol:       stock.Symbol,
+							Name:         stock.Name,
+							PurchaseDate: &entryTime,
+							AvgPrice:     trade.EntryPrice,
+							Currency:     "USD",
+							Quantity:     &qty,
+						}
+						db.Create(&portfolioPos)
+						addLog("ACTION", fmt.Sprintf("%s: Position erstellt (offen)", stock.Symbol))
+					}
+				}
+			} else if trade.IsOpen {
+				var existingPos QuantPosition
+				if db.Where("symbol = ?", stock.Symbol).First(&existingPos).Error != nil {
+					newPos := QuantPosition{
+						Symbol:      stock.Symbol,
+						Name:        stock.Name,
+						Quantity:    qty,
+						AvgPrice:    trade.EntryPrice,
+						InvestedEUR: investmentEUR,
+						BuyDate:     entryTime,
+					}
+					db.Create(&newPos)
+					positionsCreated++
+
+					portfolioPos := PortfolioPosition{
+						UserID:       QUANT_USER_ID,
+						Symbol:       stock.Symbol,
+						Name:         stock.Name,
+						PurchaseDate: &entryTime,
+						AvgPrice:     trade.EntryPrice,
+						Currency:     "USD",
+						Quantity:     &qty,
+					}
+					db.Create(&portfolioPos)
+					addLog("ACTION", fmt.Sprintf("%s: Position erstellt (offen)", stock.Symbol))
+				}
 			}
 		}
-		if !hasSellAfter {
-			openBuys[buy.Symbol] = buy
-		}
 	}
 
-	db.Where("1 = 1").Delete(&QuantPosition{})
-	db.Where("user_id = ?", QUANT_USER_ID).Delete(&PortfolioPosition{})
+	addLog("INFO", fmt.Sprintf("Quant Backfill abgeschlossen: %d Trades, %d Positionen erstellt", tradesCreated, positionsCreated))
 
-	for symbol, buy := range openBuys {
-		pos := QuantPosition{
-			Symbol:   symbol,
-			Name:     buy.Name,
-			AvgPrice: buy.Price,
-			IsLive:   buy.IsLive,
-			BuyDate:  buy.ExecutedAt,
-		}
-		db.Create(&pos)
-
-		portfolioPos := PortfolioPosition{
-			UserID:       QUANT_USER_ID,
-			Symbol:       symbol,
-			Name:         buy.Name,
-			AvgPrice:     buy.Price,
-			PurchaseDate: &buy.ExecutedAt,
-		}
-		db.Create(&portfolioPos)
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Quant backfill complete", "positions": len(openBuys)})
+	c.JSON(http.StatusOK, gin.H{
+		"message":           "Backfill completed",
+		"trades_created":    tradesCreated,
+		"positions_created": positionsCreated,
+		"until_date":        req.UntilDate,
+		"logs":              logs,
+	})
 }
 
 func getQuantCompletedTrades(c *gin.Context) {
