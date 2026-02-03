@@ -38,7 +38,7 @@ function App() {
       const data = await res.json()
       if (data.valid) {
         setIsLoggedIn(true)
-        setIsAdmin(data.is_admin || false)
+        setIsAdmin(data.user?.is_admin || false)
         setUser(data.user || null)
       } else {
         clearAuth()

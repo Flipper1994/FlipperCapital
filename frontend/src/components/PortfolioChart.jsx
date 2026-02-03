@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createChart } from 'lightweight-charts'
 
-function PortfolioChart({ userId, token, height = 300 }) {
+function PortfolioChart({ userId, token, height = 300, botType = null, title = "Portfolio Performance" }) {
   const chartContainerRef = useRef(null)
   const chartRef = useRef(null)
   const [period, setPeriod] = useState('1m')
@@ -73,9 +73,16 @@ function PortfolioChart({ userId, token, height = 300 }) {
       setError(null)
 
       try {
-        const endpoint = userId
-          ? `/api/portfolios/history/${userId}?period=${period}`
-          : `/api/portfolio/history?period=${period}`
+        let endpoint
+        if (botType === 'flipperbot') {
+          endpoint = `/api/flipperbot/history?period=${period}`
+        } else if (botType === 'lutz') {
+          endpoint = `/api/lutz/history?period=${period}`
+        } else if (userId) {
+          endpoint = `/api/portfolios/history/${userId}?period=${period}`
+        } else {
+          endpoint = `/api/portfolio/history?period=${period}`
+        }
 
         const res = await fetch(endpoint, {
           headers: { 'Authorization': `Bearer ${token}` }
@@ -133,13 +140,13 @@ function PortfolioChart({ userId, token, height = 300 }) {
     }
 
     fetchData()
-  }, [period, userId, token])
+  }, [period, userId, token, botType])
 
   return (
     <div className="bg-dark-800 rounded-xl border border-dark-600 overflow-hidden">
       {/* Header with period selector */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between p-4 border-b border-dark-600 gap-3">
-        <h3 className="text-white font-semibold">Portfolio Performance</h3>
+        <h3 className="text-white font-semibold">{title}</h3>
         <div className="flex flex-wrap gap-1">
           {Object.entries(periodLabels).map(([key, label]) => (
             <button

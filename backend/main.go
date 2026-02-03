@@ -211,7 +211,8 @@ type FlipperBotTrade struct {
 	Name         string     `json:"name"`
 	Action       string     `json:"action" gorm:"not null"` // BUY or SELL
 	Quantity     float64    `json:"quantity" gorm:"default:1"`
-	IsLive       bool       `json:"is_live" gorm:"default:false"` // True if this is a real executed trade
+	IsLive       bool       `json:"is_live" gorm:"default:false"`    // True if this is a real executed trade
+	IsPending    bool       `json:"is_pending" gorm:"default:true"`  // True if waiting for admin approval
 	Price        float64    `json:"price" gorm:"not null"`
 	SignalDate   time.Time  `json:"signal_date" gorm:"not null"` // When the signal occurred
 	ExecutedAt   time.Time  `json:"executed_at" gorm:"not null"` // When we recorded this trade
@@ -229,6 +230,7 @@ type FlipperBotPosition struct {
 	AvgPrice     float64    `json:"avg_price" gorm:"not null"`
 	InvestedEUR  float64    `json:"invested_eur" gorm:"default:0"` // Exact EUR amount invested
 	IsLive       bool       `json:"is_live" gorm:"default:false"`  // True if this is a real executed position
+	IsPending    bool       `json:"is_pending" gorm:"default:true"` // True if waiting for admin approval
 	BuyDate      time.Time  `json:"buy_date" gorm:"not null"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
@@ -264,7 +266,8 @@ type LutzTrade struct {
 	Name          string     `json:"name"`
 	Action        string     `json:"action" gorm:"not null"` // BUY or SELL
 	Quantity      float64    `json:"quantity" gorm:"default:1"`
-	IsLive        bool       `json:"is_live" gorm:"default:false"` // True if this is a real executed trade
+	IsLive        bool       `json:"is_live" gorm:"default:false"`   // True if this is a real executed trade
+	IsPending     bool       `json:"is_pending" gorm:"default:true"` // True if waiting for admin approval
 	Price         float64    `json:"price" gorm:"not null"`
 	SignalDate    time.Time  `json:"signal_date" gorm:"not null"`
 	ExecutedAt    time.Time  `json:"executed_at" gorm:"not null"`
@@ -282,6 +285,7 @@ type LutzPosition struct {
 	AvgPrice    float64   `json:"avg_price" gorm:"not null"`
 	InvestedEUR float64   `json:"invested_eur" gorm:"default:0"` // Exact EUR amount invested
 	IsLive      bool      `json:"is_live" gorm:"default:false"`  // True if this is a real executed position
+	IsPending   bool      `json:"is_pending" gorm:"default:true"` // True if waiting for admin approval
 	BuyDate     time.Time `json:"buy_date" gorm:"not null"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -411,6 +415,17 @@ func main() {
 	db.Exec("ALTER TABLE lutz_trades ADD COLUMN is_live BOOLEAN DEFAULT 0")
 	db.Exec("ALTER TABLE lutz_positions ADD COLUMN is_live BOOLEAN DEFAULT 0")
 
+	// Ensure is_pending columns exist (for admin approval workflow)
+	db.Exec("ALTER TABLE flipper_bot_trades ADD COLUMN is_pending BOOLEAN DEFAULT 1")
+	db.Exec("ALTER TABLE flipper_bot_positions ADD COLUMN is_pending BOOLEAN DEFAULT 1")
+	db.Exec("ALTER TABLE lutz_trades ADD COLUMN is_pending BOOLEAN DEFAULT 1")
+	db.Exec("ALTER TABLE lutz_positions ADD COLUMN is_pending BOOLEAN DEFAULT 1")
+	// Set existing trades/positions to approved (not pending) so they remain visible
+	db.Exec("UPDATE flipper_bot_trades SET is_pending = 0 WHERE is_pending IS NULL")
+	db.Exec("UPDATE flipper_bot_positions SET is_pending = 0 WHERE is_pending IS NULL")
+	db.Exec("UPDATE lutz_trades SET is_pending = 0 WHERE is_pending IS NULL")
+	db.Exec("UPDATE lutz_positions SET is_pending = 0 WHERE is_pending IS NULL")
+
 	// Clean up expired sessions on startup
 	db.Where("expiry < ?", time.Now()).Delete(&DBSession{})
 
@@ -518,6 +533,10 @@ func main() {
 		api.POST("/flipperbot/sync", authMiddleware(), adminOnly(), syncFlipperBot)
 		api.GET("/flipperbot/completed-trades", authMiddleware(), getFlipperBotCompletedTrades)
 		api.POST("/flipperbot/fix-db", authMiddleware(), adminOnly(), fixFlipperBotDB)
+		api.GET("/flipperbot/history", authMiddleware(), getFlipperBotHistory)
+		api.POST("/flipperbot/backfill", authMiddleware(), adminOnly(), flipperBotBackfill)
+		api.GET("/flipperbot/pending-trades", authMiddleware(), adminOnly(), getFlipperBotPendingTrades)
+		api.POST("/flipperbot/trade/:id/accept", authMiddleware(), adminOnly(), acceptFlipperBotTrade)
 
 		// Lutz routes - Aggressive mode bot (view: all users, actions: admin only)
 		api.GET("/lutz/update", authMiddleware(), adminOnly(), lutzUpdate)
@@ -525,6 +544,7 @@ func main() {
 		api.GET("/lutz/actions", authMiddleware(), getLutzActions)
 		api.GET("/lutz/performance", authMiddleware(), getLutzPerformance)
 		api.POST("/lutz/reset", authMiddleware(), adminOnly(), resetLutz)
+		api.POST("/lutz/backfill", authMiddleware(), adminOnly(), lutzBackfill)
 		api.PUT("/lutz/position/:id", authMiddleware(), adminOnly(), updateLutzPosition)
 		api.PUT("/lutz/trade/:id", authMiddleware(), adminOnly(), updateLutzTrade)
 		api.DELETE("/lutz/trade/:id", authMiddleware(), adminOnly(), deleteLutzTrade)
@@ -537,6 +557,9 @@ func main() {
 		api.POST("/lutz/todos/:id/execute", authMiddleware(), adminOnly(), executeLutzTodo)
 		api.POST("/lutz/sync", authMiddleware(), adminOnly(), syncLutz)
 		api.GET("/lutz/completed-trades", authMiddleware(), getLutzCompletedTrades)
+		api.GET("/lutz/history", authMiddleware(), getLutzHistory)
+		api.GET("/lutz/pending-trades", authMiddleware(), adminOnly(), getLutzPendingTrades)
+		api.POST("/lutz/trade/:id/accept", authMiddleware(), adminOnly(), acceptLutzTrade)
 
 		// Performance page - combined view of both bots
 		api.GET("/performance/history", authMiddleware(), getPerformanceHistory)
@@ -3068,7 +3091,6 @@ func ensureLutzUser() {
 }
 
 func flipperBotUpdate(c *gin.Context) {
-	startDate, _ := time.Parse("2006-01-02", FLIPPERBOT_START_DATE)
 	now := time.Now()
 	sessionID := uuid.New().String()
 
@@ -3144,15 +3166,9 @@ func flipperBotUpdate(c *gin.Context) {
 		if stock.Signal == "BUY" {
 			// BUY signal is active - we should enter a position if we don't have one
 			if !hasPosition {
-				// NEW RULE: No retroactive trades! Always use TODAY's date and current price
+				// No retroactive trades - use TODAY's date and current price
 				today := time.Now().Truncate(24 * time.Hour)
 				tradeDate := adjustToTradingDay(today)
-
-				// Skip if signal started before our start date (bot wasn't active then)
-				if signalStartDate.Before(startDate) {
-					addLog("INFO", fmt.Sprintf("%s: BUY-Signal startete vor %s, Trade heute zum aktuellen Kurs",
-						stock.Symbol, FLIPPERBOT_START_DATE), nil)
-				}
 
 				// Check if we already have a buy trade for this stock
 				var existingBuy FlipperBotTrade
@@ -3172,7 +3188,7 @@ func flipperBotUpdate(c *gin.Context) {
 					}
 				}
 
-				// ALWAYS use current price - no retroactive trades!
+				// Get current price
 				var buyPrice float64
 				if quote, ok := quotes[stock.Symbol]; ok && quote.Price > 0 {
 					buyPrice = quote.Price
@@ -3181,37 +3197,62 @@ func flipperBotUpdate(c *gin.Context) {
 					continue
 				}
 
-				// Use today's date for the trade
-				signalStartDate = tradeDate
-
 				// Calculate quantity: invest 100 EUR worth
 				investmentEUR := 100.0
 				investmentUSD := convertToUSD(investmentEUR, "EUR")
-				qty := investmentUSD / buyPrice
+				qty := math.Round((investmentUSD/buyPrice)*1000000) / 1000000
+				actualPrice := investmentUSD / qty
 
-				// Create TODO instead of executing trade
-				addLog("TODO", fmt.Sprintf("%s: BUY-Vorschlag erstellt - %.4f Anteile @ $%.2f (100€ = $%.2f)",
-					stock.Symbol, qty, buyPrice, investmentUSD), nil)
+				// EXECUTE BUY TRADE DIRECTLY
+				newTrade := FlipperBotTrade{
+					Symbol:     stock.Symbol,
+					Name:       stock.Name,
+					Action:     "BUY",
+					Quantity:   qty,
+					Price:      actualPrice,
+					SignalDate: tradeDate,
+					ExecutedAt: now,
+				}
+				db.Create(&newTrade)
 
-				saveBotTodo("flipperbot", "BUY", stock.Symbol, stock.Name, qty, 0, buyPrice,
-					stock.Signal, stock.SignalBars, signalStartDate.Format("2006-01-02"),
-					fmt.Sprintf("BUY Signal aktiv seit %d Bars", stock.SignalBars))
+				newPosition := FlipperBotPosition{
+					Symbol:      stock.Symbol,
+					Name:        stock.Name,
+					Quantity:    qty,
+					AvgPrice:    actualPrice,
+					InvestedEUR: investmentEUR,
+					BuyDate:     tradeDate,
+				}
+				db.Create(&newPosition)
+
+				// Add to portfolio comparison
+				portfolioPos := PortfolioPosition{
+					UserID:       FLIPPERBOT_USER_ID,
+					Symbol:       stock.Symbol,
+					Name:         stock.Name,
+					PurchaseDate: &tradeDate,
+					AvgPrice:     actualPrice,
+					Currency:     "USD",
+					Quantity:     &qty,
+				}
+				db.Create(&portfolioPos)
+
+				addLog("ACTION", fmt.Sprintf("%s: BUY ausgeführt - %.4f Anteile @ $%.2f (100€ = $%.2f)",
+					stock.Symbol, qty, actualPrice, investmentUSD), nil)
 
 				actions = append(actions, map[string]interface{}{
 					"action":   "BUY",
 					"symbol":   stock.Symbol,
 					"name":     stock.Name,
-					"price":    buyPrice,
-					"date":     signalStartDate.Format("2006-01-02"),
+					"price":    actualPrice,
+					"date":     tradeDate.Format("2006-01-02"),
 					"quantity": qty,
-					"is_todo":  true,
 				})
 			} else {
 				addLog("SKIP", fmt.Sprintf("%s: BUY-Signal aktiv, Position bereits vorhanden", stock.Symbol), nil)
 			}
 		} else if stock.Signal == "HOLD" {
 			// HOLD means we should be in a position from a previous BUY
-			// If we don't have a position, the BUY was before our start date - skip
 			if !hasPosition {
 				addLog("SKIP", fmt.Sprintf("%s: HOLD-Signal, aber keine Position - BUY war vor %s",
 					stock.Symbol, FLIPPERBOT_START_DATE), nil)
@@ -3219,39 +3260,23 @@ func flipperBotUpdate(c *gin.Context) {
 				addLog("SKIP", fmt.Sprintf("%s: HOLD-Signal, behalte Position", stock.Symbol), nil)
 			}
 		} else if stock.Signal == "SELL" {
-			// Should NOT have a position - check if we need to sell
+			// SELL signal - close position if we have one
 			if hasPosition {
-				// Calculate when SELL signal started based on SignalBars
-				sellSignalDate := now.AddDate(0, -stock.SignalBars, 0)
-				// Adjust to trading day (weekday)
-				sellSignalDate = adjustToTradingDay(sellSignalDate)
+				// Use TODAY's date and current price
+				today := time.Now().Truncate(24 * time.Hour)
+				sellDate := adjustToTradingDay(today)
 
-				// Get price at sell signal date
-				var sellDate time.Time
+				// Get current price
 				var sellPrice float64
-
-				// Try to get historical price at signal date
-				sellPrice = getPriceAtDate(stock.Symbol, sellSignalDate)
-				if sellPrice > 0 {
-					sellDate = sellSignalDate
+				if quote, ok := quotes[stock.Symbol]; ok && quote.Price > 0 {
+					sellPrice = quote.Price
 				} else {
-					// Fallback: use current price
-					sellDate = now
-					if quote, ok := quotes[stock.Symbol]; ok && quote.Price > 0 {
-						sellPrice = quote.Price
-					} else {
-						sellPrice = stock.CurrentPrice
-					}
-					addLog("WARN", fmt.Sprintf("%s: Kein historischer Preis, nutze aktuellen Preis", stock.Symbol), nil)
+					sellPrice = stock.CurrentPrice
 				}
 
-				// Make sure sell date is after buy date
-				if sellDate.Before(existingPosition.BuyDate) {
-					sellDate = now
-					if quote, ok := quotes[stock.Symbol]; ok && quote.Price > 0 {
-						sellPrice = quote.Price
-					}
-					addLog("INFO", fmt.Sprintf("%s: Sell-Datum vor Buy-Datum, verwende heute", stock.Symbol), nil)
+				if sellPrice <= 0 {
+					addLog("ERROR", fmt.Sprintf("%s: Kein aktueller Preis verfügbar - überspringe", stock.Symbol), nil)
+					continue
 				}
 
 				// Check if we already sold
@@ -3262,17 +3287,32 @@ func flipperBotUpdate(c *gin.Context) {
 					continue
 				}
 
-				// Create TODO instead of executing trade
+				// Calculate profit/loss
 				profitLoss := (sellPrice - existingPosition.AvgPrice) * existingPosition.Quantity
 				profitLossPct := ((sellPrice - existingPosition.AvgPrice) / existingPosition.AvgPrice) * 100
 
-				addLog("TODO", fmt.Sprintf("%s: SELL-Vorschlag erstellt - %.4f Anteile @ $%.2f (erwarteter Gewinn: $%.2f / %.2f%%)",
-					stock.Symbol, existingPosition.Quantity, sellPrice, profitLoss, profitLossPct), nil)
+				// EXECUTE SELL TRADE DIRECTLY
+				newTrade := FlipperBotTrade{
+					Symbol:        stock.Symbol,
+					Name:          stock.Name,
+					Action:        "SELL",
+					Quantity:      existingPosition.Quantity,
+					Price:         sellPrice,
+					SignalDate:    sellDate,
+					ExecutedAt:    now,
+					ProfitLoss:    &profitLoss,
+					ProfitLossPct: &profitLossPct,
+				}
+				db.Create(&newTrade)
 
-				saveBotTodo("flipperbot", "SELL", stock.Symbol, stock.Name, existingPosition.Quantity,
-					existingPosition.AvgPrice, sellPrice, stock.Signal, stock.SignalBars,
-					sellDate.Format("2006-01-02"),
-					fmt.Sprintf("SELL Signal - erwarteter Gewinn: $%.2f (%.2f%%)", profitLoss, profitLossPct))
+				// Delete position
+				db.Delete(&existingPosition)
+
+				// Delete from portfolio comparison
+				db.Where("user_id = ? AND symbol = ?", FLIPPERBOT_USER_ID, stock.Symbol).Delete(&PortfolioPosition{})
+
+				addLog("ACTION", fmt.Sprintf("%s: SELL ausgeführt - %.4f Anteile @ $%.2f (Gewinn: $%.2f / %.2f%%)",
+					stock.Symbol, existingPosition.Quantity, sellPrice, profitLoss, profitLossPct), nil)
 
 				actions = append(actions, map[string]interface{}{
 					"action":          "SELL",
@@ -3283,30 +3323,496 @@ func flipperBotUpdate(c *gin.Context) {
 					"quantity":        existingPosition.Quantity,
 					"profit_loss":     profitLoss,
 					"profit_loss_pct": profitLossPct,
-					"is_todo":         true,
 				})
 			} else {
-				addLog("SKIP", fmt.Sprintf("%s: Signal ist %s, keine Position zum Verkaufen", stock.Symbol, stock.Signal), nil)
+				addLog("SKIP", fmt.Sprintf("%s: SELL-Signal, aber keine Position zum Verkaufen", stock.Symbol), nil)
 			}
 		} else {
 			addLog("SKIP", fmt.Sprintf("%s: Unbekanntes Signal '%s'", stock.Symbol, stock.Signal), nil)
 		}
 	}
 
-	addLog("INFO", fmt.Sprintf("Update abgeschlossen: %d Vorschläge erstellt", len(actions)), nil)
+	addLog("INFO", fmt.Sprintf("Update abgeschlossen: %d Trades ausgeführt", len(actions)), nil)
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":       "FlipperBot update completed",
-		"actions":       actions,
-		"action_count":  len(actions),
-		"logs":          logs,
-		"todos_created": len(actions),
+		"message":      "FlipperBot update completed",
+		"actions":      actions,
+		"action_count": len(actions),
+		"logs":         logs,
 	})
+}
+
+// flipperBotBackfill allows admin to create retroactive trades from a specified date until today
+// This uses the historical trade data stored in StockPerformance.TradesJSON
+func flipperBotBackfill(c *gin.Context) {
+	var req struct {
+		UntilDate string `json:"until_date"` // Format: 2026-01-15 - this is actually the START date
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "until_date required"})
+		return
+	}
+
+	fromDate, err := time.Parse("2006-01-02", req.UntilDate)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid date format (use YYYY-MM-DD)"})
+		return
+	}
+
+	now := time.Now()
+	sessionID := uuid.New().String()
+	var logs []map[string]interface{}
+	addLog := func(level, message string) {
+		entry := map[string]interface{}{
+			"level":   level,
+			"message": message,
+			"time":    time.Now().Format("15:04:05"),
+		}
+		logs = append(logs, entry)
+		saveBotLog("flipperbot", level, message, sessionID)
+	}
+
+	addLog("INFO", fmt.Sprintf("Backfill gestartet ab %s bis heute", req.UntilDate))
+
+	// Get all tracked stocks with their performance data
+	var trackedStocks []StockPerformance
+	db.Find(&trackedStocks)
+
+	if len(trackedStocks) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "No tracked stocks found",
+			"trades_created": 0,
+			"logs": logs,
+		})
+		return
+	}
+
+	var tradesCreated int
+	var positionsCreated int
+
+	for _, stock := range trackedStocks {
+		if stock.TradesJSON == "" {
+			continue
+		}
+
+		// Parse the historical trades from TradesJSON
+		var historicalTrades []TradeData
+		if err := json.Unmarshal([]byte(stock.TradesJSON), &historicalTrades); err != nil {
+			addLog("ERROR", fmt.Sprintf("%s: Fehler beim Parsen der Trades: %v", stock.Symbol, err))
+			continue
+		}
+
+		for _, trade := range historicalTrades {
+			// Convert entryDate from seconds to time (timestamps are in seconds, not milliseconds)
+			entryTime := time.Unix(trade.EntryDate, 0)
+
+			// Sanity check: skip invalid dates (before 2020 or after 2030)
+			if entryTime.Year() < 2020 || entryTime.Year() > 2030 {
+				continue
+			}
+
+			// Skip trades that are before the from_date (user selected start date)
+			if entryTime.Before(fromDate) {
+				continue
+			}
+
+			// Skip trades in the future
+			if entryTime.After(now) {
+				continue
+			}
+
+			// Check if we already have a buy trade for this date
+			var existingBuy FlipperBotTrade
+			dateStart := entryTime.Truncate(24 * time.Hour)
+			dateEnd := dateStart.Add(24 * time.Hour)
+			alreadyExists := db.Where("symbol = ? AND action = ? AND signal_date >= ? AND signal_date < ?",
+				stock.Symbol, "BUY", dateStart, dateEnd).First(&existingBuy).Error == nil
+			if alreadyExists {
+				continue
+			}
+
+			// Calculate quantity: invest 100 EUR worth
+			investmentEUR := 100.0
+			investmentUSD := convertToUSD(investmentEUR, "EUR")
+			qty := math.Round((investmentUSD/trade.EntryPrice)*1000000) / 1000000
+			if qty <= 0 || trade.EntryPrice <= 0 {
+				continue
+			}
+
+			// Create BUY trade
+			buyTrade := FlipperBotTrade{
+				Symbol:     stock.Symbol,
+				Name:       stock.Name,
+				Action:     "BUY",
+				Quantity:   qty,
+				Price:      trade.EntryPrice,
+				SignalDate: entryTime,
+				ExecutedAt: now,
+			}
+			db.Create(&buyTrade)
+			tradesCreated++
+			addLog("ACTION", fmt.Sprintf("%s: BUY erstellt @ $%.2f am %s", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
+
+			// Handle exit (SELL) if exists and is not in the future
+			if trade.ExitDate != nil && trade.ExitPrice != nil {
+				exitTime := time.Unix(*trade.ExitDate, 0)
+
+				if !exitTime.After(now) {
+					// Calculate profit/loss
+					profitLoss := (*trade.ExitPrice - trade.EntryPrice) * qty
+					profitLossPct := trade.ReturnPct
+
+					// Create SELL trade
+					sellTrade := FlipperBotTrade{
+						Symbol:        stock.Symbol,
+						Name:          stock.Name,
+						Action:        "SELL",
+						Quantity:      qty,
+						Price:         *trade.ExitPrice,
+						SignalDate:    exitTime,
+						ExecutedAt:    now,
+						ProfitLoss:    &profitLoss,
+						ProfitLossPct: &profitLossPct,
+					}
+					db.Create(&sellTrade)
+					tradesCreated++
+					addLog("ACTION", fmt.Sprintf("%s: SELL erstellt @ $%.2f am %s (%.2f%%)", stock.Symbol, *trade.ExitPrice, exitTime.Format("2006-01-02"), profitLossPct))
+				} else {
+					// Exit is in the future - create open position
+					var existingPos FlipperBotPosition
+					if db.Where("symbol = ?", stock.Symbol).First(&existingPos).Error != nil {
+						newPos := FlipperBotPosition{
+							Symbol:      stock.Symbol,
+							Name:        stock.Name,
+							Quantity:    qty,
+							AvgPrice:    trade.EntryPrice,
+							InvestedEUR: investmentEUR,
+							BuyDate:     entryTime,
+						}
+						db.Create(&newPos)
+						positionsCreated++
+
+						// Add to portfolio comparison
+						portfolioPos := PortfolioPosition{
+							UserID:       FLIPPERBOT_USER_ID,
+							Symbol:       stock.Symbol,
+							Name:         stock.Name,
+							PurchaseDate: &entryTime,
+							AvgPrice:     trade.EntryPrice,
+							Currency:     "USD",
+							Quantity:     &qty,
+						}
+						db.Create(&portfolioPos)
+						addLog("ACTION", fmt.Sprintf("%s: Position erstellt (offen)", stock.Symbol))
+					}
+				}
+			} else if trade.IsOpen {
+				// Trade is open with no exit - create position
+				var existingPos FlipperBotPosition
+				if db.Where("symbol = ?", stock.Symbol).First(&existingPos).Error != nil {
+					newPos := FlipperBotPosition{
+						Symbol:      stock.Symbol,
+						Name:        stock.Name,
+						Quantity:    qty,
+						AvgPrice:    trade.EntryPrice,
+						InvestedEUR: investmentEUR,
+						BuyDate:     entryTime,
+					}
+					db.Create(&newPos)
+					positionsCreated++
+
+					// Add to portfolio comparison
+					portfolioPos := PortfolioPosition{
+						UserID:       FLIPPERBOT_USER_ID,
+						Symbol:       stock.Symbol,
+						Name:         stock.Name,
+						PurchaseDate: &entryTime,
+						AvgPrice:     trade.EntryPrice,
+						Currency:     "USD",
+						Quantity:     &qty,
+					}
+					db.Create(&portfolioPos)
+					addLog("ACTION", fmt.Sprintf("%s: Position erstellt (offen)", stock.Symbol))
+				}
+			}
+		}
+	}
+
+	addLog("INFO", fmt.Sprintf("Backfill abgeschlossen: %d Trades, %d Positionen erstellt", tradesCreated, positionsCreated))
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":           "Backfill completed",
+		"trades_created":    tradesCreated,
+		"positions_created": positionsCreated,
+		"until_date":        req.UntilDate,
+		"logs":              logs,
+	})
+}
+
+// lutzBackfill allows admin to create retroactive trades for Lutz (aggressive mode) from a specified date until today
+// This uses the historical trade data stored in AggressiveStockPerformance.TradesJSON
+func lutzBackfill(c *gin.Context) {
+	var req struct {
+		UntilDate string `json:"until_date"` // Format: 2026-01-15 - this is actually the START date
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "until_date required"})
+		return
+	}
+
+	fromDate, err := time.Parse("2006-01-02", req.UntilDate)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid date format (use YYYY-MM-DD)"})
+		return
+	}
+
+	now := time.Now()
+	sessionID := uuid.New().String()
+	var logs []map[string]interface{}
+	addLog := func(level, message string) {
+		entry := map[string]interface{}{
+			"level":   level,
+			"message": message,
+			"time":    time.Now().Format("15:04:05"),
+		}
+		logs = append(logs, entry)
+		saveBotLog("lutz", level, message, sessionID)
+	}
+
+	addLog("INFO", fmt.Sprintf("Lutz Backfill gestartet ab %s bis heute", req.UntilDate))
+
+	// Get all tracked stocks with their aggressive performance data
+	var trackedStocks []AggressiveStockPerformance
+	db.Find(&trackedStocks)
+
+	if len(trackedStocks) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"message":        "No tracked stocks found",
+			"trades_created": 0,
+			"logs":           logs,
+		})
+		return
+	}
+
+	var tradesCreated int
+	var positionsCreated int
+
+	for _, stock := range trackedStocks {
+		if stock.TradesJSON == "" {
+			continue
+		}
+
+		// Parse the historical trades from TradesJSON
+		var historicalTrades []TradeData
+		if err := json.Unmarshal([]byte(stock.TradesJSON), &historicalTrades); err != nil {
+			addLog("ERROR", fmt.Sprintf("%s: Fehler beim Parsen der Trades: %v", stock.Symbol, err))
+			continue
+		}
+
+		for _, trade := range historicalTrades {
+			// Convert entryDate from seconds to time
+			entryTime := time.Unix(trade.EntryDate, 0)
+
+			// Sanity check: skip invalid dates (before 2020 or after 2030)
+			if entryTime.Year() < 2020 || entryTime.Year() > 2030 {
+				continue
+			}
+
+			// Skip trades that are before the from_date (user selected start date)
+			if entryTime.Before(fromDate) {
+				continue
+			}
+
+			// Skip trades in the future
+			if entryTime.After(now) {
+				continue
+			}
+
+			// Check if we already have a buy trade for this date
+			var existingBuy LutzTrade
+			dateStart := entryTime.Truncate(24 * time.Hour)
+			dateEnd := dateStart.Add(24 * time.Hour)
+			alreadyExists := db.Where("symbol = ? AND action = ? AND signal_date >= ? AND signal_date < ?",
+				stock.Symbol, "BUY", dateStart, dateEnd).First(&existingBuy).Error == nil
+			if alreadyExists {
+				continue
+			}
+
+			// Calculate quantity: invest 100 EUR worth
+			investmentEUR := 100.0
+			investmentUSD := convertToUSD(investmentEUR, "EUR")
+			qty := math.Round((investmentUSD/trade.EntryPrice)*1000000) / 1000000
+			if qty <= 0 || trade.EntryPrice <= 0 {
+				continue
+			}
+
+			// Create BUY trade
+			buyTrade := LutzTrade{
+				Symbol:     stock.Symbol,
+				Name:       stock.Name,
+				Action:     "BUY",
+				Quantity:   qty,
+				Price:      trade.EntryPrice,
+				SignalDate: entryTime,
+				ExecutedAt: now,
+			}
+			db.Create(&buyTrade)
+			tradesCreated++
+			addLog("ACTION", fmt.Sprintf("%s: BUY erstellt @ $%.2f am %s", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
+
+			// Handle exit (SELL) if exists and is not in the future
+			if trade.ExitDate != nil && trade.ExitPrice != nil {
+				exitTime := time.Unix(*trade.ExitDate, 0)
+
+				if !exitTime.After(now) {
+					// Calculate profit/loss
+					profitLoss := (*trade.ExitPrice - trade.EntryPrice) * qty
+					profitLossPct := trade.ReturnPct
+
+					// Create SELL trade
+					sellTrade := LutzTrade{
+						Symbol:        stock.Symbol,
+						Name:          stock.Name,
+						Action:        "SELL",
+						Quantity:      qty,
+						Price:         *trade.ExitPrice,
+						SignalDate:    exitTime,
+						ExecutedAt:    now,
+						ProfitLoss:    &profitLoss,
+						ProfitLossPct: &profitLossPct,
+					}
+					db.Create(&sellTrade)
+					tradesCreated++
+					addLog("ACTION", fmt.Sprintf("%s: SELL erstellt @ $%.2f am %s (%.2f%%)", stock.Symbol, *trade.ExitPrice, exitTime.Format("2006-01-02"), profitLossPct))
+				} else {
+					// Exit is in the future - create open position
+					var existingPos LutzPosition
+					if db.Where("symbol = ?", stock.Symbol).First(&existingPos).Error != nil {
+						newPos := LutzPosition{
+							Symbol:      stock.Symbol,
+							Name:        stock.Name,
+							Quantity:    qty,
+							AvgPrice:    trade.EntryPrice,
+							InvestedEUR: investmentEUR,
+							BuyDate:     entryTime,
+						}
+						db.Create(&newPos)
+						positionsCreated++
+
+						// Add to portfolio comparison
+						portfolioPos := PortfolioPosition{
+							UserID:       LUTZ_USER_ID,
+							Symbol:       stock.Symbol,
+							Name:         stock.Name,
+							PurchaseDate: &entryTime,
+							AvgPrice:     trade.EntryPrice,
+							Currency:     "USD",
+							Quantity:     &qty,
+						}
+						db.Create(&portfolioPos)
+						addLog("ACTION", fmt.Sprintf("%s: Position erstellt (offen)", stock.Symbol))
+					}
+				}
+			} else if trade.IsOpen {
+				// Trade is open with no exit - create position
+				var existingPos LutzPosition
+				if db.Where("symbol = ?", stock.Symbol).First(&existingPos).Error != nil {
+					newPos := LutzPosition{
+						Symbol:      stock.Symbol,
+						Name:        stock.Name,
+						Quantity:    qty,
+						AvgPrice:    trade.EntryPrice,
+						InvestedEUR: investmentEUR,
+						BuyDate:     entryTime,
+					}
+					db.Create(&newPos)
+					positionsCreated++
+
+					// Add to portfolio comparison
+					portfolioPos := PortfolioPosition{
+						UserID:       LUTZ_USER_ID,
+						Symbol:       stock.Symbol,
+						Name:         stock.Name,
+						PurchaseDate: &entryTime,
+						AvgPrice:     trade.EntryPrice,
+						Currency:     "USD",
+						Quantity:     &qty,
+					}
+					db.Create(&portfolioPos)
+					addLog("ACTION", fmt.Sprintf("%s: Position erstellt (offen)", stock.Symbol))
+				}
+			}
+		}
+	}
+
+	addLog("INFO", fmt.Sprintf("Lutz Backfill abgeschlossen: %d Trades, %d Positionen erstellt", tradesCreated, positionsCreated))
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":           "Backfill completed",
+		"trades_created":    tradesCreated,
+		"positions_created": positionsCreated,
+		"until_date":        req.UntilDate,
+		"logs":              logs,
+	})
+}
+
+// getFlipperBotPendingTrades returns all FlipperBot trades that are pending admin approval
+func getFlipperBotPendingTrades(c *gin.Context) {
+	var trades []FlipperBotTrade
+	db.Where("is_pending = ?", true).Order("signal_date desc").Find(&trades)
+	c.JSON(http.StatusOK, trades)
+}
+
+// acceptFlipperBotTrade accepts a pending FlipperBot trade (sets is_pending = false)
+func acceptFlipperBotTrade(c *gin.Context) {
+	id := c.Param("id")
+	var trade FlipperBotTrade
+	if err := db.First(&trade, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Trade not found"})
+		return
+	}
+
+	trade.IsPending = false
+	db.Save(&trade)
+
+	// If this is a BUY trade, also accept the corresponding position
+	if trade.Action == "BUY" {
+		db.Model(&FlipperBotPosition{}).Where("symbol = ? AND is_pending = ?", trade.Symbol, true).Update("is_pending", false)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Trade accepted", "trade": trade})
+}
+
+// getLutzPendingTrades returns all Lutz trades that are pending admin approval
+func getLutzPendingTrades(c *gin.Context) {
+	var trades []LutzTrade
+	db.Where("is_pending = ?", true).Order("signal_date desc").Find(&trades)
+	c.JSON(http.StatusOK, trades)
+}
+
+// acceptLutzTrade accepts a pending Lutz trade (sets is_pending = false)
+func acceptLutzTrade(c *gin.Context) {
+	id := c.Param("id")
+	var trade LutzTrade
+	if err := db.First(&trade, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Trade not found"})
+		return
+	}
+
+	trade.IsPending = false
+	db.Save(&trade)
+
+	// If this is a BUY trade, also accept the corresponding position
+	if trade.Action == "BUY" {
+		db.Model(&LutzPosition{}).Where("symbol = ? AND is_pending = ?", trade.Symbol, true).Update("is_pending", false)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Trade accepted", "trade": trade})
 }
 
 func getFlipperBotPortfolio(c *gin.Context) {
 	var positions []FlipperBotPosition
-	db.Order("buy_date desc").Find(&positions)
+	db.Where("is_pending = ?", false).Order("buy_date desc").Find(&positions)
 
 	// Fetch current quotes
 	symbols := make([]string, len(positions))
@@ -3391,19 +3897,19 @@ func getFlipperBotPortfolio(c *gin.Context) {
 func getFlipperBotActions(c *gin.Context) {
 	limit := 50
 	var trades []FlipperBotTrade
-	db.Order("signal_date desc, executed_at desc").Limit(limit).Find(&trades)
+	db.Where("is_pending = ?", false).Order("signal_date desc, executed_at desc").Limit(limit).Find(&trades)
 
 	c.JSON(http.StatusOK, trades)
 }
 
 func getFlipperBotPerformance(c *gin.Context) {
-	// Get all completed trades (sells)
+	// Get all completed trades (sells) - only approved ones
 	var sellTrades []FlipperBotTrade
-	db.Where("action = ?", "SELL").Find(&sellTrades)
+	db.Where("action = ? AND is_pending = ?", "SELL", false).Find(&sellTrades)
 
-	// Get all buy trades to calculate total invested
+	// Get all buy trades to calculate total invested - only approved ones
 	var buyTrades []FlipperBotTrade
-	db.Where("action = ?", "BUY").Find(&buyTrades)
+	db.Where("action = ? AND is_pending = ?", "BUY", false).Find(&buyTrades)
 
 	wins := 0
 	losses := 0
@@ -3427,9 +3933,21 @@ func getFlipperBotPerformance(c *gin.Context) {
 		winRate = float64(wins) / float64(wins+losses) * 100
 	}
 
-	// Calculate current unrealized gains and invested amounts
+	// Calculate average return per closed trade
+	totalReturnPctClosed := 0.0
+	for _, trade := range sellTrades {
+		if trade.ProfitLossPct != nil {
+			totalReturnPctClosed += *trade.ProfitLossPct
+		}
+	}
+	avgReturnPerTrade := 0.0
+	if len(sellTrades) > 0 {
+		avgReturnPerTrade = totalReturnPctClosed / float64(len(sellTrades))
+	}
+
+	// Calculate current unrealized gains and invested amounts - only approved positions
 	var positions []FlipperBotPosition
-	db.Find(&positions)
+	db.Where("is_pending = ?", false).Find(&positions)
 
 	symbols := make([]string, len(positions))
 	for i, p := range positions {
@@ -3471,21 +3989,177 @@ func getFlipperBotPerformance(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"total_trades":        len(sellTrades),
-		"total_buys":          len(buyTrades),
-		"wins":                wins,
-		"losses":              losses,
-		"win_rate":            winRate,
-		"realized_profit":     totalProfitLoss,
-		"unrealized_gain":     unrealizedGain,
-		"total_gain":          totalProfitLoss + unrealizedGain,
-		"open_positions":      len(positions),
+		"total_trades":          len(sellTrades),
+		"total_buys":            len(buyTrades),
+		"wins":                  wins,
+		"losses":                losses,
+		"win_rate":              winRate,
+		"realized_profit":       totalProfitLoss,
+		"realized_return_pct":   totalReturnPctClosed,
+		"avg_return_per_trade":  avgReturnPerTrade,
+		"unrealized_gain":       unrealizedGain,
+		"total_gain":            totalProfitLoss + unrealizedGain,
+		"open_positions":        len(positions),
 		"invested_in_positions": investedInPositions,
-		"current_value":       currentValue,
-		"total_invested":      totalInvested,
-		"total_return_pct":    totalReturnPct,
-		"overall_return_pct":  overallReturnPct,
+		"current_value":         currentValue,
+		"total_invested":        totalInvested,
+		"total_return_pct":      totalReturnPct,
+		"overall_return_pct":    overallReturnPct,
 	})
+}
+
+// getFlipperBotHistory returns historical performance data for the FlipperBot chart
+func getFlipperBotHistory(c *gin.Context) {
+	period := c.DefaultQuery("period", "1m")
+	history := calculateBotHistory("flipperbot", period)
+	c.JSON(http.StatusOK, history)
+}
+
+// getLutzHistory returns historical performance data for the Lutz bot chart
+func getLutzHistory(c *gin.Context) {
+	period := c.DefaultQuery("period", "1m")
+	history := calculateBotHistory("lutz", period)
+	c.JSON(http.StatusOK, history)
+}
+
+// calculateBotHistory calculates historical performance for a bot
+func calculateBotHistory(botType string, period string) []map[string]interface{} {
+	// Get positions based on bot type
+	var symbols []string
+	var positionData []struct {
+		Symbol   string
+		Quantity float64
+		AvgPrice float64
+		BuyDate  time.Time
+	}
+
+	if botType == "flipperbot" {
+		var positions []FlipperBotPosition
+		db.Find(&positions)
+		for _, p := range positions {
+			symbols = append(symbols, p.Symbol)
+			positionData = append(positionData, struct {
+				Symbol   string
+				Quantity float64
+				AvgPrice float64
+				BuyDate  time.Time
+			}{p.Symbol, p.Quantity, p.AvgPrice, p.BuyDate})
+		}
+	} else {
+		var positions []LutzPosition
+		db.Find(&positions)
+		for _, p := range positions {
+			symbols = append(symbols, p.Symbol)
+			positionData = append(positionData, struct {
+				Symbol   string
+				Quantity float64
+				AvgPrice float64
+				BuyDate  time.Time
+			}{p.Symbol, p.Quantity, p.AvgPrice, p.BuyDate})
+		}
+	}
+
+	if len(symbols) == 0 {
+		return []map[string]interface{}{}
+	}
+
+	// Map period to Yahoo Finance range
+	yahooRange := "1mo"
+	switch period {
+	case "1w":
+		yahooRange = "5d"
+	case "1m":
+		yahooRange = "1mo"
+	case "3m":
+		yahooRange = "3mo"
+	case "6m":
+		yahooRange = "6mo"
+	case "1y":
+		yahooRange = "1y"
+	case "ytd":
+		yahooRange = "ytd"
+	case "5y":
+		yahooRange = "5y"
+	}
+
+	// Fetch historical data for all symbols
+	symbolData := make(map[string][]OHLCV)
+	for _, symbol := range symbols {
+		data := fetchHistoricalData(symbol, yahooRange)
+		if len(data) > 0 {
+			symbolData[symbol] = data
+		}
+	}
+
+	if len(symbolData) == 0 {
+		return []map[string]interface{}{}
+	}
+
+	// Collect all timestamps
+	var allTimes []int64
+	timeValues := make(map[int64]map[string]float64)
+
+	for symbol, data := range symbolData {
+		for _, candle := range data {
+			if _, exists := timeValues[candle.Time]; !exists {
+				timeValues[candle.Time] = make(map[string]float64)
+				allTimes = append(allTimes, candle.Time)
+			}
+			timeValues[candle.Time][symbol] = candle.Close
+		}
+	}
+
+	// Sort times
+	for i := 0; i < len(allTimes)-1; i++ {
+		for j := i + 1; j < len(allTimes); j++ {
+			if allTimes[i] > allTimes[j] {
+				allTimes[i], allTimes[j] = allTimes[j], allTimes[i]
+			}
+		}
+	}
+
+	// Calculate total invested
+	totalInvested := 0.0
+	for _, p := range positionData {
+		totalInvested += p.AvgPrice * p.Quantity
+	}
+
+	if totalInvested == 0 {
+		return []map[string]interface{}{}
+	}
+
+	// Track last known prices
+	lastPrices := make(map[string]float64)
+	result := make([]map[string]interface{}, 0)
+
+	for _, t := range allTimes {
+		prices := timeValues[t]
+
+		// Update last known prices
+		for symbol, price := range prices {
+			lastPrices[symbol] = price
+		}
+
+		// Calculate portfolio value at this time
+		var portfolioValue float64
+		for _, p := range positionData {
+			if price, ok := lastPrices[p.Symbol]; ok {
+				portfolioValue += price * p.Quantity
+			}
+		}
+
+		if portfolioValue > 0 {
+			pctChange := ((portfolioValue - totalInvested) / totalInvested) * 100
+
+			result = append(result, map[string]interface{}{
+				"time":  t,
+				"value": portfolioValue,
+				"pct":   pctChange,
+			})
+		}
+	}
+
+	return result
 }
 
 func resetFlipperBot(c *gin.Context) {
@@ -4608,29 +5282,21 @@ func lutzUpdate(c *gin.Context) {
 			}
 		} else if stock.Signal == "SELL" {
 			if hasPosition {
-				sellSignalDate := now.AddDate(0, -stock.SignalBars, 0)
-				sellSignalDate = adjustToTradingDay(sellSignalDate)
+				// NO RETROACTIVE TRADES! Always use today's date and current price
+				today := time.Now().Truncate(24 * time.Hour)
+				sellDate := adjustToTradingDay(today)
 
+				// ALWAYS use current price
 				var sellPrice float64
-				var sellDate time.Time
-
-				sellPrice = getPriceAtDate(stock.Symbol, sellSignalDate)
-				if sellPrice > 0 {
-					sellDate = sellSignalDate
+				if quote, ok := quotes[stock.Symbol]; ok && quote.Price > 0 {
+					sellPrice = quote.Price
 				} else {
-					sellDate = now
-					if quote, ok := quotes[stock.Symbol]; ok && quote.Price > 0 {
-						sellPrice = quote.Price
-					} else {
-						sellPrice = stock.CurrentPrice
-					}
+					sellPrice = stock.CurrentPrice
 				}
 
-				if sellDate.Before(existingPosition.BuyDate) {
-					sellDate = now
-					if quote, ok := quotes[stock.Symbol]; ok && quote.Price > 0 {
-						sellPrice = quote.Price
-					}
+				if sellPrice <= 0 {
+					addLog("ERROR", fmt.Sprintf("%s: Kein aktueller Preis verfügbar - überspringe", stock.Symbol), nil)
+					continue
 				}
 
 				var existingSell LutzTrade
@@ -4682,7 +5348,7 @@ func lutzUpdate(c *gin.Context) {
 
 func getLutzPortfolio(c *gin.Context) {
 	var positions []LutzPosition
-	db.Order("buy_date desc").Find(&positions)
+	db.Where("is_pending = ?", false).Order("buy_date desc").Find(&positions)
 
 	symbols := make([]string, len(positions))
 	for i, p := range positions {
@@ -4759,16 +5425,16 @@ func getLutzPortfolio(c *gin.Context) {
 
 func getLutzActions(c *gin.Context) {
 	var trades []LutzTrade
-	db.Order("signal_date desc").Limit(50).Find(&trades)
+	db.Where("is_pending = ?", false).Order("signal_date desc").Limit(50).Find(&trades)
 	c.JSON(http.StatusOK, trades)
 }
 
 func getLutzPerformance(c *gin.Context) {
 	var sellTrades []LutzTrade
-	db.Where("action = ?", "SELL").Find(&sellTrades)
+	db.Where("action = ? AND is_pending = ?", "SELL", false).Find(&sellTrades)
 
 	var buyTrades []LutzTrade
-	db.Where("action = ?", "BUY").Find(&buyTrades)
+	db.Where("action = ? AND is_pending = ?", "BUY", false).Find(&buyTrades)
 
 	wins := 0
 	losses := 0
@@ -4790,8 +5456,20 @@ func getLutzPerformance(c *gin.Context) {
 		winRate = float64(wins) / float64(wins+losses) * 100
 	}
 
+	// Calculate average return per closed trade
+	totalReturnPctClosed := 0.0
+	for _, trade := range sellTrades {
+		if trade.ProfitLossPct != nil {
+			totalReturnPctClosed += *trade.ProfitLossPct
+		}
+	}
+	avgReturnPerTrade := 0.0
+	if len(sellTrades) > 0 {
+		avgReturnPerTrade = totalReturnPctClosed / float64(len(sellTrades))
+	}
+
 	var positions []LutzPosition
-	db.Find(&positions)
+	db.Where("is_pending = ?", false).Find(&positions)
 
 	symbols := make([]string, len(positions))
 	for i, p := range positions {
@@ -4836,6 +5514,8 @@ func getLutzPerformance(c *gin.Context) {
 		"losses":                losses,
 		"win_rate":              winRate,
 		"realized_profit":       totalProfitLoss,
+		"realized_return_pct":   totalReturnPctClosed,
+		"avg_return_per_trade":  avgReturnPerTrade,
 		"unrealized_gain":       unrealizedGain,
 		"total_gain":            totalProfitLoss + unrealizedGain,
 		"open_positions":        len(positions),

@@ -684,17 +684,20 @@ function PortfolioContent({ token }) {
                         <div className="font-medium text-white">{trade.symbol}</div>
                         <div className="text-xs text-gray-500 truncate max-w-[100px]">{trade.name}</div>
                       </td>
-                      <td className="py-2 pr-4 text-green-400">
+                      <td className="py-2 pr-4 text-gray-300">
                         {CURRENCY_SYMBOLS[trade.currency] || '€'}{trade.buy_price.toFixed(2)}
                       </td>
-                      <td className="py-2 pr-4 text-red-400">
+                      <td className="py-2 pr-4 text-gray-300">
                         {CURRENCY_SYMBOLS[trade.currency] || '€'}{trade.sell_price.toFixed(2)}
                       </td>
                       <td className="py-2 pr-4 text-gray-400">
                         {trade.quantity}
                       </td>
                       <td className={`py-2 pr-4 text-right font-medium ${trade.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {formatPercent(trade.profit_loss_pct)}
+                        <div>{formatPercent(trade.profit_loss_pct)}</div>
+                        <div className="text-xs">
+                          {trade.profit_loss >= 0 ? '+' : ''}{formatPrice(trade.profit_loss)}
+                        </div>
                       </td>
                       <td className="py-2 text-right text-gray-500">
                         {formatDate(trade.sell_date)}
@@ -726,11 +729,11 @@ function PortfolioContent({ token }) {
               <div className="grid grid-cols-2 gap-2 text-sm">
                 <div>
                   <span className="text-gray-500">Kaufkurs:</span>
-                  <span className="text-white ml-2">{CURRENCY_SYMBOLS[sellingPosition.currency] || '€'}{sellingPosition.avg_price.toFixed(2)}</span>
+                  <span className="text-white ml-2">{CURRENCY_SYMBOLS[sellingPosition.currency] || '€'}{sellingPosition.avg_price?.toFixed(2)}</span>
                 </div>
                 <div>
                   <span className="text-gray-500">Aktuell:</span>
-                  <span className="text-white ml-2">{formatPrice(sellingPosition.current_price, sellingPosition.symbol)}</span>
+                  <span className="text-white ml-2">{CURRENCY_SYMBOLS[sellingPosition.currency] || '€'}{sellingPosition.current_price?.toFixed(2)}</span>
                 </div>
               </div>
             </div>

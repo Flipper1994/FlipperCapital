@@ -3,6 +3,8 @@ import { createChart } from 'lightweight-charts'
 import { useTradingMode } from '../context/TradingModeContext'
 import { calculateBXtrender, calculateMetrics, savePerformanceToBackend } from '../utils/bxtrender'
 
+const timeframeLabels = { 'M': 'Monthly', 'W': 'Weekly', 'D': 'Daily' }
+
 function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdate }) {
   const chartContainerRef = useRef(null)
   const chartRef = useRef(null)
@@ -194,6 +196,13 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-white">B-Xtrender</span>
           <span className="text-xs text-gray-500">@Puppytherapy</span>
+          <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded ${
+            timeframe === 'M' ? 'bg-purple-500/20 text-purple-400' :
+            timeframe === 'W' ? 'bg-cyan-500/20 text-cyan-400' :
+            'bg-gray-500/20 text-gray-400'
+          }`}>
+            {timeframeLabels[timeframe] || timeframe}
+          </span>
           {isAggressive ? (
             <span className="px-1.5 py-0.5 bg-orange-500/20 text-orange-400 text-[10px] font-bold rounded flex items-center gap-1">
               <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">

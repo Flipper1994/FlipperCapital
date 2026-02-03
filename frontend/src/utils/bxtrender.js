@@ -194,9 +194,9 @@ export function calculateBXtrender(ohlcv, isAggressive = false) {
     let buySignal = false
     let sellSignal = false
 
-    // Count consecutive light red bars for aggressive mode
+    // Count consecutive light red bars (used by both modes)
     let consecutiveLightRed = 0
-    if (isAggressive && isLightRed) {
+    if (isLightRed) {
       consecutiveLightRed = 1
       for (let j = i - 1; j >= startIdx; j--) {
         const v = shortTermXtrender[j]
@@ -222,55 +222,71 @@ export function calculateBXtrender(ohlcv, isAggressive = false) {
         sellSignal = true
       }
     } else {
-      // Defensive BUY: Enter when crossing above 0 (conservative)
-      if (isBullish && !wasBullish && !inPosition && opens[i] > 0) {
-        buySignal = true
+      // Defensive BUY:
+      // 1. Enter when crossing from red to green (rot->grün)
+      // 2. OR after 3 consecutive light red bars, buy at the 4th light red
+      if (!inPosition && opens[i] > 0) {
+        const justTurnedGreen = isBullish && !wasBullish
+        const fourthLightRed = isLightRed && consecutiveLightRed === 4
+        if (justTurnedGreen || fourthLightRed) {
+          buySignal = true
+        }
       }
-      // Defensive SELL: Exit when crossing below 0 (conservative)
-      if (!isBullish && wasBullish && inPosition && opens[i] > 0 && entryPrice > 0) {
+      // Defensive SELL: Exit immediately at first dark red bar
+      if (isDarkRed && inPosition && opens[i] > 0 && entryPrice > 0) {
         sellSignal = true
       }
     }
 
     if (buySignal) {
-      inPosition = true
-      entryPrice = opens[i]
-      entryDate = times[i]
+      // IMPORTANT: Signal is evaluated at month end, so trade happens at START of NEXT month
+      // Check if next month data exists
+      if (i + 1 < closes.length && opens[i + 1] > 0) {
+        inPosition = true
+        entryPrice = opens[i + 1]  // Open price of NEXT month
+        entryDate = times[i + 1]   // First trading day of NEXT month
 
-      markers.push({
-        time: times[i],
-        position: 'belowBar',
-        color: '#00FF00',
-        shape: 'arrowUp',
-        text: `BUY $${opens[i].toFixed(2)}`
-      })
+        markers.push({
+          time: times[i + 1],
+          position: 'belowBar',
+          color: '#00FF00',
+          shape: 'arrowUp',
+          text: `BUY $${opens[i + 1].toFixed(2)}`
+        })
+      }
+      // If no next month data, skip this signal (can't trade yet)
     }
 
     if (sellSignal) {
-      const exitPrice = opens[i]
-      const returnPct = ((exitPrice - entryPrice) / entryPrice) * 100
+      // IMPORTANT: Signal is evaluated at month end, so trade happens at START of NEXT month
+      // Check if next month data exists
+      if (i + 1 < closes.length && opens[i + 1] > 0) {
+        const exitPrice = opens[i + 1]  // Open price of NEXT month
+        const returnPct = ((exitPrice - entryPrice) / entryPrice) * 100
 
-      trades.push({
-        entryDate: entryDate,
-        entryPrice: entryPrice,
-        exitDate: times[i],
-        exitPrice: exitPrice,
-        returnPct: returnPct,
-        isOpen: false
-      })
+        trades.push({
+          entryDate: entryDate,
+          entryPrice: entryPrice,
+          exitDate: times[i + 1],   // First trading day of NEXT month
+          exitPrice: exitPrice,
+          returnPct: returnPct,
+          isOpen: false
+        })
 
-      const returnText = returnPct >= 0 ? `+${returnPct.toFixed(1)}%` : `${returnPct.toFixed(1)}%`
-      markers.push({
-        time: times[i],
-        position: 'aboveBar',
-        color: '#FF0000',
-        shape: 'arrowDown',
-        text: `SELL $${exitPrice.toFixed(2)} ${returnText}`
-      })
+        const returnText = returnPct >= 0 ? `+${returnPct.toFixed(1)}%` : `${returnPct.toFixed(1)}%`
+        markers.push({
+          time: times[i + 1],
+          position: 'aboveBar',
+          color: '#FF0000',
+          shape: 'arrowDown',
+          text: `SELL $${exitPrice.toFixed(2)} ${returnText}`
+        })
 
-      inPosition = false
-      entryPrice = 0
-      entryDate = null
+        inPosition = false
+        entryPrice = 0
+        entryDate = null
+      }
+      // If no next month data, position stays open
     }
 
     shortData.push({

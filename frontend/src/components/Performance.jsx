@@ -85,8 +85,9 @@ function Performance({ token }) {
     const riskReward = avgLoss > 0 ? avgWin / avgLoss : 0
 
     const totalReturn = tradeList.reduce((sum, t) => sum + (t.return_pct || 0), 0)
+    const avgReturn = tradeList.length > 0 ? totalReturn / tradeList.length : 0
 
-    return { winRate, riskReward, totalReturn, wins: wins.length, losses: losses.length }
+    return { winRate, riskReward, totalReturn, avgReturn, tradeCount: tradeList.length, wins: wins.length, losses: losses.length }
   }
 
   const defensiveStats = calcStats(defensiveTrades)
@@ -178,9 +179,15 @@ function Performance({ token }) {
               </span>
             </div>
             <div>
-              <span className="text-gray-400">Gesamt: </span>
+              <span className="text-gray-400">Kumuliert: </span>
               <span className={`font-medium ${stats.totalReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                 {stats.totalReturn >= 0 ? '+' : ''}{stats.totalReturn.toFixed(1)}%
+              </span>
+            </div>
+            <div>
+              <span className="text-gray-400">Ø/Trade: </span>
+              <span className={`font-medium ${stats.avgReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {stats.avgReturn >= 0 ? '+' : ''}{stats.avgReturn.toFixed(2)}%
               </span>
             </div>
           </div>

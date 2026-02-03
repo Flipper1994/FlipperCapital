@@ -32,6 +32,12 @@ function AdminPanel() {
   const [editingItem, setEditingItem] = useState(null)
   const [fixingDB, setFixingDB] = useState(false)
   const [fixResult, setFixResult] = useState(null)
+  const [backfillDate, setBackfillDate] = useState('')
+  const [backfilling, setBackfilling] = useState(false)
+  const [backfillResult, setBackfillResult] = useState(null)
+  const [flipperPendingTrades, setFlipperPendingTrades] = useState([])
+  const [lutzPendingTrades, setLutzPendingTrades] = useState([])
+  const [acceptingTrade, setAcceptingTrade] = useState(null)
 
   useEffect(() => {
     checkAdmin()
@@ -128,19 +134,23 @@ function AdminPanel() {
   const fetchBotData = async () => {
     setLoading(true)
     try {
-      const [fpRes, ftRes, lpRes, ltRes] = await Promise.all([
+      const [fpRes, ftRes, lpRes, ltRes, fptRes, lptRes] = await Promise.all([
         fetch('/api/flipperbot/portfolio', { headers: { 'Authorization': `Bearer ${token}` } }),
         fetch('/api/flipperbot/actions', { headers: { 'Authorization': `Bearer ${token}` } }),
         fetch('/api/lutz/portfolio', { headers: { 'Authorization': `Bearer ${token}` } }),
-        fetch('/api/lutz/actions', { headers: { 'Authorization': `Bearer ${token}` } })
+        fetch('/api/lutz/actions', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/flipperbot/pending-trades', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/lutz/pending-trades', { headers: { 'Authorization': `Bearer ${token}` } })
       ])
-      const [fp, ft, lp, lt] = await Promise.all([
-        fpRes.json(), ftRes.json(), lpRes.json(), ltRes.json()
+      const [fp, ft, lp, lt, fpt, lpt] = await Promise.all([
+        fpRes.json(), ftRes.json(), lpRes.json(), ltRes.json(), fptRes.json(), lptRes.json()
       ])
       setFlipperPositions(fp?.positions || [])
       setFlipperTrades(ft || [])
       setLutzPositions(lp?.positions || [])
       setLutzTrades(lt || [])
+      setFlipperPendingTrades(fpt || [])
+      setLutzPendingTrades(lpt || [])
     } catch (err) {
       console.error('Failed to fetch bot data:', err)
     } finally {
@@ -243,6 +253,70 @@ function AdminPanel() {
       setFixResult({ success: false, error: err.message })
     } finally {
       setFixingDB(false)
+    }
+  }
+
+  const handleBackfill = async (bot = 'flipperbot') => {
+    if (!backfillDate) {
+      alert('Bitte ein Datum auswählen')
+      return
+    }
+    const botName = bot === 'flipperbot' ? 'FlipperBot' : 'Lutz'
+    const modeInfo = bot === 'flipperbot' ? 'Defensiv' : 'Aggressiv'
+    if (!confirm(`${botName} Backfill ab ${backfillDate} bis heute durchführen? Historische Trades für ${modeInfo}-Aktien werden erstellt.`)) return
+    setBackfilling(true)
+    setBackfillResult(null)
+    try {
+      const res = await fetch(`/api/${bot}/backfill`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ until_date: backfillDate })
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setBackfillResult({ success: true, data })
+        fetchBotData()
+      } else {
+        setBackfillResult({ success: false, error: data.error || 'Fehler beim Backfill' })
+      }
+    } catch (err) {
+      setBackfillResult({ success: false, error: err.message })
+    } finally {
+      setBackfilling(false)
+    }
+  }
+
+  const handleAcceptTrade = async (bot, tradeId) => {
+    setAcceptingTrade(tradeId)
+    try {
+      const res = await fetch(`/api/${bot}/trade/${tradeId}/accept`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) {
+        fetchBotData()
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Fehler beim Akzeptieren')
+      }
+    } catch (err) {
+      console.error('Failed to accept trade:', err)
+      alert('Fehler beim Akzeptieren')
+    } finally {
+      setAcceptingTrade(null)
+    }
+  }
+
+  const handleAcceptAllTrades = async (bot) => {
+    const trades = bot === 'flipperbot' ? flipperPendingTrades : lutzPendingTrades
+    if (trades.length === 0) return
+    if (!confirm(`Alle ${trades.length} ausstehenden Trades akzeptieren?`)) return
+
+    for (const trade of trades) {
+      await handleAcceptTrade(bot, trade.id)
     }
   }
 
@@ -932,6 +1006,118 @@ function AdminPanel() {
                   <p>Trades bearbeiten um echte Werte einzutragen. Positionen werden automatisch aktualisiert.</p>
                 </div>
 
+                {/* Reset Buttons */}
+                <div className="p-4 bg-dark-800 rounded-xl border border-dark-600">
+                  <h3 className="text-sm font-medium text-white mb-3">Bot Reset</h3>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={async () => {
+                        if (!confirm('FlipperBot komplett zurücksetzen? Alle Trades und Positionen werden gelöscht!')) return
+                        try {
+                          await fetch('/api/flipperbot/reset', {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${token}` }
+                          })
+                          fetchBotData()
+                          alert('FlipperBot wurde zurückgesetzt')
+                        } catch (err) {
+                          alert('Fehler beim Zurücksetzen')
+                        }
+                      }}
+                      className="px-4 py-2 bg-purple-500/20 text-purple-400 rounded-lg hover:bg-purple-500/30 transition-colors font-medium text-sm flex items-center gap-2"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                      FlipperBot Reset
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (!confirm('Lutz komplett zurücksetzen? Alle Trades und Positionen werden gelöscht!')) return
+                        try {
+                          await fetch('/api/lutz/reset', {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${token}` }
+                          })
+                          fetchBotData()
+                          alert('Lutz wurde zurückgesetzt')
+                        } catch (err) {
+                          alert('Fehler beim Zurücksetzen')
+                        }
+                      }}
+                      className="px-4 py-2 bg-orange-500/20 text-orange-400 rounded-lg hover:bg-orange-500/30 transition-colors font-medium text-sm flex items-center gap-2"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                      Lutz Reset
+                    </button>
+                  </div>
+                </div>
+
+                {/* Backfill - for both bots */}
+                <div className={`p-4 rounded-xl ${
+                  botTab === 'flipper'
+                    ? 'bg-purple-500/10 border border-purple-500/30'
+                    : 'bg-orange-500/10 border border-orange-500/30'
+                }`}>
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div>
+                      <h3 className={`text-sm font-medium ${botTab === 'flipper' ? 'text-purple-300' : 'text-orange-300'}`}>
+                        Rückwirkende Trades
+                      </h3>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Erstellt historische Trades ab dem gewählten Datum bis heute (100€ pro Position, nicht live)
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="date"
+                        value={backfillDate}
+                        onChange={(e) => setBackfillDate(e.target.value)}
+                        className="bg-dark-700 border border-dark-500 rounded-lg px-3 py-2 text-white text-sm"
+                      />
+                      <button
+                        onClick={() => handleBackfill(botTab === 'flipper' ? 'flipperbot' : 'lutz')}
+                        disabled={backfilling || !backfillDate}
+                        className={`px-4 py-2 text-white rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 whitespace-nowrap ${
+                          botTab === 'flipper'
+                            ? 'bg-purple-500 hover:bg-purple-400'
+                            : 'bg-orange-500 hover:bg-orange-400'
+                        }`}
+                      >
+                        {backfilling ? (
+                          <>
+                            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                            Backfill...
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            Backfill
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                  {backfillResult && (
+                    <div className={`mt-3 p-3 rounded-lg text-sm ${backfillResult.success ? 'bg-green-500/20 text-green-300' : 'bg-red-500/20 text-red-300'}`}>
+                      {backfillResult.success ? (
+                        <div>
+                          <p className="font-medium mb-1">Backfill abgeschlossen:</p>
+                          <p className="text-xs">
+                            {backfillResult.data.trades_created} Trades erstellt, {backfillResult.data.positions_created} Positionen erstellt
+                          </p>
+                        </div>
+                      ) : (
+                        <p>Fehler: {backfillResult.error}</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 {/* Fix DB Button - only for FlipperBot */}
                 {botTab === 'flipper' && (
                   <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-xl">
@@ -980,6 +1166,95 @@ function AdminPanel() {
                         )}
                       </div>
                     )}
+                  </div>
+                )}
+
+                {/* Pending Trades Section */}
+                {((botTab === 'flipper' && flipperPendingTrades.length > 0) || (botTab === 'lutz' && lutzPendingTrades.length > 0)) && (
+                  <div className={`p-4 rounded-xl ${
+                    botTab === 'flipper'
+                      ? 'bg-yellow-500/10 border border-yellow-500/30'
+                      : 'bg-yellow-500/10 border border-yellow-500/30'
+                  }`}>
+                    <div className="flex items-center justify-between mb-4">
+                      <div>
+                        <h3 className="text-sm font-medium text-yellow-300 flex items-center gap-2">
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                          Ausstehende Trades ({(botTab === 'flipper' ? flipperPendingTrades : lutzPendingTrades).length})
+                        </h3>
+                        <p className="text-xs text-gray-500 mt-1">
+                          Trades warten auf Freigabe. Akzeptierte Trades werden öffentlich sichtbar.
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => handleAcceptAllTrades(botTab === 'flipper' ? 'flipperbot' : 'lutz')}
+                        className="px-4 py-2 bg-green-500 text-white rounded-lg font-medium hover:bg-green-400 text-sm flex items-center gap-2"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                        Alle akzeptieren
+                      </button>
+                    </div>
+                    <div className="overflow-x-auto max-h-[300px] overflow-y-auto">
+                      <table className="w-full">
+                        <thead className="sticky top-0 bg-dark-900/80">
+                          <tr className="text-left text-xs text-gray-500 border-b border-dark-600">
+                            <th className="p-2">Datum</th>
+                            <th className="p-2">Symbol</th>
+                            <th className="p-2">Typ</th>
+                            <th className="p-2 text-right">Anzahl</th>
+                            <th className="p-2 text-right">Preis</th>
+                            <th className="p-2 text-right">P/L</th>
+                            <th className="p-2"></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(botTab === 'flipper' ? flipperPendingTrades : lutzPendingTrades).map((trade) => (
+                            <tr key={trade.id} className="border-b border-dark-700 hover:bg-dark-700/50">
+                              <td className="p-2 text-sm text-gray-400">
+                                {new Date(trade.signal_date).toLocaleDateString('de-DE')}
+                              </td>
+                              <td className="p-2 text-sm font-medium text-white">{trade.symbol}</td>
+                              <td className="p-2">
+                                <span className={`text-xs px-2 py-1 rounded ${
+                                  trade.action === 'BUY' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                                }`}>
+                                  {trade.action}
+                                </span>
+                              </td>
+                              <td className="p-2 text-sm text-gray-300 text-right">{trade.quantity?.toFixed(4)}</td>
+                              <td className="p-2 text-sm text-gray-300 text-right">{formatPrice(trade.price)}</td>
+                              <td className="p-2 text-sm text-right">
+                                {trade.profit_loss_pct != null ? (
+                                  <span className={trade.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}>
+                                    {trade.profit_loss_pct >= 0 ? '+' : ''}{trade.profit_loss_pct.toFixed(2)}%
+                                  </span>
+                                ) : '-'}
+                              </td>
+                              <td className="p-2 text-right">
+                                <button
+                                  onClick={() => handleAcceptTrade(botTab === 'flipper' ? 'flipperbot' : 'lutz', trade.id)}
+                                  disabled={acceptingTrade === trade.id}
+                                  className="px-3 py-1 bg-green-500 text-white rounded-lg text-xs font-medium hover:bg-green-400 disabled:opacity-50 flex items-center gap-1 ml-auto"
+                                >
+                                  {acceptingTrade === trade.id ? (
+                                    <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                                  ) : (
+                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                    </svg>
+                                  )}
+                                  Accept
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 )}
 
