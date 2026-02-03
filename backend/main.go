@@ -6798,56 +6798,95 @@ func getQuantPortfolio(c *gin.Context) {
 
 func getQuantActions(c *gin.Context) {
 	var trades []QuantTrade
-	db.Order("executed_at desc").Limit(100).Find(&trades)
+	db.Where("is_pending = ?", false).Order("signal_date desc").Limit(50).Find(&trades)
 	c.JSON(http.StatusOK, trades)
 }
 
 func getQuantPerformance(c *gin.Context) {
-	var positions []QuantPosition
-	db.Find(&positions)
+	var sellTrades []QuantTrade
+	db.Where("action = ? AND is_pending = ?", "SELL", false).Find(&sellTrades)
 
-	if len(positions) == 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"total_positions": 0,
-			"live_positions":  0,
-			"total_return":    0,
-			"avg_return":      0,
-			"win_rate":        0,
-		})
-		return
-	}
+	var buyTrades []QuantTrade
+	db.Where("action = ? AND is_pending = ?", "BUY", false).Find(&buyTrades)
 
-	symbols := make([]string, 0, len(positions))
-	for _, p := range positions {
-		symbols = append(symbols, p.Symbol)
-	}
-	quotes := fetchQuotes(symbols)
+	wins := 0
+	losses := 0
+	totalProfitLoss := 0.0
 
-	var totalReturn float64
-	var liveCount int
-	var winCount int
-	for _, pos := range positions {
-		if pos.IsLive {
-			liveCount++
-		}
-		if quote, ok := quotes[pos.Symbol]; ok && pos.AvgPrice > 0 {
-			ret := ((quote.Price - pos.AvgPrice) / pos.AvgPrice) * 100
-			totalReturn += ret
-			if ret > 0 {
-				winCount++
+	for _, trade := range sellTrades {
+		if trade.ProfitLoss != nil {
+			totalProfitLoss += *trade.ProfitLoss
+			if *trade.ProfitLoss >= 0 {
+				wins++
+			} else {
+				losses++
 			}
 		}
 	}
 
-	avgReturn := totalReturn / float64(len(positions))
-	winRate := float64(winCount) / float64(len(positions)) * 100
+	winRate := 0.0
+	if wins+losses > 0 {
+		winRate = float64(wins) / float64(wins+losses) * 100
+	}
+
+	totalReturnPctClosed := 0.0
+	for _, trade := range sellTrades {
+		if trade.ProfitLossPct != nil {
+			totalReturnPctClosed += *trade.ProfitLossPct
+		}
+	}
+	avgReturnPerTrade := 0.0
+	if len(sellTrades) > 0 {
+		avgReturnPerTrade = totalReturnPctClosed / float64(len(sellTrades))
+	}
+
+	var positions []QuantPosition
+	db.Where("is_pending = ?", false).Find(&positions)
+
+	symbols := make([]string, len(positions))
+	for i, p := range positions {
+		symbols[i] = p.Symbol
+	}
+	quotes := fetchQuotes(symbols)
+
+	unrealizedGain := 0.0
+	investedInPositions := 0.0
+	currentValue := 0.0
+	liveCount := 0
+
+	for _, pos := range positions {
+		if pos.IsLive {
+			liveCount++
+		}
+		investedInPositions += pos.AvgPrice * pos.Quantity
+		quote := quotes[pos.Symbol]
+		if quote.Price > 0 {
+			currentValue += quote.Price * pos.Quantity
+			unrealizedGain += (quote.Price - pos.AvgPrice) * pos.Quantity
+		} else {
+			currentValue += pos.AvgPrice * pos.Quantity
+		}
+	}
+
+	unrealizedGainPct := 0.0
+	if investedInPositions > 0 {
+		unrealizedGainPct = (unrealizedGain / investedInPositions) * 100
+	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"total_positions": len(positions),
-		"live_positions":  liveCount,
-		"total_return":    totalReturn,
-		"avg_return":      avgReturn,
-		"win_rate":        winRate,
+		"total_trades":        len(buyTrades) + len(sellTrades),
+		"completed_trades":    len(sellTrades),
+		"open_positions":      len(positions),
+		"live_positions":      liveCount,
+		"wins":                wins,
+		"losses":              losses,
+		"win_rate":            winRate,
+		"total_profit_loss":   totalProfitLoss,
+		"avg_return_per_trade": avgReturnPerTrade,
+		"unrealized_gain":     unrealizedGain,
+		"unrealized_gain_pct": unrealizedGainPct,
+		"invested":            investedInPositions,
+		"current_value":       currentValue,
 	})
 }
 
@@ -6954,6 +6993,7 @@ func quantBackfill(c *gin.Context) {
 				Price:      trade.EntryPrice,
 				SignalDate: entryTime,
 				ExecutedAt: now,
+				IsPending:  false,
 			}
 			db.Create(&buyTrade)
 			tradesCreated++
@@ -6974,6 +7014,7 @@ func quantBackfill(c *gin.Context) {
 						Price:         *trade.ExitPrice,
 						SignalDate:    exitTime,
 						ExecutedAt:    now,
+						IsPending:     false,
 						ProfitLoss:    &profitLoss,
 						ProfitLossPct: &profitLossPct,
 					}
@@ -6990,6 +7031,7 @@ func quantBackfill(c *gin.Context) {
 							AvgPrice:    trade.EntryPrice,
 							InvestedEUR: investmentEUR,
 							BuyDate:     entryTime,
+							IsPending:   false,
 						}
 						db.Create(&newPos)
 						positionsCreated++
@@ -7017,6 +7059,7 @@ func quantBackfill(c *gin.Context) {
 						AvgPrice:    trade.EntryPrice,
 						InvestedEUR: investmentEUR,
 						BuyDate:     entryTime,
+						IsPending:   false,
 					}
 					db.Create(&newPos)
 					positionsCreated++
