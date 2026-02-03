@@ -6721,34 +6721,79 @@ func quantUpdate(c *gin.Context) {
 
 func getQuantPortfolio(c *gin.Context) {
 	var positions []QuantPosition
-	db.Order("buy_date desc").Find(&positions)
+	db.Where("is_pending = ?", false).Order("buy_date desc").Find(&positions)
 
-	type PositionWithReturn struct {
-		QuantPosition
-		CurrentPrice   float64 `json:"current_price"`
-		TotalReturnPct float64 `json:"total_return_pct"`
+	symbols := make([]string, len(positions))
+	for i, p := range positions {
+		symbols[i] = p.Symbol
 	}
-
-	var result []PositionWithReturn
-	symbols := make([]string, 0, len(positions))
-	for _, p := range positions {
-		symbols = append(symbols, p.Symbol)
-	}
-
 	quotes := fetchQuotes(symbols)
 
-	for _, pos := range positions {
-		pwr := PositionWithReturn{QuantPosition: pos}
-		if quote, ok := quotes[pos.Symbol]; ok {
-			pwr.CurrentPrice = quote.Price
-			if pos.AvgPrice > 0 {
-				pwr.TotalReturnPct = ((quote.Price - pos.AvgPrice) / pos.AvgPrice) * 100
-			}
-		}
-		result = append(result, pwr)
+	type PositionWithQuote struct {
+		ID             uint      `json:"id"`
+		Symbol         string    `json:"symbol"`
+		Name           string    `json:"name"`
+		Quantity       float64   `json:"quantity"`
+		AvgPrice       float64   `json:"avg_price"`
+		BuyDate        time.Time `json:"buy_date"`
+		CurrentPrice   float64   `json:"current_price"`
+		Change         float64   `json:"change"`
+		ChangePercent  float64   `json:"change_percent"`
+		TotalReturn    float64   `json:"total_return"`
+		TotalReturnPct float64   `json:"total_return_pct"`
+		CurrentValue   float64   `json:"current_value"`
+		IsLive         bool      `json:"is_live"`
 	}
 
-	c.JSON(http.StatusOK, result)
+	result := make([]PositionWithQuote, 0)
+	totalValue := 0.0
+	totalInvested := 0.0
+	totalReturn := 0.0
+
+	for _, pos := range positions {
+		quote := quotes[pos.Symbol]
+		currentPrice := quote.Price
+		if currentPrice <= 0 {
+			currentPrice = pos.AvgPrice
+		}
+
+		posReturn := (currentPrice - pos.AvgPrice) * pos.Quantity
+		posReturnPct := ((currentPrice - pos.AvgPrice) / pos.AvgPrice) * 100
+		posValue := currentPrice * pos.Quantity
+
+		totalValue += posValue
+		totalInvested += pos.AvgPrice * pos.Quantity
+		totalReturn += posReturn
+
+		result = append(result, PositionWithQuote{
+			ID:             pos.ID,
+			Symbol:         pos.Symbol,
+			Name:           pos.Name,
+			Quantity:       pos.Quantity,
+			AvgPrice:       pos.AvgPrice,
+			BuyDate:        pos.BuyDate,
+			CurrentPrice:   currentPrice,
+			Change:         quote.Change,
+			ChangePercent:  quote.ChangePercent,
+			TotalReturn:    posReturn,
+			TotalReturnPct: posReturnPct,
+			CurrentValue:   posValue,
+			IsLive:         pos.IsLive,
+		})
+	}
+
+	totalReturnPct := 0.0
+	if totalInvested > 0 {
+		totalReturnPct = (totalReturn / totalInvested) * 100
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"positions":        result,
+		"total_value":      totalValue,
+		"total_invested":   totalInvested,
+		"total_return":     totalReturn,
+		"total_return_pct": totalReturnPct,
+	})
 }
 
 func getQuantActions(c *gin.Context) {
@@ -7270,10 +7315,22 @@ func executeQuantTodo(c *gin.Context) {
 			return
 		}
 
+		// Calculate quantity based on invested EUR (default 100 EUR)
+		investmentEUR := 100.0
+		if req.InvestedEUR != nil && *req.InvestedEUR > 0 {
+			investmentEUR = *req.InvestedEUR
+		}
+		investmentUSD := convertToUSD(investmentEUR, "EUR")
+		qty := math.Round((investmentUSD/price)*1000000) / 1000000
+		if qty <= 0 {
+			qty = 1
+		}
+
 		newTrade := QuantTrade{
 			Symbol:     todo.Symbol,
 			Name:       todo.Name,
 			Action:     "BUY",
+			Quantity:   qty,
 			Price:      price,
 			SignalDate: todo.CreatedAt,
 			ExecutedAt: now,
@@ -7285,14 +7342,12 @@ func executeQuantTodo(c *gin.Context) {
 		newPosition := QuantPosition{
 			Symbol:      todo.Symbol,
 			Name:        todo.Name,
+			Quantity:    qty,
 			AvgPrice:    price,
 			IsLive:      req.IsLive,
 			IsPending:   false,
 			BuyDate:     now,
-			InvestedEUR: 0,
-		}
-		if req.InvestedEUR != nil {
-			newPosition.InvestedEUR = *req.InvestedEUR
+			InvestedEUR: investmentEUR,
 		}
 		db.Create(&newPosition)
 
@@ -7302,6 +7357,7 @@ func executeQuantTodo(c *gin.Context) {
 			Name:         todo.Name,
 			AvgPrice:     price,
 			PurchaseDate: &now,
+			Quantity:     &qty,
 		}
 		db.Create(&portfolioPos)
 
