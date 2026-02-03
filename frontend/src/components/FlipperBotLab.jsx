@@ -431,7 +431,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
             <>
               {/* Mobile Card View */}
               <div className="md:hidden space-y-3 p-4">
-                {portfolio?.positions?.slice().sort((a, b) => (b.is_live ? 1 : 0) - (a.is_live ? 1 : 0)).map((pos) => {
+                {portfolio?.positions?.slice().sort((a, b) => (b.is_live ? 1 : 0) - (a.is_live ? 1 : 0) || (b.total_return_pct || 0) - (a.total_return_pct || 0)).map((pos) => {
                   const totalValue = (pos.current_price || 0) * (pos.quantity || 1)
                   const totalCost = (pos.avg_price || 0) * (pos.quantity || 1)
                   const gain = totalValue - totalCost
@@ -497,7 +497,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {portfolio?.positions?.slice().sort((a, b) => (b.is_live ? 1 : 0) - (a.is_live ? 1 : 0)).map((pos) => {
+                    {portfolio?.positions?.slice().sort((a, b) => (b.is_live ? 1 : 0) - (a.is_live ? 1 : 0) || (b.total_return_pct || 0) - (a.total_return_pct || 0)).map((pos) => {
                       const totalValue = (pos.current_price || 0) * (pos.quantity || 1)
                       const totalCost = (pos.avg_price || 0) * (pos.quantity || 1)
                       const gain = totalValue - totalCost

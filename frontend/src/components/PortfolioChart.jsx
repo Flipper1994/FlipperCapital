@@ -78,6 +78,8 @@ function PortfolioChart({ userId, token, height = 300, botType = null, title = "
           endpoint = `/api/flipperbot/history?period=${period}`
         } else if (botType === 'lutz') {
           endpoint = `/api/lutz/history?period=${period}`
+        } else if (botType === 'quant') {
+          endpoint = `/api/quant/history?period=${period}`
         } else if (userId) {
           endpoint = `/api/portfolios/history/${userId}?period=${period}`
         } else {

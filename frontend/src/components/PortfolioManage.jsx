@@ -498,7 +498,7 @@ function PortfolioContent({ token }) {
             <>
               {/* Mobile Card View */}
               <div className="md:hidden space-y-3">
-                {positions.map((pos) => (
+                {positions.slice().sort((a, b) => (b.total_return_pct || 0) - (a.total_return_pct || 0)).map((pos) => (
                   <div key={pos.id} className="bg-dark-700 rounded-lg p-4">
                     <div className="flex justify-between items-start mb-3">
                       <div>
@@ -579,7 +579,7 @@ function PortfolioContent({ token }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {positions.map((pos) => (
+                    {positions.slice().sort((a, b) => (b.total_return_pct || 0) - (a.total_return_pct || 0)).map((pos) => (
                       <tr key={pos.id} className="border-b border-dark-700/50 last:border-0">
                         <td className="py-3 pr-4">
                           <div className="font-medium text-white">{pos.symbol}</div>

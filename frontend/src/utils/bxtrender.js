@@ -104,12 +104,96 @@ function calculateT3(data, period) {
   return data.map((_, i) => c1 * e6[i] + c2 * e5[i] + c3 * e4[i] + c4 * e3[i])
 }
 
-export function calculateBXtrender(ohlcv, isAggressive = false) {
-  const shortL1 = 5
-  const shortL2 = 20
-  const shortL3 = 15
-  const longL1 = 20
-  const longL2 = 15
+// Default config values
+const DEFAULT_CONFIG = {
+  shortL1: 5,
+  shortL2: 20,
+  shortL3: 15,
+  longL1: 20,
+  longL2: 15
+}
+
+// Default Quant config values (QuantTherapy algorithm)
+const DEFAULT_QUANT_CONFIG = {
+  shortL1: 5,
+  shortL2: 20,
+  shortL3: 15,
+  longL1: 20,
+  longL2: 15,
+  maFilterOn: true,
+  maLength: 200,
+  maType: 'EMA',
+  tslPercent: 20.0
+}
+
+// Cache for BXtrender config
+let configCache = null
+let configPromise = null
+
+// Cache for Quant config
+let quantConfigCache = null
+let quantConfigPromise = null
+
+// Fetch BXtrender config from backend
+export async function fetchBXtrenderConfig() {
+  if (configCache) return configCache
+  if (configPromise) return configPromise
+
+  configPromise = fetch('/api/bxtrender-config')
+    .then(res => res.json())
+    .then(data => {
+      configCache = data
+      return data
+    })
+    .catch(() => {
+      // Return defaults on error
+      return {
+        defensive: DEFAULT_CONFIG,
+        aggressive: DEFAULT_CONFIG
+      }
+    })
+
+  return configPromise
+}
+
+// Fetch Quant config from backend
+export async function fetchBXtrenderQuantConfig() {
+  if (quantConfigCache) return quantConfigCache
+  if (quantConfigPromise) return quantConfigPromise
+
+  quantConfigPromise = fetch('/api/bxtrender-quant-config')
+    .then(res => res.json())
+    .then(data => {
+      quantConfigCache = data
+      return data
+    })
+    .catch(() => {
+      return DEFAULT_QUANT_CONFIG
+    })
+
+  return quantConfigPromise
+}
+
+// Clear config cache (call when config is updated)
+export function clearConfigCache() {
+  configCache = null
+  configPromise = null
+}
+
+// Clear quant config cache
+export function clearQuantConfigCache() {
+  quantConfigCache = null
+  quantConfigPromise = null
+}
+
+export function calculateBXtrender(ohlcv, isAggressive = false, config = null) {
+  // Use provided config or defaults
+  const cfg = config || DEFAULT_CONFIG
+  const shortL1 = cfg.shortL1 || cfg.short_l1 || 5
+  const shortL2 = cfg.shortL2 || cfg.short_l2 || 20
+  const shortL3 = cfg.shortL3 || cfg.short_l3 || 15
+  const longL1 = cfg.longL1 || cfg.long_l1 || 20
+  const longL2 = cfg.longL2 || cfg.long_l2 || 15
 
   if (!ohlcv || ohlcv.length < Math.max(shortL2, longL1) + shortL3 + 10) {
     return { short: [], long: [], signal: [], trades: [], markers: [] }
@@ -328,6 +412,237 @@ export function calculateBXtrender(ohlcv, isAggressive = false) {
   return { short: shortData, long: longData, signal: signalData, trades, markers }
 }
 
+/**
+ * Calculate B-Xtrender using QuantTherapy algorithm
+ * Entry: Both short-term AND long-term indicators positive (with optional MA filter)
+ * Exit: Either short-term OR long-term indicator turns negative
+ */
+export function calculateBXtrenderQuant(ohlcv, config = null) {
+  const cfg = config || DEFAULT_QUANT_CONFIG
+  const shortL1 = cfg.shortL1 || cfg.short_l1 || 5
+  const shortL2 = cfg.shortL2 || cfg.short_l2 || 20
+  const shortL3 = cfg.shortL3 || cfg.short_l3 || 15
+  const longL1 = cfg.longL1 || cfg.long_l1 || 20
+  const longL2 = cfg.longL2 || cfg.long_l2 || 15
+  let maFilterOn = cfg.maFilterOn !== undefined ? cfg.maFilterOn : cfg.ma_filter_on !== undefined ? cfg.ma_filter_on : true
+  const maLength = cfg.maLength || cfg.ma_length || 200
+  const maType = cfg.maType || cfg.ma_type || 'EMA'
+
+  // Minimum required for basic B-Xtrender calculation (without MA filter)
+  const minDataRequired = Math.max(shortL2, longL1) + shortL3 + 10
+
+  if (!ohlcv || ohlcv.length < minDataRequired) {
+    return { short: [], long: [], signal: [], trades: [], markers: [] }
+  }
+
+  // Filter out invalid data points
+  const validData = ohlcv.filter(d => d && d.close != null && !isNaN(d.close))
+  if (validData.length < minDataRequired) {
+    return { short: [], long: [], signal: [], trades: [], markers: [] }
+  }
+
+  // If not enough data for MA filter, disable it automatically
+  if (validData.length < maLength + shortL3 + 10) {
+    maFilterOn = false
+  }
+
+  const closes = validData.map(d => d.close)
+  const opens = validData.map(d => d.open != null ? d.open : d.close)
+  const times = validData.map(d => d.time)
+
+  // Short-term Xtrender: RSI(EMA(close, shortL1) - EMA(close, shortL2), shortL3) - 50
+  const emaShort1 = calculateEMA(closes, shortL1)
+  const emaShort2 = calculateEMA(closes, shortL2)
+  const emaDiff = emaShort1.map((v, i) => v - emaShort2[i])
+  const rsiShort = calcRSI(emaDiff, shortL3)
+  const shortTermXtrender = rsiShort.map(v => v - 50)
+
+  // Long-term Xtrender: RSI(EMA(close, longL1), longL2) - 50
+  const emaLong = calculateEMA(closes, longL1)
+  const rsiLong = calcRSI(emaLong, longL2)
+  const longTermXtrender = rsiLong.map(v => v - 50)
+
+  // Moving Average filter (only calculate if enabled and enough data)
+  const ma = maFilterOn
+    ? (maType === 'SMA' ? calculateSMA(closes, maLength) : calculateEMA(closes, maLength))
+    : null
+
+  // T3 Signal line
+  const signalLine = calculateT3(shortTermXtrender, 5)
+
+  const shortData = []
+  const longData = []
+  const signalData = []
+  const trades = []
+  const markers = []
+
+  // Start index depends on whether MA filter is active
+  const startIdx = maFilterOn
+    ? Math.max(shortL2, longL1, maLength) + shortL3
+    : Math.max(shortL2, longL1) + shortL3
+
+  let inPosition = false
+  let entryPrice = 0
+  let entryDate = null
+
+  for (let i = startIdx; i < closes.length; i++) {
+    const shortVal = shortTermXtrender[i]
+    const shortPrev = shortTermXtrender[i - 1]
+    const longVal = longTermXtrender[i]
+    const longPrev = longTermXtrender[i - 1]
+    const sigVal = signalLine[i]
+    const sigPrev = signalLine[i - 1]
+    const price = closes[i]
+    const maVal = ma ? ma[i] : 0
+
+    // Quant coloring: Both positive = green shades, both negative = red shades, mixed = gray
+    let shortColor, longColor
+    const bothPositive = shortVal > 0 && longVal > 0
+    const bothNegative = shortVal < 0 && longVal < 0
+
+    if (bothPositive) {
+      // Both positive - green gradient
+      shortColor = shortVal > shortPrev ? '#00FF00' : '#228B22'
+      longColor = longVal > longPrev ? '#00FF00' : '#228B22'
+    } else if (bothNegative) {
+      // Both negative - red gradient
+      shortColor = shortVal > shortPrev ? '#FF0000' : '#8B0000'
+      longColor = longVal > longPrev ? '#FF0000' : '#8B0000'
+    } else {
+      // Mixed - use original coloring
+      shortColor = shortVal > 0
+        ? (shortVal > shortPrev ? '#00FF00' : '#228B22')
+        : (shortVal > shortPrev ? '#FF0000' : '#8B0000')
+      longColor = longVal > 0
+        ? (longVal > longPrev ? '#00FF00' : '#228B22')
+        : (longVal > longPrev ? '#FF0000' : '#8B0000')
+    }
+
+    const signalColor = sigVal > sigPrev ? '#00FF00' : '#FF0000'
+
+    // MA Filter: for long entry, price must be above MA (if filter enabled)
+    const maFilterLong = !maFilterOn || price > maVal
+
+    // Entry condition: BOTH indicators positive AND MA filter passes
+    // Check if this is the first bar where both turn positive
+    const entrySignal = !inPosition &&
+      shortVal > 0 && longVal > 0 &&
+      maFilterLong &&
+      (shortPrev <= 0 || longPrev <= 0) // At least one was negative before
+
+    // Exit condition: EITHER indicator turns negative
+    const exitSignal = inPosition && (shortVal < 0 || longVal < 0)
+
+    if (entrySignal && opens[i] > 0) {
+      // Enter at next bar open (signal evaluated at bar close)
+      if (i + 1 < closes.length && opens[i + 1] > 0) {
+        inPosition = true
+        entryPrice = opens[i + 1]
+        entryDate = times[i + 1]
+
+        markers.push({
+          time: times[i + 1],
+          position: 'belowBar',
+          color: '#00FF00',
+          shape: 'arrowUp',
+          text: `BUY $${opens[i + 1].toFixed(2)}`
+        })
+      }
+    }
+
+    if (exitSignal && entryPrice > 0) {
+      // Exit at next bar open
+      if (i + 1 < closes.length && opens[i + 1] > 0) {
+        const exitPrice = opens[i + 1]
+        const returnPct = ((exitPrice - entryPrice) / entryPrice) * 100
+
+        trades.push({
+          entryDate: entryDate,
+          entryPrice: entryPrice,
+          exitDate: times[i + 1],
+          exitPrice: exitPrice,
+          returnPct: returnPct,
+          isOpen: false
+        })
+
+        const returnText = returnPct >= 0 ? `+${returnPct.toFixed(1)}%` : `${returnPct.toFixed(1)}%`
+        markers.push({
+          time: times[i + 1],
+          position: 'aboveBar',
+          color: '#FF0000',
+          shape: 'arrowDown',
+          text: `SELL $${exitPrice.toFixed(2)} ${returnText}`
+        })
+
+        inPosition = false
+        entryPrice = 0
+        entryDate = null
+      }
+    }
+
+    shortData.push({
+      time: times[i],
+      value: shortVal,
+      color: shortColor
+    })
+
+    longData.push({
+      time: times[i],
+      value: longVal,
+      color: longColor
+    })
+
+    signalData.push({
+      time: times[i],
+      value: sigVal,
+      color: signalColor
+    })
+  }
+
+  // If still in position, add open trade info
+  if (inPosition && entryPrice > 0) {
+    const lastIdx = closes.length - 1
+    const currentPrice = closes[lastIdx]
+    const unrealizedReturn = ((currentPrice - entryPrice) / entryPrice) * 100
+
+    trades.push({
+      entryDate: entryDate,
+      entryPrice: entryPrice,
+      exitDate: null,
+      exitPrice: null,
+      currentPrice: currentPrice,
+      returnPct: unrealizedReturn,
+      isOpen: true
+    })
+  }
+
+  return { short: shortData, long: longData, signal: signalData, trades, markers }
+}
+
+// Simple Moving Average calculation
+function calculateSMA(data, period) {
+  const sma = new Array(data.length).fill(0)
+  if (data.length < period) return sma
+
+  let sum = 0
+  for (let i = 0; i < period; i++) {
+    sum += data[i]
+  }
+  sma[period - 1] = sum / period
+
+  for (let i = period; i < data.length; i++) {
+    sum = sum - data[i - period] + data[i]
+    sma[i] = sum / period
+  }
+
+  // Fill initial values
+  for (let i = 0; i < period - 1; i++) {
+    sma[i] = sma[period - 1]
+  }
+
+  return sma
+}
+
 // Calculate performance metrics from trades
 export function calculateMetrics(trades) {
   const completedTrades = trades.filter(t => !t.isOpen)
@@ -337,6 +652,7 @@ export function calculateMetrics(trades) {
       winRate: 0,
       riskReward: 0,
       totalReturn: 0,
+      avgReturn: 0,
       totalTrades: 0,
       wins: 0,
       losses: 0
@@ -361,10 +677,14 @@ export function calculateMetrics(trades) {
   // Compounded total return
   const totalReturn = completedTrades.reduce((acc, t) => acc * (1 + t.returnPct / 100), 1) - 1
 
+  // Average return per trade (simple average)
+  const avgReturn = completedTrades.reduce((sum, t) => sum + t.returnPct, 0) / completedTrades.length
+
   return {
     winRate,
     riskReward,
     totalReturn: totalReturn * 100,
+    avgReturn,
     totalTrades: completedTrades.length,
     wins: wins.length,
     losses: losses.length
@@ -490,7 +810,7 @@ export function calculateSignal(shortData, isAggressive = false, trades = []) {
 }
 
 // Save performance data to backend
-export async function savePerformanceToBackend(symbol, name, metrics, trades, shortData, currentPrice, isAggressive = false) {
+export async function savePerformanceToBackend(symbol, name, metrics, trades, shortData, currentPrice, isAggressive = false, marketCap = 0) {
   try {
     // Pass trades to calculateSignal for aggressive mode (signal based on trade history)
     const { signal, bars } = calculateSignal(shortData, isAggressive, trades)
@@ -505,13 +825,15 @@ export async function savePerformanceToBackend(symbol, name, metrics, trades, sh
         win_rate: metrics.winRate,
         risk_reward: metrics.riskReward,
         total_return: metrics.totalReturn,
+        avg_return: metrics.avgReturn,
         total_trades: metrics.totalTrades,
         wins: metrics.wins,
         losses: metrics.losses,
         signal,
         signal_bars: bars,
         trades,
-        current_price: currentPrice
+        current_price: currentPrice,
+        market_cap: marketCap
       })
     })
 
@@ -520,6 +842,96 @@ export async function savePerformanceToBackend(symbol, name, metrics, trades, sh
     }
   } catch (err) {
     console.warn('Failed to save performance data:', err)
+  }
+}
+
+// Save Quant mode performance data to backend
+export async function saveQuantPerformanceToBackend(symbol, name, metrics, trades, shortData, longData, currentPrice, marketCap = 0) {
+  try {
+    // Calculate signal for Quant mode: based on alignment of both indicators
+    const { signal, bars } = calculateQuantSignal(shortData, longData, trades)
+
+    const res = await fetch('/api/performance/quant', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol,
+        name,
+        win_rate: metrics.winRate,
+        risk_reward: metrics.riskReward,
+        total_return: metrics.totalReturn,
+        avg_return: metrics.avgReturn,
+        total_trades: metrics.totalTrades,
+        wins: metrics.wins,
+        losses: metrics.losses,
+        signal,
+        signal_bars: bars,
+        trades,
+        current_price: currentPrice,
+        market_cap: marketCap
+      })
+    })
+
+    if (!res.ok) {
+      console.warn(`Failed to save quant performance for ${symbol}: ${res.status}`)
+    }
+  } catch (err) {
+    console.warn('Failed to save quant performance data:', err)
+  }
+}
+
+// Calculate signal for Quant mode (based on both indicators alignment)
+function calculateQuantSignal(shortData, longData, trades) {
+  if (!shortData || shortData.length < 2 || !longData || longData.length < 2) {
+    return { signal: 'WAIT', bars: 0 }
+  }
+
+  // Use second-to-last bar (previous month = last completed)
+  const idx = shortData.length - 2
+  const shortVal = shortData[idx].value
+  const longVal = longData[idx].value
+
+  // Check if we have an open position
+  const hasOpenPosition = trades && trades.some(t => t.isOpen)
+
+  // Count consecutive aligned bars
+  let consecutiveBars = 1
+  const bothPositive = shortVal > 0 && longVal > 0
+  const bothNegative = shortVal < 0 && longVal < 0
+
+  for (let i = idx - 1; i >= 0; i--) {
+    const sv = shortData[i].value
+    const lv = longData[i].value
+    const wasPositive = sv > 0 && lv > 0
+    const wasNegative = sv < 0 && lv < 0
+
+    if ((bothPositive && wasPositive) || (bothNegative && wasNegative)) {
+      consecutiveBars++
+    } else {
+      break
+    }
+  }
+
+  if (bothPositive) {
+    // Both indicators positive
+    if (hasOpenPosition) {
+      return consecutiveBars <= 2
+        ? { signal: 'BUY', bars: consecutiveBars }
+        : { signal: 'HOLD', bars: consecutiveBars }
+    } else {
+      return { signal: 'BUY', bars: consecutiveBars }
+    }
+  } else if (bothNegative) {
+    // Both indicators negative
+    return consecutiveBars <= 2
+      ? { signal: 'SELL', bars: consecutiveBars }
+      : { signal: 'WAIT', bars: consecutiveBars }
+  } else {
+    // Mixed signals - potential exit
+    if (hasOpenPosition) {
+      return { signal: 'SELL', bars: 1 }
+    }
+    return { signal: 'WAIT', bars: 1 }
   }
 }
 
@@ -537,14 +949,33 @@ export async function fetchHistoricalData(symbol) {
   if (!json.data) {
     throw new Error(`No data field in response for ${symbol}`)
   }
-  return json.data
+  return json
 }
 
-// Process a single stock and save both modes' performance
+// Fetch market cap for a single stock
+export async function fetchMarketCap(symbol) {
+  try {
+    const res = await fetch(`/api/quote/${symbol}`)
+    if (!res.ok) return 0
+    const data = await res.json()
+    return data.market_cap || 0
+  } catch {
+    return 0
+  }
+}
+
+// Process a single stock and save all three modes' performance
 export async function processStock(symbol, name) {
   try {
-    const data = await fetchHistoricalData(symbol)
+    // Fetch config and data in parallel
+    const [configData, quantConfig, historyData, marketCap] = await Promise.all([
+      fetchBXtrenderConfig(),
+      fetchBXtrenderQuantConfig(),
+      fetchHistoricalData(symbol),
+      fetchMarketCap(symbol)
+    ])
 
+    const data = historyData.data
     if (!data || data.length === 0) {
       return { success: false, error: 'No data' }
     }
@@ -552,14 +983,19 @@ export async function processStock(symbol, name) {
     const currentPrice = data[data.length - 1].close
 
     // Calculate and save defensive mode
-    const defensiveResult = calculateBXtrender(data, false)
+    const defensiveResult = calculateBXtrender(data, false, configData.defensive)
     const defensiveMetrics = calculateMetrics(defensiveResult.trades)
-    await savePerformanceToBackend(symbol, name, defensiveMetrics, defensiveResult.trades, defensiveResult.short, currentPrice, false)
+    await savePerformanceToBackend(symbol, name, defensiveMetrics, defensiveResult.trades, defensiveResult.short, currentPrice, false, marketCap)
 
     // Calculate and save aggressive mode
-    const aggressiveResult = calculateBXtrender(data, true)
+    const aggressiveResult = calculateBXtrender(data, true, configData.aggressive)
     const aggressiveMetrics = calculateMetrics(aggressiveResult.trades)
-    await savePerformanceToBackend(symbol, name, aggressiveMetrics, aggressiveResult.trades, aggressiveResult.short, currentPrice, true)
+    await savePerformanceToBackend(symbol, name, aggressiveMetrics, aggressiveResult.trades, aggressiveResult.short, currentPrice, true, marketCap)
+
+    // Calculate and save quant mode
+    const quantResult = calculateBXtrenderQuant(data, quantConfig)
+    const quantMetrics = calculateMetrics(quantResult.trades)
+    await saveQuantPerformanceToBackend(symbol, name, quantMetrics, quantResult.trades, quantResult.short, quantResult.long, currentPrice, marketCap)
 
     return { success: true }
   } catch (err) {

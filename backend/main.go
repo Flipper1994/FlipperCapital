@@ -59,6 +59,7 @@ type Stock struct {
 	CategoryID    *uint     `json:"category_id" gorm:"index"`
 	AddedByUserID uint      `json:"added_by_user_id"`
 	AddedByUser   string    `json:"added_by_user"`
+	MarketCap     int64     `json:"market_cap" gorm:"default:0"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -183,6 +184,7 @@ type StockPerformance struct {
 	WinRate      float64   `json:"win_rate"`
 	RiskReward   float64   `json:"risk_reward"`
 	TotalReturn  float64   `json:"total_return"`
+	AvgReturn    float64   `json:"avg_return"` // Average return per trade
 	TotalTrades  int       `json:"total_trades"`
 	Wins         int       `json:"wins"`
 	Losses       int       `json:"losses"`
@@ -190,6 +192,7 @@ type StockPerformance struct {
 	SignalBars   int       `json:"signal_bars"` // How many bars in current signal
 	TradesJSON   string    `json:"trades_json" gorm:"type:text"` // JSON array of trades
 	CurrentPrice float64   `json:"current_price"`
+	MarketCap    int64     `json:"market_cap" gorm:"default:0"`
 	UpdatedAt    time.Time `json:"updated_at"`
 	CreatedAt    time.Time `json:"created_at"`
 }
@@ -239,6 +242,7 @@ type FlipperBotPosition struct {
 const FLIPPERBOT_START_DATE = "2026-01-01"
 const FLIPPERBOT_USER_ID = 999999 // Special user ID for FlipperBot
 const LUTZ_USER_ID = 999998       // Special user ID for Lutz (aggressive mode bot)
+const QUANT_USER_ID = 999997      // Special user ID for Quant bot
 
 // AggressiveStockPerformance stores performance data for aggressive trading mode
 type AggressiveStockPerformance struct {
@@ -248,6 +252,7 @@ type AggressiveStockPerformance struct {
 	WinRate      float64   `json:"win_rate"`
 	RiskReward   float64   `json:"risk_reward"`
 	TotalReturn  float64   `json:"total_return"`
+	AvgReturn    float64   `json:"avg_return"` // Average return per trade
 	TotalTrades  int       `json:"total_trades"`
 	Wins         int       `json:"wins"`
 	Losses       int       `json:"losses"`
@@ -255,6 +260,7 @@ type AggressiveStockPerformance struct {
 	SignalBars   int       `json:"signal_bars"`
 	TradesJSON   string    `json:"trades_json" gorm:"type:text"`
 	CurrentPrice float64   `json:"current_price"`
+	MarketCap    int64     `json:"market_cap" gorm:"default:0"`
 	UpdatedAt    time.Time `json:"updated_at"`
 	CreatedAt    time.Time `json:"created_at"`
 }
@@ -320,6 +326,86 @@ type BotTodo struct {
 	DoneAt      *time.Time `json:"done_at"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// BXtrenderConfig stores the configurable parameters for B-Xtrender indicator
+type BXtrenderConfig struct {
+	ID        uint      `json:"id" gorm:"primaryKey"`
+	Mode      string    `json:"mode" gorm:"uniqueIndex;not null"` // "defensive" or "aggressive"
+	ShortL1   int       `json:"short_l1" gorm:"default:5"`
+	ShortL2   int       `json:"short_l2" gorm:"default:20"`
+	ShortL3   int       `json:"short_l3" gorm:"default:15"`
+	LongL1    int       `json:"long_l1" gorm:"default:20"`
+	LongL2    int       `json:"long_l2" gorm:"default:15"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// BXtrenderQuantConfig stores configuration for Quant mode (QuantTherapy algorithm)
+type BXtrenderQuantConfig struct {
+	ID           uint      `json:"id" gorm:"primaryKey"`
+	ShortL1      int       `json:"short_l1" gorm:"default:5"`        // Short EMA fast period
+	ShortL2      int       `json:"short_l2" gorm:"default:20"`       // Short EMA slow period
+	ShortL3      int       `json:"short_l3" gorm:"default:15"`       // Short RSI period
+	LongL1       int       `json:"long_l1" gorm:"default:20"`        // Long EMA period
+	LongL2       int       `json:"long_l2" gorm:"default:15"`        // Long RSI period
+	MaFilterOn   bool      `json:"ma_filter_on" gorm:"default:true"` // Enable MA filter
+	MaLength     int       `json:"ma_length" gorm:"default:200"`     // MA filter length
+	MaType       string    `json:"ma_type" gorm:"default:EMA"`       // MA type: "EMA" or "SMA"
+	TslPercent   float64   `json:"tsl_percent" gorm:"default:20.0"`  // Trailing stop loss percentage
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// QuantStockPerformance stores performance data for Quant trading mode
+type QuantStockPerformance struct {
+	ID           uint      `json:"id" gorm:"primaryKey"`
+	Symbol       string    `json:"symbol" gorm:"uniqueIndex;not null"`
+	Name         string    `json:"name"`
+	WinRate      float64   `json:"win_rate"`
+	RiskReward   float64   `json:"risk_reward"`
+	TotalReturn  float64   `json:"total_return"`
+	AvgReturn    float64   `json:"avg_return"`
+	TotalTrades  int       `json:"total_trades"`
+	Wins         int       `json:"wins"`
+	Losses       int       `json:"losses"`
+	Signal       string    `json:"signal"` // BUY, SELL, HOLD, WAIT
+	SignalBars   int       `json:"signal_bars"`
+	TradesJSON   string    `json:"trades_json" gorm:"type:text"`
+	CurrentPrice float64   `json:"current_price"`
+	MarketCap    int64     `json:"market_cap" gorm:"default:0"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// QuantTrade tracks all trades made by the Quant bot
+type QuantTrade struct {
+	ID            uint       `json:"id" gorm:"primaryKey"`
+	Symbol        string     `json:"symbol" gorm:"index;not null"`
+	Name          string     `json:"name"`
+	Action        string     `json:"action" gorm:"not null"` // BUY or SELL
+	Quantity      float64    `json:"quantity" gorm:"default:1"`
+	IsLive        bool       `json:"is_live" gorm:"default:false"`
+	IsPending     bool       `json:"is_pending" gorm:"default:true"`
+	Price         float64    `json:"price" gorm:"not null"`
+	SignalDate    time.Time  `json:"signal_date" gorm:"not null"`
+	ExecutedAt    time.Time  `json:"executed_at" gorm:"not null"`
+	ProfitLoss    *float64   `json:"profit_loss"`
+	ProfitLossPct *float64   `json:"profit_loss_pct"`
+	CreatedAt     time.Time  `json:"created_at"`
+}
+
+// QuantPosition tracks current open positions of the Quant bot
+type QuantPosition struct {
+	ID          uint      `json:"id" gorm:"primaryKey"`
+	Symbol      string    `json:"symbol" gorm:"uniqueIndex;not null"`
+	Name        string    `json:"name"`
+	Quantity    float64   `json:"quantity" gorm:"default:1"`
+	AvgPrice    float64   `json:"avg_price" gorm:"not null"`
+	InvestedEUR float64   `json:"invested_eur" gorm:"default:0"`
+	IsLive      bool      `json:"is_live" gorm:"default:false"`
+	IsPending   bool      `json:"is_pending" gorm:"default:true"`
+	BuyDate     time.Time `json:"buy_date" gorm:"not null"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 var db *gorm.DB
@@ -404,7 +490,7 @@ func main() {
 		panic("Failed to connect to database: " + err.Error())
 	}
 
-	db.AutoMigrate(&User{}, &Stock{}, &Category{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{}, &DBSession{}, &BotLog{}, &BotTodo{})
+	db.AutoMigrate(&User{}, &Stock{}, &Category{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{}, &DBSession{}, &BotLog{}, &BotTodo{}, &BXtrenderConfig{}, &BXtrenderQuantConfig{}, &QuantStockPerformance{}, &QuantTrade{}, &QuantPosition{})
 
 	// Ensure "Sonstiges" category exists
 	ensureSonstigesCategory()
@@ -432,6 +518,7 @@ func main() {
 	// Ensure FlipperBot and Lutz users exist for portfolio comparison
 	ensureFlipperBotUser()
 	ensureLutzUser()
+	ensureQuantUser()
 
 	// Fetch live exchange rates on startup
 	go fetchLiveExchangeRates()
@@ -497,6 +584,16 @@ func main() {
 		api.GET("/performance/aggressive", getAggressiveTrackedStocks)
 		api.GET("/performance/aggressive/:symbol", getAggressiveStockPerformance)
 
+		// Quant mode performance routes
+		api.POST("/performance/quant", saveQuantStockPerformance)
+		api.GET("/performance/quant", getQuantTrackedStocks)
+		api.GET("/performance/quant/:symbol", getQuantStockPerformance)
+
+		// Quant mode config routes
+		api.GET("/bxtrender-quant-config", getBXtrenderQuantConfigPublic)
+		api.GET("/admin/bxtrender-quant-config", authMiddleware(), adminOnly(), getBXtrenderQuantConfig)
+		api.PUT("/admin/bxtrender-quant-config", authMiddleware(), adminOnly(), updateBXtrenderQuantConfig)
+
 		// User permission check
 		api.GET("/can-add-stocks", optionalAuthMiddleware(), canAddStocks)
 
@@ -513,6 +610,11 @@ func main() {
 		api.GET("/admin/update-all-stocks", authMiddleware(), adminOnly(), updateAllWatchlistStocks)
 		api.GET("/admin/tracked-diff", authMiddleware(), adminOnly(), getTrackedDiff)
 		api.DELETE("/admin/tracked/:symbol", authMiddleware(), adminOnly(), deleteTrackedStock)
+		api.GET("/admin/bxtrender-config", authMiddleware(), adminOnly(), getBXtrenderConfig)
+		api.PUT("/admin/bxtrender-config", authMiddleware(), adminOnly(), updateBXtrenderConfig)
+
+		// Public endpoint for fetching BXtrender config (no auth required for frontend calculation)
+		api.GET("/bxtrender-config", getBXtrenderConfigPublic)
 
 		// FlipperBot routes - Defensive mode (view: all users, actions: admin only)
 		api.GET("/flipperbot/update", authMiddleware(), adminOnly(), flipperBotUpdate)
@@ -560,6 +662,29 @@ func main() {
 		api.GET("/lutz/history", authMiddleware(), getLutzHistory)
 		api.GET("/lutz/pending-trades", authMiddleware(), adminOnly(), getLutzPendingTrades)
 		api.POST("/lutz/trade/:id/accept", authMiddleware(), adminOnly(), acceptLutzTrade)
+
+		// Quant routes - Quant mode bot (view: all users, actions: admin only)
+		api.GET("/quant/update", authMiddleware(), adminOnly(), quantUpdate)
+		api.GET("/quant/portfolio", authMiddleware(), getQuantPortfolio)
+		api.GET("/quant/actions", authMiddleware(), getQuantActions)
+		api.GET("/quant/performance", authMiddleware(), getQuantPerformance)
+		api.POST("/quant/reset", authMiddleware(), adminOnly(), resetQuant)
+		api.POST("/quant/backfill", authMiddleware(), adminOnly(), quantBackfill)
+		api.PUT("/quant/position/:id", authMiddleware(), adminOnly(), updateQuantPosition)
+		api.PUT("/quant/trade/:id", authMiddleware(), adminOnly(), updateQuantTrade)
+		api.DELETE("/quant/trade/:id", authMiddleware(), adminOnly(), deleteQuantTrade)
+		api.GET("/quant/pending", authMiddleware(), adminOnly(), getQuantPending)
+		api.GET("/quant/logs", authMiddleware(), getQuantLogs)
+		api.GET("/quant/todos", authMiddleware(), getQuantTodos)
+		api.PUT("/quant/todos/:id/done", authMiddleware(), adminOnly(), markQuantTodoDone)
+		api.PUT("/quant/todos/:id/reopen", authMiddleware(), adminOnly(), reopenQuantTodo)
+		api.DELETE("/quant/todos/:id", authMiddleware(), adminOnly(), deleteQuantTodo)
+		api.POST("/quant/todos/:id/execute", authMiddleware(), adminOnly(), executeQuantTodo)
+		api.POST("/quant/sync", authMiddleware(), adminOnly(), syncQuant)
+		api.GET("/quant/completed-trades", authMiddleware(), getQuantCompletedTrades)
+		api.GET("/quant/history", authMiddleware(), getQuantHistory)
+		api.GET("/quant/pending-trades", authMiddleware(), adminOnly(), getQuantPendingTrades)
+		api.POST("/quant/trade/:id/accept", authMiddleware(), adminOnly(), acceptQuantTrade)
 
 		// Performance page - combined view of both bots
 		api.GET("/performance/history", authMiddleware(), getPerformanceHistory)
@@ -858,6 +983,11 @@ func getStocks(c *gin.Context) {
 			result[i].PrevClose = q.PrevClose
 			result[i].Sector = q.Sector
 			result[i].MarketCap = q.MarketCap
+
+			// Update MarketCap in database if changed
+			if q.MarketCap > 0 && q.MarketCap != stock.MarketCap {
+				db.Model(&Stock{}).Where("id = ?", stock.ID).Update("market_cap", q.MarketCap)
+			}
 		}
 	}
 
@@ -1024,6 +1154,8 @@ func getQuote(c *gin.Context) {
 			"change":         q.Change,
 			"change_percent": q.ChangePercent,
 			"prev_close":     q.PrevClose,
+			"sector":         q.Sector,
+			"market_cap":     q.MarketCap,
 		})
 		return
 	}
@@ -1043,6 +1175,10 @@ type OHLCV struct {
 type YahooChartResponse struct {
 	Chart struct {
 		Result []struct {
+			Meta struct {
+				DataGranularity string `json:"dataGranularity"`
+				Range           string `json:"range"`
+			} `json:"meta"`
 			Timestamp  []int64 `json:"timestamp"`
 			Indicators struct {
 				Quote []struct {
@@ -1107,9 +1243,17 @@ func getHistory(c *gin.Context) {
 		}
 	}
 
+	// Return actual data granularity from Yahoo Finance
+	actualGranularity := interval
+	if len(yahooResp.Chart.Result) > 0 && yahooResp.Chart.Result[0].Meta.DataGranularity != "" {
+		actualGranularity = yahooResp.Chart.Result[0].Meta.DataGranularity
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"symbol": symbol,
-		"data":   data,
+		"symbol":            symbol,
+		"data":              data,
+		"requestedInterval": interval,
+		"actualInterval":    actualGranularity,
 	})
 }
 
@@ -2401,6 +2545,7 @@ func saveStockPerformance(c *gin.Context) {
 		WinRate      float64     `json:"win_rate"`
 		RiskReward   float64     `json:"risk_reward"`
 		TotalReturn  float64     `json:"total_return"`
+		AvgReturn    float64     `json:"avg_return"`
 		TotalTrades  int         `json:"total_trades"`
 		Wins         int         `json:"wins"`
 		Losses       int         `json:"losses"`
@@ -2408,6 +2553,7 @@ func saveStockPerformance(c *gin.Context) {
 		SignalBars   int         `json:"signal_bars"`
 		Trades       []TradeData `json:"trades"`
 		CurrentPrice float64     `json:"current_price"`
+		MarketCap    int64       `json:"market_cap"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -2430,6 +2576,7 @@ func saveStockPerformance(c *gin.Context) {
 		existing.WinRate = req.WinRate
 		existing.RiskReward = req.RiskReward
 		existing.TotalReturn = req.TotalReturn
+		existing.AvgReturn = req.AvgReturn
 		existing.TotalTrades = req.TotalTrades
 		existing.Wins = req.Wins
 		existing.Losses = req.Losses
@@ -2437,6 +2584,9 @@ func saveStockPerformance(c *gin.Context) {
 		existing.SignalBars = req.SignalBars
 		existing.TradesJSON = string(tradesJSON)
 		existing.CurrentPrice = req.CurrentPrice
+		if req.MarketCap > 0 {
+			existing.MarketCap = req.MarketCap
+		}
 		existing.UpdatedAt = time.Now()
 		db.Save(&existing)
 		c.JSON(http.StatusOK, existing)
@@ -2448,6 +2598,7 @@ func saveStockPerformance(c *gin.Context) {
 			WinRate:      req.WinRate,
 			RiskReward:   req.RiskReward,
 			TotalReturn:  req.TotalReturn,
+			AvgReturn:    req.AvgReturn,
 			TotalTrades:  req.TotalTrades,
 			Wins:         req.Wins,
 			Losses:       req.Losses,
@@ -2455,6 +2606,7 @@ func saveStockPerformance(c *gin.Context) {
 			SignalBars:   req.SignalBars,
 			TradesJSON:   string(tradesJSON),
 			CurrentPrice: req.CurrentPrice,
+			MarketCap:    req.MarketCap,
 		}
 		db.Create(&perf)
 		c.JSON(http.StatusCreated, perf)
@@ -2511,6 +2663,7 @@ func saveAggressiveStockPerformance(c *gin.Context) {
 		WinRate      float64     `json:"win_rate"`
 		RiskReward   float64     `json:"risk_reward"`
 		TotalReturn  float64     `json:"total_return"`
+		AvgReturn    float64     `json:"avg_return"`
 		TotalTrades  int         `json:"total_trades"`
 		Wins         int         `json:"wins"`
 		Losses       int         `json:"losses"`
@@ -2518,6 +2671,7 @@ func saveAggressiveStockPerformance(c *gin.Context) {
 		SignalBars   int         `json:"signal_bars"`
 		Trades       []TradeData `json:"trades"`
 		CurrentPrice float64     `json:"current_price"`
+		MarketCap    int64       `json:"market_cap"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -2536,6 +2690,7 @@ func saveAggressiveStockPerformance(c *gin.Context) {
 		existing.WinRate = req.WinRate
 		existing.RiskReward = req.RiskReward
 		existing.TotalReturn = req.TotalReturn
+		existing.AvgReturn = req.AvgReturn
 		existing.TotalTrades = req.TotalTrades
 		existing.Wins = req.Wins
 		existing.Losses = req.Losses
@@ -2543,6 +2698,9 @@ func saveAggressiveStockPerformance(c *gin.Context) {
 		existing.SignalBars = req.SignalBars
 		existing.TradesJSON = string(tradesJSON)
 		existing.CurrentPrice = req.CurrentPrice
+		if req.MarketCap > 0 {
+			existing.MarketCap = req.MarketCap
+		}
 		existing.UpdatedAt = time.Now()
 		db.Save(&existing)
 		c.JSON(http.StatusOK, existing)
@@ -2553,6 +2711,7 @@ func saveAggressiveStockPerformance(c *gin.Context) {
 			WinRate:      req.WinRate,
 			RiskReward:   req.RiskReward,
 			TotalReturn:  req.TotalReturn,
+			AvgReturn:    req.AvgReturn,
 			TotalTrades:  req.TotalTrades,
 			Wins:         req.Wins,
 			Losses:       req.Losses,
@@ -2560,6 +2719,7 @@ func saveAggressiveStockPerformance(c *gin.Context) {
 			SignalBars:   req.SignalBars,
 			TradesJSON:   string(tradesJSON),
 			CurrentPrice: req.CurrentPrice,
+			MarketCap:    req.MarketCap,
 		}
 		db.Create(&perf)
 		c.JSON(http.StatusCreated, perf)
@@ -2604,6 +2764,216 @@ func getAggressiveStockPerformance(c *gin.Context) {
 		"performance": perf,
 		"trades":      trades,
 	})
+}
+
+// Quant mode performance handlers
+func saveQuantStockPerformance(c *gin.Context) {
+	var req struct {
+		Symbol       string      `json:"symbol" binding:"required"`
+		Name         string      `json:"name"`
+		WinRate      float64     `json:"win_rate"`
+		RiskReward   float64     `json:"risk_reward"`
+		TotalReturn  float64     `json:"total_return"`
+		AvgReturn    float64     `json:"avg_return"`
+		TotalTrades  int         `json:"total_trades"`
+		Wins         int         `json:"wins"`
+		Losses       int         `json:"losses"`
+		Signal       string      `json:"signal"`
+		SignalBars   int         `json:"signal_bars"`
+		Trades       []TradeData `json:"trades"`
+		CurrentPrice float64     `json:"current_price"`
+		MarketCap    int64       `json:"market_cap"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	symbol := strings.ToUpper(req.Symbol)
+	tradesJSON, _ := json.Marshal(req.Trades)
+
+	var existing QuantStockPerformance
+	result := db.Where("symbol = ?", symbol).First(&existing)
+
+	if result.Error == nil {
+		existing.Name = req.Name
+		existing.WinRate = req.WinRate
+		existing.RiskReward = req.RiskReward
+		existing.TotalReturn = req.TotalReturn
+		existing.AvgReturn = req.AvgReturn
+		existing.TotalTrades = req.TotalTrades
+		existing.Wins = req.Wins
+		existing.Losses = req.Losses
+		existing.Signal = req.Signal
+		existing.SignalBars = req.SignalBars
+		existing.TradesJSON = string(tradesJSON)
+		existing.CurrentPrice = req.CurrentPrice
+		if req.MarketCap > 0 {
+			existing.MarketCap = req.MarketCap
+		}
+		existing.UpdatedAt = time.Now()
+		db.Save(&existing)
+		c.JSON(http.StatusOK, existing)
+	} else {
+		perf := QuantStockPerformance{
+			Symbol:       symbol,
+			Name:         req.Name,
+			WinRate:      req.WinRate,
+			RiskReward:   req.RiskReward,
+			TotalReturn:  req.TotalReturn,
+			AvgReturn:    req.AvgReturn,
+			TotalTrades:  req.TotalTrades,
+			Wins:         req.Wins,
+			Losses:       req.Losses,
+			Signal:       req.Signal,
+			SignalBars:   req.SignalBars,
+			TradesJSON:   string(tradesJSON),
+			CurrentPrice: req.CurrentPrice,
+			MarketCap:    req.MarketCap,
+		}
+		db.Create(&perf)
+		c.JSON(http.StatusCreated, perf)
+	}
+}
+
+func getQuantTrackedStocks(c *gin.Context) {
+	var performances []QuantStockPerformance
+	db.Order("updated_at desc").Find(&performances)
+
+	type PerformanceWithTrades struct {
+		QuantStockPerformance
+		Trades []TradeData `json:"trades"`
+	}
+
+	result := make([]PerformanceWithTrades, len(performances))
+	for i, p := range performances {
+		result[i].QuantStockPerformance = p
+		if p.TradesJSON != "" {
+			json.Unmarshal([]byte(p.TradesJSON), &result[i].Trades)
+		}
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+func getQuantStockPerformance(c *gin.Context) {
+	symbol := strings.ToUpper(c.Param("symbol"))
+
+	var perf QuantStockPerformance
+	if err := db.Where("symbol = ?", symbol).First(&perf).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Stock not found"})
+		return
+	}
+
+	var trades []TradeData
+	if perf.TradesJSON != "" {
+		json.Unmarshal([]byte(perf.TradesJSON), &trades)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"performance": perf,
+		"trades":      trades,
+	})
+}
+
+// Quant config handlers
+func getBXtrenderQuantConfigPublic(c *gin.Context) {
+	var config BXtrenderQuantConfig
+	result := db.First(&config)
+
+	if result.Error != nil {
+		// Return default config
+		config = BXtrenderQuantConfig{
+			ShortL1:    5,
+			ShortL2:    20,
+			ShortL3:    15,
+			LongL1:     20,
+			LongL2:     15,
+			MaFilterOn: true,
+			MaLength:   200,
+			MaType:     "EMA",
+			TslPercent: 20.0,
+		}
+	}
+
+	c.JSON(http.StatusOK, config)
+}
+
+func getBXtrenderQuantConfig(c *gin.Context) {
+	var config BXtrenderQuantConfig
+	result := db.First(&config)
+
+	if result.Error != nil {
+		// Return default config
+		config = BXtrenderQuantConfig{
+			ShortL1:    5,
+			ShortL2:    20,
+			ShortL3:    15,
+			LongL1:     20,
+			LongL2:     15,
+			MaFilterOn: true,
+			MaLength:   200,
+			MaType:     "EMA",
+			TslPercent: 20.0,
+		}
+	}
+
+	c.JSON(http.StatusOK, config)
+}
+
+func updateBXtrenderQuantConfig(c *gin.Context) {
+	var req struct {
+		ShortL1    int     `json:"short_l1"`
+		ShortL2    int     `json:"short_l2"`
+		ShortL3    int     `json:"short_l3"`
+		LongL1     int     `json:"long_l1"`
+		LongL2     int     `json:"long_l2"`
+		MaFilterOn bool    `json:"ma_filter_on"`
+		MaLength   int     `json:"ma_length"`
+		MaType     string  `json:"ma_type"`
+		TslPercent float64 `json:"tsl_percent"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	var config BXtrenderQuantConfig
+	result := db.First(&config)
+
+	if result.Error != nil {
+		// Create new config
+		config = BXtrenderQuantConfig{
+			ShortL1:    req.ShortL1,
+			ShortL2:    req.ShortL2,
+			ShortL3:    req.ShortL3,
+			LongL1:     req.LongL1,
+			LongL2:     req.LongL2,
+			MaFilterOn: req.MaFilterOn,
+			MaLength:   req.MaLength,
+			MaType:     req.MaType,
+			TslPercent: req.TslPercent,
+			UpdatedAt:  time.Now(),
+		}
+		db.Create(&config)
+	} else {
+		// Update existing config
+		config.ShortL1 = req.ShortL1
+		config.ShortL2 = req.ShortL2
+		config.ShortL3 = req.ShortL3
+		config.LongL1 = req.LongL1
+		config.LongL2 = req.LongL2
+		config.MaFilterOn = req.MaFilterOn
+		config.MaLength = req.MaLength
+		config.MaType = req.MaType
+		config.TslPercent = req.TslPercent
+		config.UpdatedAt = time.Now()
+		db.Save(&config)
+	}
+
+	c.JSON(http.StatusOK, config)
 }
 
 // Check if user can add stocks to watchlist
@@ -2983,6 +3353,87 @@ func getAdminTraffic(c *gin.Context) {
 	})
 }
 
+// getBXtrenderConfig returns the BXtrender configuration for admin
+func getBXtrenderConfig(c *gin.Context) {
+	var configs []BXtrenderConfig
+	db.Find(&configs)
+
+	// Create default configs if they don't exist
+	if len(configs) == 0 {
+		defensive := BXtrenderConfig{Mode: "defensive", ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15}
+		aggressive := BXtrenderConfig{Mode: "aggressive", ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15}
+		db.Create(&defensive)
+		db.Create(&aggressive)
+		configs = []BXtrenderConfig{defensive, aggressive}
+	}
+
+	c.JSON(http.StatusOK, configs)
+}
+
+// getBXtrenderConfigPublic returns the BXtrender configuration for frontend (no auth)
+func getBXtrenderConfigPublic(c *gin.Context) {
+	var configs []BXtrenderConfig
+	db.Find(&configs)
+
+	// Create default configs if they don't exist
+	if len(configs) == 0 {
+		defensive := BXtrenderConfig{Mode: "defensive", ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15}
+		aggressive := BXtrenderConfig{Mode: "aggressive", ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15}
+		db.Create(&defensive)
+		db.Create(&aggressive)
+		configs = []BXtrenderConfig{defensive, aggressive}
+	}
+
+	// Return as a map for easier frontend access
+	result := make(map[string]BXtrenderConfig)
+	for _, cfg := range configs {
+		result[cfg.Mode] = cfg
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// updateBXtrenderConfig updates the BXtrender configuration
+func updateBXtrenderConfig(c *gin.Context) {
+	var req struct {
+		Mode    string `json:"mode" binding:"required"`
+		ShortL1 int    `json:"short_l1"`
+		ShortL2 int    `json:"short_l2"`
+		ShortL3 int    `json:"short_l3"`
+		LongL1  int    `json:"long_l1"`
+		LongL2  int    `json:"long_l2"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	var config BXtrenderConfig
+	if err := db.Where("mode = ?", req.Mode).First(&config).Error; err != nil {
+		// Create new config
+		config = BXtrenderConfig{
+			Mode:    req.Mode,
+			ShortL1: req.ShortL1,
+			ShortL2: req.ShortL2,
+			ShortL3: req.ShortL3,
+			LongL1:  req.LongL1,
+			LongL2:  req.LongL2,
+		}
+		db.Create(&config)
+	} else {
+		// Update existing config
+		config.ShortL1 = req.ShortL1
+		config.ShortL2 = req.ShortL2
+		config.ShortL3 = req.ShortL3
+		config.LongL1 = req.LongL1
+		config.LongL2 = req.LongL2
+		db.Save(&config)
+	}
+
+	c.JSON(http.StatusOK, config)
+}
+
 // updateAllWatchlistStocks returns all watchlist stocks for bulk update
 // The actual BX-Trender calculation happens in the frontend
 func updateAllWatchlistStocks(c *gin.Context) {
@@ -3083,6 +3534,23 @@ func ensureLutzUser() {
 			ID:       LUTZ_USER_ID,
 			Email:    "lutz@system.local",
 			Username: "Lutz",
+			Password: hashedPassword,
+			IsAdmin:  false,
+		}
+		db.Create(&botUser)
+	}
+}
+
+func ensureQuantUser() {
+	// Create Quant user if not exists (for portfolio comparison visibility)
+	var user User
+	result := db.Where("id = ?", QUANT_USER_ID).First(&user)
+	if result.Error != nil {
+		hashedPassword, _ := hashPassword("quant-system-user-no-login")
+		botUser := User{
+			ID:       QUANT_USER_ID,
+			Email:    "quant@system.local",
+			Username: "Quant",
 			Password: hashedPassword,
 			IsAdmin:  false,
 		}
@@ -4416,7 +4884,7 @@ func getFlipperBotCompletedTrades(c *gin.Context) {
 func getPerformanceHistory(c *gin.Context) {
 	type TradeEntry struct {
 		ID           uint    `json:"id"`
-		Mode         string  `json:"mode"` // "defensive" or "aggressive"
+		Mode         string  `json:"mode"` // "defensive", "aggressive", or "quant"
 		Symbol       string  `json:"symbol"`
 		Name         string  `json:"name"`
 		EntryPrice   float64 `json:"entry_price"`
@@ -4426,6 +4894,11 @@ func getPerformanceHistory(c *gin.Context) {
 		ExitDate     int64   `json:"exit_date"`
 		Status       string  `json:"status"` // "OPEN" or "CLOSED"
 		ReturnPct    float64 `json:"return_pct"`
+		// Stock-level metrics for filtering
+		WinRate    float64 `json:"win_rate"`
+		RiskReward float64 `json:"risk_reward"`
+		AvgReturn  float64 `json:"avg_return"`
+		MarketCap  int64   `json:"market_cap"`
 	}
 
 	var entries []TradeEntry
@@ -4453,6 +4926,10 @@ func getPerformanceHistory(c *gin.Context) {
 				EntryPrice: trade.EntryPrice,
 				EntryDate:  trade.EntryDate,
 				ReturnPct:  trade.ReturnPct,
+				WinRate:    stock.WinRate,
+				RiskReward: stock.RiskReward,
+				AvgReturn:  stock.AvgReturn,
+				MarketCap:  stock.MarketCap,
 			}
 			idCounter++
 
@@ -4497,6 +4974,58 @@ func getPerformanceHistory(c *gin.Context) {
 				EntryPrice: trade.EntryPrice,
 				EntryDate:  trade.EntryDate,
 				ReturnPct:  trade.ReturnPct,
+				WinRate:    stock.WinRate,
+				RiskReward: stock.RiskReward,
+				AvgReturn:  stock.AvgReturn,
+				MarketCap:  stock.MarketCap,
+			}
+			idCounter++
+
+			if trade.IsOpen {
+				entry.Status = "OPEN"
+				if trade.CurrentPrice != nil {
+					entry.CurrentPrice = *trade.CurrentPrice
+				}
+			} else {
+				entry.Status = "CLOSED"
+				if trade.ExitPrice != nil {
+					entry.ExitPrice = *trade.ExitPrice
+				}
+				if trade.ExitDate != nil {
+					entry.ExitDate = *trade.ExitDate
+				}
+			}
+
+			entries = append(entries, entry)
+		}
+	}
+
+	// Get quant stock performances
+	var quantStocks []QuantStockPerformance
+	db.Find(&quantStocks)
+
+	for _, stock := range quantStocks {
+		if stock.TradesJSON == "" {
+			continue
+		}
+		var trades []TradeData
+		if err := json.Unmarshal([]byte(stock.TradesJSON), &trades); err != nil {
+			continue
+		}
+
+		for _, trade := range trades {
+			entry := TradeEntry{
+				ID:         idCounter,
+				Mode:       "quant",
+				Symbol:     stock.Symbol,
+				Name:       stock.Name,
+				EntryPrice: trade.EntryPrice,
+				EntryDate:  trade.EntryDate,
+				ReturnPct:  trade.ReturnPct,
+				WinRate:    stock.WinRate,
+				RiskReward: stock.RiskReward,
+				AvgReturn:  stock.AvgReturn,
+				MarketCap:  stock.MarketCap,
 			}
 			idCounter++
 
@@ -6078,4 +6607,746 @@ func updateStockCategory(c *gin.Context) {
 	stock.CategoryID = req.CategoryID
 	db.Save(&stock)
 	c.JSON(http.StatusOK, gin.H{"message": "Stock category updated"})
+}
+
+// ========================================
+// Quant Bot Functions
+// ========================================
+
+func quantUpdate(c *gin.Context) {
+	now := time.Now()
+	sessionID := uuid.New().String()
+
+	var logs []map[string]interface{}
+	addLog := func(level, msg string) {
+		logs = append(logs, map[string]interface{}{"level": level, "message": msg, "time": time.Now().Format("15:04:05")})
+		db.Create(&BotLog{Bot: "quant", Level: level, Message: msg, SessionID: sessionID, CreatedAt: time.Now()})
+	}
+
+	addLog("INFO", fmt.Sprintf("Quant Update gestartet um %s", now.Format("15:04:05")))
+
+	var perfData []QuantStockPerformance
+	if err := db.Find(&perfData).Error; err != nil {
+		addLog("ERROR", fmt.Sprintf("Fehler beim Laden der Performance Daten: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load performance data", "logs": logs})
+		return
+	}
+
+	addLog("INFO", fmt.Sprintf("%d Aktien geladen", len(perfData)))
+
+	for _, stock := range perfData {
+		if stock.Signal == "BUY" {
+			var existingBuy QuantTrade
+			if err := db.Where("symbol = ? AND action = ?", stock.Symbol, "BUY").Order("executed_at desc").First(&existingBuy).Error; err == nil {
+				var sellAfter QuantTrade
+				if err := db.Where("symbol = ? AND action = ? AND executed_at > ?", stock.Symbol, "SELL", existingBuy.ExecutedAt).First(&sellAfter).Error; err != nil {
+					addLog("SKIP", fmt.Sprintf("%s: Bereits gekauft am %s", stock.Symbol, existingBuy.ExecutedAt.Format("02.01.2006")))
+					continue
+				}
+			}
+
+			buyTrade := QuantTrade{
+				Symbol:     stock.Symbol,
+				Name:       stock.Name,
+				Action:     "BUY",
+				Price:      stock.CurrentPrice,
+				SignalDate: now,
+				ExecutedAt: now,
+				IsPending:  true,
+				IsLive:     false,
+			}
+			db.Create(&buyTrade)
+
+			todo := BotTodo{
+				Bot:        "quant",
+				Type:       "BUY",
+				Symbol:     stock.Symbol,
+				Name:       stock.Name,
+				Price:      stock.CurrentPrice,
+				Signal:     stock.Signal,
+				SignalBars: stock.SignalBars,
+				Reason:     "Quant Signal: BUY",
+				CreatedAt:  now,
+			}
+			db.Create(&todo)
+
+			addLog("ACTION", fmt.Sprintf("BUY TODO erstellt: %s @ %.2f", stock.Symbol, stock.CurrentPrice))
+
+		} else if stock.Signal == "SELL" {
+			var existingPos QuantPosition
+			if err := db.Where("symbol = ?", stock.Symbol).First(&existingPos).Error; err != nil {
+				addLog("SKIP", fmt.Sprintf("%s: SELL Signal aber keine Position", stock.Symbol))
+				continue
+			}
+
+			sellTrade := QuantTrade{
+				Symbol:     stock.Symbol,
+				Name:       stock.Name,
+				Action:     "SELL",
+				Price:      stock.CurrentPrice,
+				SignalDate: now,
+				ExecutedAt: now,
+				IsPending:  true,
+				IsLive:     existingPos.IsLive,
+			}
+
+			pnl := stock.CurrentPrice - existingPos.AvgPrice
+			pnlPct := (pnl / existingPos.AvgPrice) * 100
+			sellTrade.ProfitLoss = &pnl
+			sellTrade.ProfitLossPct = &pnlPct
+
+			db.Create(&sellTrade)
+
+			todo := BotTodo{
+				Bot:        "quant",
+				Type:       "SELL",
+				Symbol:     stock.Symbol,
+				Name:       stock.Name,
+				AvgPrice:   existingPos.AvgPrice,
+				Price:      stock.CurrentPrice,
+				Signal:     stock.Signal,
+				SignalBars: stock.SignalBars,
+				Reason:     fmt.Sprintf("Quant Signal: SELL (P/L: %.2f%%)", pnlPct),
+				CreatedAt:  now,
+			}
+			db.Create(&todo)
+
+			addLog("ACTION", fmt.Sprintf("SELL TODO erstellt: %s @ %.2f (P/L: %.2f%%)", stock.Symbol, stock.CurrentPrice, pnlPct))
+		}
+	}
+
+	addLog("INFO", "Quant Update abgeschlossen")
+	c.JSON(http.StatusOK, gin.H{"message": "Quant update completed", "logs": logs})
+}
+
+func getQuantPortfolio(c *gin.Context) {
+	var positions []QuantPosition
+	db.Order("buy_date desc").Find(&positions)
+
+	type PositionWithReturn struct {
+		QuantPosition
+		CurrentPrice   float64 `json:"current_price"`
+		TotalReturnPct float64 `json:"total_return_pct"`
+	}
+
+	var result []PositionWithReturn
+	symbols := make([]string, 0, len(positions))
+	for _, p := range positions {
+		symbols = append(symbols, p.Symbol)
+	}
+
+	quotes := fetchQuotes(symbols)
+
+	for _, pos := range positions {
+		pwr := PositionWithReturn{QuantPosition: pos}
+		if quote, ok := quotes[pos.Symbol]; ok {
+			pwr.CurrentPrice = quote.Price
+			if pos.AvgPrice > 0 {
+				pwr.TotalReturnPct = ((quote.Price - pos.AvgPrice) / pos.AvgPrice) * 100
+			}
+		}
+		result = append(result, pwr)
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+func getQuantActions(c *gin.Context) {
+	var trades []QuantTrade
+	db.Order("executed_at desc").Limit(100).Find(&trades)
+	c.JSON(http.StatusOK, trades)
+}
+
+func getQuantPerformance(c *gin.Context) {
+	var positions []QuantPosition
+	db.Find(&positions)
+
+	if len(positions) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"total_positions": 0,
+			"live_positions":  0,
+			"total_return":    0,
+			"avg_return":      0,
+			"win_rate":        0,
+		})
+		return
+	}
+
+	symbols := make([]string, 0, len(positions))
+	for _, p := range positions {
+		symbols = append(symbols, p.Symbol)
+	}
+	quotes := fetchQuotes(symbols)
+
+	var totalReturn float64
+	var liveCount int
+	var winCount int
+	for _, pos := range positions {
+		if pos.IsLive {
+			liveCount++
+		}
+		if quote, ok := quotes[pos.Symbol]; ok && pos.AvgPrice > 0 {
+			ret := ((quote.Price - pos.AvgPrice) / pos.AvgPrice) * 100
+			totalReturn += ret
+			if ret > 0 {
+				winCount++
+			}
+		}
+	}
+
+	avgReturn := totalReturn / float64(len(positions))
+	winRate := float64(winCount) / float64(len(positions)) * 100
+
+	c.JSON(http.StatusOK, gin.H{
+		"total_positions": len(positions),
+		"live_positions":  liveCount,
+		"total_return":    totalReturn,
+		"avg_return":      avgReturn,
+		"win_rate":        winRate,
+	})
+}
+
+func resetQuant(c *gin.Context) {
+	db.Where("1 = 1").Delete(&QuantTrade{})
+	db.Where("1 = 1").Delete(&QuantPosition{})
+	db.Where("user_id = ?", QUANT_USER_ID).Delete(&PortfolioPosition{})
+	db.Where("bot = ?", "quant").Delete(&BotTodo{})
+	db.Where("bot = ?", "quant").Delete(&BotLog{})
+	c.JSON(http.StatusOK, gin.H{"message": "Quant reset complete"})
+}
+
+func quantBackfill(c *gin.Context) {
+	var buyTrades []QuantTrade
+	db.Where("action = ?", "BUY").Order("executed_at asc").Find(&buyTrades)
+
+	var sellTrades []QuantTrade
+	db.Where("action = ?", "SELL").Find(&sellTrades)
+
+	sellsBySymbol := make(map[string][]QuantTrade)
+	for _, sell := range sellTrades {
+		sellsBySymbol[sell.Symbol] = append(sellsBySymbol[sell.Symbol], sell)
+	}
+
+	openBuys := make(map[string]QuantTrade)
+	for _, buy := range buyTrades {
+		sells := sellsBySymbol[buy.Symbol]
+		hasSellAfter := false
+		for _, sell := range sells {
+			if sell.ExecutedAt.After(buy.ExecutedAt) {
+				hasSellAfter = true
+				break
+			}
+		}
+		if !hasSellAfter {
+			openBuys[buy.Symbol] = buy
+		}
+	}
+
+	db.Where("1 = 1").Delete(&QuantPosition{})
+	db.Where("user_id = ?", QUANT_USER_ID).Delete(&PortfolioPosition{})
+
+	for symbol, buy := range openBuys {
+		pos := QuantPosition{
+			Symbol:   symbol,
+			Name:     buy.Name,
+			AvgPrice: buy.Price,
+			IsLive:   buy.IsLive,
+			BuyDate:  buy.ExecutedAt,
+		}
+		db.Create(&pos)
+
+		portfolioPos := PortfolioPosition{
+			UserID:       QUANT_USER_ID,
+			Symbol:       symbol,
+			Name:         buy.Name,
+			AvgPrice:     buy.Price,
+			PurchaseDate: &buy.ExecutedAt,
+		}
+		db.Create(&portfolioPos)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Quant backfill complete", "positions": len(openBuys)})
+}
+
+func getQuantCompletedTrades(c *gin.Context) {
+	var trades []QuantTrade
+	db.Where("action = ? AND profit_loss IS NOT NULL", "SELL").Order("executed_at desc").Find(&trades)
+
+	type CompletedTrade struct {
+		Symbol        string     `json:"symbol"`
+		Name          string     `json:"name"`
+		BuyPrice      float64    `json:"buy_price"`
+		SellPrice     float64    `json:"sell_price"`
+		BuyDate       time.Time  `json:"buy_date"`
+		SellDate      time.Time  `json:"sell_date"`
+		ProfitLoss    float64    `json:"profit_loss"`
+		ProfitLossPct float64    `json:"profit_loss_pct"`
+		IsLive        bool       `json:"is_live"`
+	}
+
+	var result []CompletedTrade
+	for _, sell := range trades {
+		var buy QuantTrade
+		if err := db.Where("symbol = ? AND action = ? AND executed_at < ?", sell.Symbol, "BUY", sell.ExecutedAt).Order("executed_at desc").First(&buy).Error; err != nil {
+			continue
+		}
+
+		ct := CompletedTrade{
+			Symbol:    sell.Symbol,
+			Name:      sell.Name,
+			BuyPrice:  buy.Price,
+			SellPrice: sell.Price,
+			BuyDate:   buy.ExecutedAt,
+			SellDate:  sell.ExecutedAt,
+			IsLive:    sell.IsLive,
+		}
+		if sell.ProfitLoss != nil {
+			ct.ProfitLoss = *sell.ProfitLoss
+		}
+		if sell.ProfitLossPct != nil {
+			ct.ProfitLossPct = *sell.ProfitLossPct
+		}
+		result = append(result, ct)
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+func updateQuantPosition(c *gin.Context) {
+	id := c.Param("id")
+
+	var position QuantPosition
+	if err := db.First(&position, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Position not found"})
+		return
+	}
+
+	var req struct {
+		IsLive      *bool    `json:"is_live"`
+		AvgPrice    *float64 `json:"avg_price"`
+		InvestedEUR *float64 `json:"invested_eur"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	if req.IsLive != nil {
+		position.IsLive = *req.IsLive
+	}
+	if req.AvgPrice != nil {
+		position.AvgPrice = *req.AvgPrice
+	}
+	if req.InvestedEUR != nil {
+		position.InvestedEUR = *req.InvestedEUR
+	}
+
+	db.Save(&position)
+
+	var portfolioPos PortfolioPosition
+	if err := db.Where("user_id = ? AND symbol = ?", QUANT_USER_ID, position.Symbol).First(&portfolioPos).Error; err == nil {
+		portfolioPos.AvgPrice = position.AvgPrice
+		db.Save(&portfolioPos)
+	}
+
+	c.JSON(http.StatusOK, position)
+}
+
+func updateQuantTrade(c *gin.Context) {
+	id := c.Param("id")
+
+	var trade QuantTrade
+	if err := db.First(&trade, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Trade not found"})
+		return
+	}
+
+	var req struct {
+		IsLive *bool    `json:"is_live"`
+		Price  *float64 `json:"price"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	if req.IsLive != nil {
+		trade.IsLive = *req.IsLive
+	}
+	if req.Price != nil {
+		trade.Price = *req.Price
+	}
+
+	db.Save(&trade)
+
+	if trade.Action == "BUY" {
+		var position QuantPosition
+		if err := db.Where("symbol = ?", trade.Symbol).First(&position).Error; err == nil {
+			if req.IsLive != nil {
+				position.IsLive = *req.IsLive
+			}
+			if req.Price != nil {
+				position.AvgPrice = *req.Price
+				var portfolioPos PortfolioPosition
+				if err := db.Where("user_id = ? AND symbol = ?", QUANT_USER_ID, trade.Symbol).First(&portfolioPos).Error; err == nil {
+					portfolioPos.AvgPrice = *req.Price
+					db.Save(&portfolioPos)
+				}
+			}
+			db.Save(&position)
+		}
+	}
+
+	c.JSON(http.StatusOK, trade)
+}
+
+func deleteQuantTrade(c *gin.Context) {
+	id := c.Param("id")
+
+	var trade QuantTrade
+	if err := db.First(&trade, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Trade not found"})
+		return
+	}
+
+	symbol := trade.Symbol
+
+	db.Delete(&trade)
+
+	if trade.Action == "BUY" {
+		db.Where("symbol = ?", symbol).Delete(&QuantPosition{})
+		db.Where("user_id = ? AND symbol = ?", QUANT_USER_ID, symbol).Delete(&PortfolioPosition{})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Trade deleted"})
+}
+
+func getQuantPending(c *gin.Context) {
+	var positions []QuantPosition
+	db.Where("is_pending = ?", true).Find(&positions)
+
+	type PendingPosition struct {
+		QuantPosition
+		CurrentPrice   float64 `json:"current_price"`
+		TotalReturnPct float64 `json:"total_return_pct"`
+	}
+
+	symbols := make([]string, 0, len(positions))
+	for _, p := range positions {
+		symbols = append(symbols, p.Symbol)
+	}
+	quotes := fetchQuotes(symbols)
+
+	var result []PendingPosition
+	for _, pos := range positions {
+		pp := PendingPosition{QuantPosition: pos}
+		if quote, ok := quotes[pos.Symbol]; ok {
+			pp.CurrentPrice = quote.Price
+			if pos.AvgPrice > 0 {
+				pp.TotalReturnPct = ((quote.Price - pos.AvgPrice) / pos.AvgPrice) * 100
+			}
+		}
+		result = append(result, pp)
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+func getQuantLogs(c *gin.Context) {
+	var logs []BotLog
+	db.Where("bot = ?", "quant").Order("created_at desc").Limit(200).Find(&logs)
+	c.JSON(http.StatusOK, logs)
+}
+
+func getQuantTodos(c *gin.Context) {
+	var todos []BotTodo
+	db.Where("bot = ? AND done = ?", "quant", false).Order("created_at desc").Find(&todos)
+	c.JSON(http.StatusOK, todos)
+}
+
+func markQuantTodoDone(c *gin.Context) {
+	id := c.Param("id")
+	var todo BotTodo
+	if err := db.First(&todo, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+		return
+	}
+	now := time.Now()
+	todo.Done = true
+	todo.Decision = "discarded"
+	todo.DoneAt = &now
+	db.Save(&todo)
+	c.JSON(http.StatusOK, todo)
+}
+
+func reopenQuantTodo(c *gin.Context) {
+	id := c.Param("id")
+	var todo BotTodo
+	if err := db.First(&todo, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+		return
+	}
+	todo.Done = false
+	todo.Decision = ""
+	todo.DoneAt = nil
+	db.Save(&todo)
+	c.JSON(http.StatusOK, todo)
+}
+
+func deleteQuantTodo(c *gin.Context) {
+	id := c.Param("id")
+	var todo BotTodo
+	if err := db.First(&todo, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+		return
+	}
+	db.Delete(&todo)
+	c.JSON(http.StatusOK, gin.H{"message": "Todo deleted"})
+}
+
+func executeQuantTodo(c *gin.Context) {
+	id := c.Param("id")
+	var todo BotTodo
+	if err := db.First(&todo, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+		return
+	}
+
+	var req struct {
+		IsLive      bool     `json:"is_live"`
+		Price       *float64 `json:"price"`
+		InvestedEUR *float64 `json:"invested_eur"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	now := time.Now()
+	price := todo.Price
+	if req.Price != nil {
+		price = *req.Price
+	}
+
+	if todo.Type == "BUY" {
+		var existingPos QuantPosition
+		if err := db.Where("symbol = ?", todo.Symbol).First(&existingPos).Error; err == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Position already exists"})
+			return
+		}
+
+		newTrade := QuantTrade{
+			Symbol:     todo.Symbol,
+			Name:       todo.Name,
+			Action:     "BUY",
+			Price:      price,
+			SignalDate: todo.CreatedAt,
+			ExecutedAt: now,
+			IsLive:     req.IsLive,
+			IsPending:  false,
+		}
+		db.Create(&newTrade)
+
+		newPosition := QuantPosition{
+			Symbol:      todo.Symbol,
+			Name:        todo.Name,
+			AvgPrice:    price,
+			IsLive:      req.IsLive,
+			IsPending:   false,
+			BuyDate:     now,
+			InvestedEUR: 0,
+		}
+		if req.InvestedEUR != nil {
+			newPosition.InvestedEUR = *req.InvestedEUR
+		}
+		db.Create(&newPosition)
+
+		portfolioPos := PortfolioPosition{
+			UserID:       QUANT_USER_ID,
+			Symbol:       todo.Symbol,
+			Name:         todo.Name,
+			AvgPrice:     price,
+			PurchaseDate: &now,
+		}
+		db.Create(&portfolioPos)
+
+	} else if todo.Type == "SELL" {
+		var position QuantPosition
+		if err := db.Where("symbol = ?", todo.Symbol).First(&position).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Position not found"})
+			return
+		}
+
+		pnl := price - position.AvgPrice
+		pnlPct := (pnl / position.AvgPrice) * 100
+
+		newTrade := QuantTrade{
+			Symbol:        todo.Symbol,
+			Name:          todo.Name,
+			Action:        "SELL",
+			Price:         price,
+			SignalDate:    todo.CreatedAt,
+			ExecutedAt:    now,
+			IsLive:        position.IsLive,
+			IsPending:     false,
+			ProfitLoss:    &pnl,
+			ProfitLossPct: &pnlPct,
+		}
+		db.Create(&newTrade)
+
+		db.Delete(&position)
+		db.Where("user_id = ? AND symbol = ?", QUANT_USER_ID, todo.Symbol).Delete(&PortfolioPosition{})
+	}
+
+	todo.Done = true
+	todo.Decision = "executed"
+	todo.DoneAt = &now
+	db.Save(&todo)
+
+	c.JSON(http.StatusOK, gin.H{"message": "Todo executed", "todo": todo})
+}
+
+func syncQuant(c *gin.Context) {
+	var positions []QuantPosition
+	db.Find(&positions)
+
+	for _, pos := range positions {
+		var existingPosition QuantPosition
+		if err := db.Where("symbol = ?", pos.Symbol).First(&existingPosition).Error; err != nil {
+			continue
+		}
+
+		if pos.AvgPrice > 0 {
+			var existingBuy QuantTrade
+			if err := db.Where("symbol = ? AND action = ?", pos.Symbol, "BUY").Order("executed_at desc").First(&existingBuy).Error; err == nil {
+				var lastSell QuantTrade
+				if err := db.Where("symbol = ? AND action = ? AND executed_at > ?", pos.Symbol, "SELL", existingBuy.ExecutedAt).First(&lastSell).Error; err != nil {
+					if existingBuy.Price != pos.AvgPrice {
+						existingBuy.Price = pos.AvgPrice
+						db.Save(&existingBuy)
+					}
+				}
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Quant sync complete"})
+}
+
+func getQuantHistory(c *gin.Context) {
+	period := c.DefaultQuery("period", "1m")
+
+	var startDate time.Time
+	now := time.Now()
+
+	switch period {
+	case "1w":
+		startDate = now.AddDate(0, 0, -7)
+	case "1m":
+		startDate = now.AddDate(0, -1, 0)
+	case "3m":
+		startDate = now.AddDate(0, -3, 0)
+	case "6m":
+		startDate = now.AddDate(0, -6, 0)
+	case "ytd":
+		startDate = time.Date(now.Year(), 1, 1, 0, 0, 0, 0, now.Location())
+	case "1y":
+		startDate = now.AddDate(-1, 0, 0)
+	case "5y":
+		startDate = now.AddDate(-5, 0, 0)
+	default:
+		startDate = now.AddDate(0, -1, 0)
+	}
+
+	var positions []QuantPosition
+	db.Where("buy_date <= ?", now).Find(&positions)
+
+	if len(positions) == 0 {
+		c.JSON(http.StatusOK, []map[string]interface{}{})
+		return
+	}
+
+	symbols := make([]string, 0, len(positions))
+	for _, p := range positions {
+		symbols = append(symbols, p.Symbol)
+	}
+	quotes := fetchQuotes(symbols)
+
+	positionsByDate := make(map[string][]QuantPosition)
+	for _, pos := range positions {
+		dateStr := pos.BuyDate.Format("2006-01-02")
+		positionsByDate[dateStr] = append(positionsByDate[dateStr], pos)
+	}
+
+	var history []map[string]interface{}
+	currentDate := startDate
+	var activePositions []QuantPosition
+
+	for currentDate.Before(now) || currentDate.Equal(now) {
+		dateStr := currentDate.Format("2006-01-02")
+
+		for _, pos := range positions {
+			buyDateStr := pos.BuyDate.Format("2006-01-02")
+			if buyDateStr <= dateStr {
+				found := false
+				for _, ap := range activePositions {
+					if ap.Symbol == pos.Symbol {
+						found = true
+						break
+					}
+				}
+				if !found {
+					activePositions = append(activePositions, pos)
+				}
+			}
+		}
+
+		if len(activePositions) > 0 {
+			var totalPct float64
+			validCount := 0
+			for _, pos := range activePositions {
+				if quote, ok := quotes[pos.Symbol]; ok && pos.AvgPrice > 0 {
+					pct := ((quote.Price - pos.AvgPrice) / pos.AvgPrice) * 100
+					totalPct += pct
+					validCount++
+				}
+			}
+
+			if validCount > 0 {
+				avgPct := totalPct / float64(validCount)
+				history = append(history, map[string]interface{}{
+					"time": dateStr,
+					"pct":  math.Round(avgPct*100) / 100,
+				})
+			}
+		}
+
+		currentDate = currentDate.AddDate(0, 0, 1)
+	}
+
+	c.JSON(http.StatusOK, history)
+}
+
+func getQuantPendingTrades(c *gin.Context) {
+	var trades []QuantTrade
+	db.Where("is_pending = ?", true).Order("executed_at desc").Find(&trades)
+	c.JSON(http.StatusOK, trades)
+}
+
+func acceptQuantTrade(c *gin.Context) {
+	id := c.Param("id")
+	var trade QuantTrade
+	if err := db.First(&trade, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Trade not found"})
+		return
+	}
+
+	trade.IsPending = false
+	db.Save(&trade)
+
+	if trade.Action == "BUY" {
+		db.Model(&QuantPosition{}).Where("symbol = ? AND is_pending = ?", trade.Symbol, true).Update("is_pending", false)
+	}
+
+	c.JSON(http.StatusOK, trade)
 }

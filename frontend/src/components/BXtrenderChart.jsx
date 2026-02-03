@@ -1,32 +1,51 @@
 import { useEffect, useRef, useState } from 'react'
 import { createChart } from 'lightweight-charts'
 import { useTradingMode } from '../context/TradingModeContext'
-import { calculateBXtrender, calculateMetrics, savePerformanceToBackend } from '../utils/bxtrender'
+import {
+  calculateBXtrender,
+  calculateBXtrenderQuant,
+  calculateMetrics,
+  savePerformanceToBackend,
+  saveQuantPerformanceToBackend,
+  fetchBXtrenderConfig,
+  fetchBXtrenderQuantConfig
+} from '../utils/bxtrender'
 
 const timeframeLabels = { 'M': 'Monthly', 'W': 'Weekly', 'D': 'Daily' }
+
+const intervalLabels = {
+  '1mo': 'Monthly',
+  '1wk': 'Weekly',
+  '1d': 'Daily'
+}
 
 function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdate }) {
   const chartContainerRef = useRef(null)
   const chartRef = useRef(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const { isAggressive } = useTradingMode()
+  const [intervalWarning, setIntervalWarning] = useState(null) // Warning if Yahoo returns different interval
+  const { isAggressive, isQuant, mode } = useTradingMode()
 
   useEffect(() => {
     if (!symbol || !chartContainerRef.current) return
 
     let cancelled = false
 
-    // Map timeframe to API parameters - load maximum historical data
+    // Map timeframe to API parameters
+    // IMPORTANT: Yahoo Finance only supports certain range/interval combinations:
+    // - Monthly (1mo): range=max works
+    // - Weekly (1wk): max range is 10y (range=max returns monthly data!)
+    // - Daily (1d): max range is 2y (longer ranges may return weekly/monthly)
     const getApiParams = (tf) => {
       switch (tf) {
         case 'M': // Monthly
           return { period: 'max', interval: '1mo' }
-        case 'W': // Weekly
-          return { period: 'max', interval: '1wk' }
-        case 'D': // Daily
+        case 'W': // Weekly - use 10y to get actual weekly data
+          return { period: '10y', interval: '1wk' }
+        case 'D': // Daily - use 2y to get actual daily data
         default:
-          return { period: 'max', interval: '1d' }
+          return { period: '2y', interval: '1d' }
       }
     }
 
@@ -35,9 +54,16 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
     const fetchAndRender = async () => {
       setLoading(true)
       setError(null)
+      setIntervalWarning(null)
 
       try {
-        const res = await fetch(`/api/history/${symbol}?period=${period}&interval=${interval}`)
+        // Fetch appropriate config based on mode
+        const configPromise = isQuant ? fetchBXtrenderQuantConfig() : fetchBXtrenderConfig()
+
+        const [configData, res] = await Promise.all([
+          configPromise,
+          fetch(`/api/history/${symbol}?period=${period}&interval=${interval}`)
+        ])
 
         if (!res.ok) {
           throw new Error('Failed to fetch data')
@@ -53,8 +79,34 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
           return
         }
 
-        // Calculate B-Xtrender with current mode
-        const { short, long, signal, trades, markers } = calculateBXtrender(json.data, isAggressive)
+        // Check if Yahoo Finance returned a different interval than requested
+        if (json.actualInterval && json.requestedInterval && json.actualInterval !== json.requestedInterval) {
+          const requestedLabel = intervalLabels[json.requestedInterval] || json.requestedInterval
+          const actualLabel = intervalLabels[json.actualInterval] || json.actualInterval
+          setIntervalWarning(`${requestedLabel} nicht verfügbar, zeige ${actualLabel}`)
+        }
+
+        // Get config and calculate B-Xtrender based on mode
+        let short, long, signal, trades, markers
+
+        if (isQuant) {
+          // Quant mode - use QuantTherapy algorithm
+          const result = calculateBXtrenderQuant(json.data, configData)
+          short = result.short
+          long = result.long
+          signal = result.signal
+          trades = result.trades
+          markers = result.markers
+        } else {
+          // Defensive or Aggressive mode
+          const config = isAggressive ? configData.aggressive : configData.defensive
+          const result = calculateBXtrender(json.data, isAggressive, config)
+          short = result.short
+          long = result.long
+          signal = result.signal
+          trades = result.trades
+          markers = result.markers
+        }
 
         if (short.length === 0) {
           setError('Not enough data for indicator')
@@ -69,17 +121,22 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
         }
 
         // Get current price and save to backend (only for monthly timeframe)
-        // Save both defensive and aggressive data when in monthly view
         if (timeframe === 'M' && json.data.length > 0) {
           const currentPrice = json.data[json.data.length - 1].close
 
-          // Save current mode's data
-          savePerformanceToBackend(symbol, stockName || symbol, metrics, trades, short, currentPrice, isAggressive)
+          if (isQuant) {
+            // Save Quant mode data
+            saveQuantPerformanceToBackend(symbol, stockName || symbol, metrics, trades, short, long, currentPrice)
+          } else {
+            // Save current mode's data (Defensive or Aggressive)
+            savePerformanceToBackend(symbol, stockName || symbol, metrics, trades, short, currentPrice, isAggressive)
 
-          // Also save the other mode's data for completeness
-          const otherModeResult = calculateBXtrender(json.data, !isAggressive)
-          const otherMetrics = calculateMetrics(otherModeResult.trades)
-          savePerformanceToBackend(symbol, stockName || symbol, otherMetrics, otherModeResult.trades, otherModeResult.short, currentPrice, !isAggressive)
+            // Also save the other mode's data for completeness
+            const otherConfig = isAggressive ? configData.defensive : configData.aggressive
+            const otherModeResult = calculateBXtrender(json.data, !isAggressive, otherConfig)
+            const otherMetrics = calculateMetrics(otherModeResult.trades)
+            savePerformanceToBackend(symbol, stockName || symbol, otherMetrics, otherModeResult.trades, otherModeResult.short, currentPrice, !isAggressive)
+          }
         }
 
         // Clear previous chart
@@ -188,10 +245,10 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
         chartRef.current = null
       }
     }
-  }, [symbol, timeframe, onTradesUpdate, isAggressive])
+  }, [symbol, timeframe, onTradesUpdate, isAggressive, isQuant, mode])
 
   return (
-    <div className={`bg-dark-800 rounded-xl border overflow-hidden ${isAggressive ? 'border-orange-500/50' : 'border-dark-600'}`}>
+    <div className={`bg-dark-800 rounded-xl border overflow-hidden ${isQuant ? 'border-violet-500/50' : isAggressive ? 'border-orange-500/50' : 'border-dark-600'}`}>
       <div className="px-4 py-2 border-b border-dark-600 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-white">B-Xtrender</span>
@@ -203,7 +260,14 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
           }`}>
             {timeframeLabels[timeframe] || timeframe}
           </span>
-          {isAggressive ? (
+          {isQuant ? (
+            <span className="px-1.5 py-0.5 bg-violet-500/20 text-violet-400 text-[10px] font-bold rounded flex items-center gap-1">
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+              </svg>
+              QUANT
+            </span>
+          ) : isAggressive ? (
             <span className="px-1.5 py-0.5 bg-orange-500/20 text-orange-400 text-[10px] font-bold rounded flex items-center gap-1">
               <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z" />
@@ -218,24 +282,51 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
               DEFENSIV
             </span>
           )}
+          {intervalWarning && (
+            <span className="px-1.5 py-0.5 bg-yellow-500/20 text-yellow-400 text-[10px] font-medium rounded flex items-center gap-1">
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              {intervalWarning}
+            </span>
+          )}
         </div>
         <div className="hidden md:flex items-center gap-3 text-xs">
-          <div className="flex items-center gap-1">
-            <div className="w-2 h-2 bg-lime-400 rounded-sm"></div>
-            <span className="text-gray-400">Bull Rising</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <div className="w-2 h-2 bg-green-700 rounded-sm"></div>
-            <span className="text-gray-400">Bull Falling</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <div className="w-2 h-2 bg-red-500 rounded-sm"></div>
-            <span className="text-gray-400">{isAggressive ? 'BUY Zone' : 'Bear Rising'}</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <div className="w-2 h-2 bg-red-900 rounded-sm"></div>
-            <span className="text-gray-400">{isAggressive ? 'SELL Zone' : 'Bear Falling'}</span>
-          </div>
+          {isQuant ? (
+            <>
+              <div className="flex items-center gap-1">
+                <div className="w-2 h-2 bg-lime-400 rounded-sm"></div>
+                <span className="text-gray-400">Both Aligned +</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <div className="w-2 h-2 bg-red-500 rounded-sm"></div>
+                <span className="text-gray-400">Both Aligned -</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <div className="w-2 h-2 bg-gray-500 rounded-sm"></div>
+                <span className="text-gray-400">Mixed</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-1">
+                <div className="w-2 h-2 bg-lime-400 rounded-sm"></div>
+                <span className="text-gray-400">Bull Rising</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <div className="w-2 h-2 bg-green-700 rounded-sm"></div>
+                <span className="text-gray-400">Bull Falling</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <div className="w-2 h-2 bg-red-500 rounded-sm"></div>
+                <span className="text-gray-400">{isAggressive ? 'BUY Zone' : 'Bear Rising'}</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <div className="w-2 h-2 bg-red-900 rounded-sm"></div>
+                <span className="text-gray-400">{isAggressive ? 'SELL Zone' : 'Bear Falling'}</span>
+              </div>
+            </>
+          )}
         </div>
       </div>
       <div ref={chartContainerRef} className="h-[200px] relative">

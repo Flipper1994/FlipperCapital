@@ -35,7 +35,7 @@ function BacktestPanel({ trades, metrics, symbol }) {
       </div>
 
       {/* Performance Metrics - Compact Grid */}
-      <div className="grid grid-cols-3 gap-2 p-3 border-b border-dark-600">
+      <div className="grid grid-cols-4 gap-2 p-3 border-b border-dark-600">
         <div className="bg-dark-700 rounded p-2 text-center">
           <div className="text-xs text-gray-500">Win Rate</div>
           <div className={`text-base font-bold ${metrics.winRate >= 50 ? 'text-green-400' : 'text-red-400'}`}>
@@ -52,6 +52,12 @@ function BacktestPanel({ trades, metrics, symbol }) {
           <div className="text-xs text-gray-500">Total</div>
           <div className={`text-base font-bold ${metrics.totalReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
             {metrics.totalReturn >= 0 ? '+' : ''}{metrics.totalReturn.toFixed(0)}%
+          </div>
+        </div>
+        <div className="bg-dark-700 rounded p-2 text-center">
+          <div className="text-xs text-gray-500">Ø/Trade</div>
+          <div className={`text-base font-bold ${(metrics.avgReturn || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+            {(metrics.avgReturn || 0) >= 0 ? '+' : ''}{(metrics.avgReturn || 0).toFixed(1)}%
           </div>
         </div>
         <div className="bg-dark-700 rounded p-2 text-center">

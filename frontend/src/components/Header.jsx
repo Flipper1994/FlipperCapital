@@ -9,7 +9,7 @@ function Header({ isLoggedIn, isAdmin, user, onLogout, sidebarOpen, setSidebarOp
   const allCurrencies = Object.keys(EXCHANGE_RATES)
   const primaryCurrencies = ['USD', 'EUR']
   const otherCurrencies = allCurrencies.filter(c => !primaryCurrencies.includes(c))
-  const { mode, toggleMode, isAggressive } = useTradingMode()
+  const { mode, cycleMode, isAggressive, isQuant, isDefensive } = useTradingMode()
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -60,15 +60,25 @@ function Header({ isLoggedIn, isAdmin, user, onLogout, sidebarOpen, setSidebarOp
         <div className="flex items-center gap-2 md:gap-4">
           {/* Trading Mode Toggle */}
           <button
-            onClick={toggleMode}
+            onClick={cycleMode}
             className={`flex items-center gap-1.5 md:gap-2 px-2 md:px-3 py-1.5 md:py-2 rounded-lg backdrop-blur-sm transition-all ${
-              isAggressive
-                ? 'bg-orange-500/20 border border-orange-500/50 text-orange-400 hover:bg-orange-500/30'
-                : 'bg-blue-500/20 border border-blue-500/50 text-blue-400 hover:bg-blue-500/30'
+              isQuant
+                ? 'bg-violet-500/20 border border-violet-500/50 text-violet-400 hover:bg-violet-500/30'
+                : isAggressive
+                  ? 'bg-orange-500/20 border border-orange-500/50 text-orange-400 hover:bg-orange-500/30'
+                  : 'bg-blue-500/20 border border-blue-500/50 text-blue-400 hover:bg-blue-500/30'
             }`}
-            title={isAggressive ? 'Aggressiver Modus aktiv' : 'Defensiver Modus aktiv'}
+            title={isQuant ? 'Quant Modus aktiv' : isAggressive ? 'Aggressiver Modus aktiv' : 'Defensiver Modus aktiv'}
           >
-            {isAggressive ? (
+            {isQuant ? (
+              <>
+                {/* Chart icon for quant */}
+                <svg className="w-4 h-4 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                </svg>
+                <span className="hidden sm:inline text-xs md:text-sm font-medium">Quant</span>
+              </>
+            ) : isAggressive ? (
               <>
                 {/* Fire/Lightning icon for aggressive */}
                 <svg className="w-4 h-4 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

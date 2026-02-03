@@ -28,6 +28,8 @@ function AdminPanel() {
   const [flipperTrades, setFlipperTrades] = useState([])
   const [lutzPositions, setLutzPositions] = useState([])
   const [lutzTrades, setLutzTrades] = useState([])
+  const [quantPositions, setQuantPositions] = useState([])
+  const [quantTrades, setQuantTrades] = useState([])
   const [botTab, setBotTab] = useState('flipper')
   const [editingItem, setEditingItem] = useState(null)
   const [fixingDB, setFixingDB] = useState(false)
@@ -37,7 +39,20 @@ function AdminPanel() {
   const [backfillResult, setBackfillResult] = useState(null)
   const [flipperPendingTrades, setFlipperPendingTrades] = useState([])
   const [lutzPendingTrades, setLutzPendingTrades] = useState([])
+  const [quantPendingTrades, setQuantPendingTrades] = useState([])
   const [acceptingTrade, setAcceptingTrade] = useState(null)
+  const [bxtrenderConfig, setBxtrenderConfig] = useState({
+    defensive: { short_l1: 5, short_l2: 20, short_l3: 15, long_l1: 20, long_l2: 15 },
+    aggressive: { short_l1: 5, short_l2: 20, short_l3: 15, long_l1: 20, long_l2: 15 }
+  })
+  const [quantConfig, setQuantConfig] = useState({
+    short_l1: 5, short_l2: 20, short_l3: 15,
+    long_l1: 20, long_l2: 15,
+    ma_filter_on: true, ma_length: 200, ma_type: 'EMA',
+    tsl_percent: 20.0
+  })
+  const [savingConfig, setSavingConfig] = useState(false)
+  const [savingQuantConfig, setSavingQuantConfig] = useState(false)
 
   useEffect(() => {
     checkAdmin()
@@ -50,8 +65,125 @@ function AdminPanel() {
       if (activeTab === 'activity') fetchActivity()
       if (activeTab === 'traffic') fetchTraffic()
       if (activeTab === 'bots') fetchBotData()
+      if (activeTab === 'bots') fetchBXtrenderConfig()
+      if (activeTab === 'bots') fetchQuantConfig()
     }
   }, [isAdmin, activeTab, activityFilter])
+
+  const fetchBXtrenderConfig = async () => {
+    try {
+      const res = await fetch('/api/admin/bxtrender-config', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      if (Array.isArray(data)) {
+        const config = {}
+        data.forEach(c => { config[c.mode] = c })
+        setBxtrenderConfig(config)
+      }
+    } catch (err) {
+      console.error('Failed to fetch BXtrender config:', err)
+    }
+  }
+
+  const handleSaveBXtrenderConfig = async (mode) => {
+    setSavingConfig(true)
+    try {
+      const config = bxtrenderConfig[mode]
+      const res = await fetch('/api/admin/bxtrender-config', {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          mode,
+          short_l1: parseInt(config.short_l1),
+          short_l2: parseInt(config.short_l2),
+          short_l3: parseInt(config.short_l3),
+          long_l1: parseInt(config.long_l1),
+          long_l2: parseInt(config.long_l2)
+        })
+      })
+      if (res.ok) {
+        // Clear config cache in bxtrender.js
+        const { clearConfigCache } = await import('../utils/bxtrender')
+        clearConfigCache()
+        alert(`${mode === 'defensive' ? 'Defensiv' : 'Aggressiv'} Konfiguration gespeichert!`)
+      } else {
+        alert('Fehler beim Speichern')
+      }
+    } catch (err) {
+      console.error('Failed to save config:', err)
+      alert('Fehler beim Speichern')
+    } finally {
+      setSavingConfig(false)
+    }
+  }
+
+  const updateConfigValue = (mode, field, value) => {
+    setBxtrenderConfig(prev => ({
+      ...prev,
+      [mode]: {
+        ...prev[mode],
+        [field]: value
+      }
+    }))
+  }
+
+  const fetchQuantConfig = async () => {
+    try {
+      const res = await fetch('/api/admin/bxtrender-quant-config', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      if (data && data.id) {
+        setQuantConfig(data)
+      }
+    } catch (err) {
+      console.error('Failed to fetch Quant config:', err)
+    }
+  }
+
+  const handleSaveQuantConfig = async () => {
+    setSavingQuantConfig(true)
+    try {
+      const res = await fetch('/api/admin/bxtrender-quant-config', {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          short_l1: parseInt(quantConfig.short_l1),
+          short_l2: parseInt(quantConfig.short_l2),
+          short_l3: parseInt(quantConfig.short_l3),
+          long_l1: parseInt(quantConfig.long_l1),
+          long_l2: parseInt(quantConfig.long_l2),
+          ma_filter_on: quantConfig.ma_filter_on,
+          ma_length: parseInt(quantConfig.ma_length),
+          ma_type: quantConfig.ma_type,
+          tsl_percent: parseFloat(quantConfig.tsl_percent)
+        })
+      })
+      if (res.ok) {
+        const { clearQuantConfigCache } = await import('../utils/bxtrender')
+        clearQuantConfigCache()
+        alert('Quant Konfiguration gespeichert!')
+      } else {
+        alert('Fehler beim Speichern')
+      }
+    } catch (err) {
+      console.error('Failed to save Quant config:', err)
+      alert('Fehler beim Speichern')
+    } finally {
+      setSavingQuantConfig(false)
+    }
+  }
+
+  const updateQuantConfigValue = (field, value) => {
+    setQuantConfig(prev => ({ ...prev, [field]: value }))
+  }
 
   const checkAdmin = async () => {
     if (!token) {
@@ -134,16 +266,20 @@ function AdminPanel() {
   const fetchBotData = async () => {
     setLoading(true)
     try {
-      const [fpRes, ftRes, lpRes, ltRes, fptRes, lptRes] = await Promise.all([
+      const [fpRes, ftRes, lpRes, ltRes, fptRes, lptRes, qpRes, qtRes, qptRes] = await Promise.all([
         fetch('/api/flipperbot/portfolio', { headers: { 'Authorization': `Bearer ${token}` } }),
         fetch('/api/flipperbot/actions', { headers: { 'Authorization': `Bearer ${token}` } }),
         fetch('/api/lutz/portfolio', { headers: { 'Authorization': `Bearer ${token}` } }),
         fetch('/api/lutz/actions', { headers: { 'Authorization': `Bearer ${token}` } }),
         fetch('/api/flipperbot/pending-trades', { headers: { 'Authorization': `Bearer ${token}` } }),
-        fetch('/api/lutz/pending-trades', { headers: { 'Authorization': `Bearer ${token}` } })
+        fetch('/api/lutz/pending-trades', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/quant/portfolio', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/quant/actions', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/quant/pending-trades', { headers: { 'Authorization': `Bearer ${token}` } })
       ])
-      const [fp, ft, lp, lt, fpt, lpt] = await Promise.all([
-        fpRes.json(), ftRes.json(), lpRes.json(), ltRes.json(), fptRes.json(), lptRes.json()
+      const [fp, ft, lp, lt, fpt, lpt, qp, qt, qpt] = await Promise.all([
+        fpRes.json(), ftRes.json(), lpRes.json(), ltRes.json(), fptRes.json(), lptRes.json(),
+        qpRes.json(), qtRes.json(), qptRes.json()
       ])
       setFlipperPositions(fp?.positions || [])
       setFlipperTrades(ft || [])
@@ -151,6 +287,9 @@ function AdminPanel() {
       setLutzTrades(lt || [])
       setFlipperPendingTrades(fpt || [])
       setLutzPendingTrades(lpt || [])
+      setQuantPositions(qp || [])
+      setQuantTrades(qt || [])
+      setQuantPendingTrades(qpt || [])
     } catch (err) {
       console.error('Failed to fetch bot data:', err)
     } finally {
@@ -256,13 +395,19 @@ function AdminPanel() {
     }
   }
 
+  const getBotApiName = () => {
+    if (botTab === 'flipper') return 'flipperbot'
+    if (botTab === 'lutz') return 'lutz'
+    return 'quant'
+  }
+
   const handleBackfill = async (bot = 'flipperbot') => {
     if (!backfillDate) {
       alert('Bitte ein Datum auswählen')
       return
     }
-    const botName = bot === 'flipperbot' ? 'FlipperBot' : 'Lutz'
-    const modeInfo = bot === 'flipperbot' ? 'Defensiv' : 'Aggressiv'
+    const botName = bot === 'flipperbot' ? 'FlipperBot' : bot === 'lutz' ? 'Lutz' : 'Quant'
+    const modeInfo = bot === 'flipperbot' ? 'Defensiv' : bot === 'lutz' ? 'Aggressiv' : 'Quant'
     if (!confirm(`${botName} Backfill ab ${backfillDate} bis heute durchführen? Historische Trades für ${modeInfo}-Aktien werden erstellt.`)) return
     setBackfilling(true)
     setBackfillResult(null)
@@ -311,7 +456,7 @@ function AdminPanel() {
   }
 
   const handleAcceptAllTrades = async (bot) => {
-    const trades = bot === 'flipperbot' ? flipperPendingTrades : lutzPendingTrades
+    const trades = bot === 'flipperbot' ? flipperPendingTrades : bot === 'lutz' ? lutzPendingTrades : quantPendingTrades
     if (trades.length === 0) return
     if (!confirm(`Alle ${trades.length} ausstehenden Trades akzeptieren?`)) return
 
@@ -421,7 +566,7 @@ function AdminPanel() {
   }
 
   const handleUpdateAllStocks = async () => {
-    if (!confirm(`Alle Watchlist-Aktien aktualisieren? Das speichert BX-Trender Daten für BEIDE Modi (defensiv & aggressiv). Das kann mehrere Minuten dauern.`)) {
+    if (!confirm(`Alle Watchlist-Aktien aktualisieren? Das speichert BX-Trender Daten für ALLE Modi (Defensiv, Aggressiv & Quant). Das kann mehrere Minuten dauern.`)) {
       return
     }
 
@@ -516,7 +661,8 @@ function AdminPanel() {
             { key: 'users', label: 'Nutzer' },
             { key: 'activity', label: 'Aktivitäten' },
             { key: 'traffic', label: 'Traffic' },
-            { key: 'bots', label: 'Bots' }
+            { key: 'bots', label: 'Bots' },
+            { key: 'quant', label: 'Quant' }
           ].map(tab => (
             <button
               key={tab.key}
@@ -560,7 +706,7 @@ function AdminPanel() {
                         </span>
                       </h2>
                       <p className="text-sm text-gray-400 mt-1">
-                        Aktualisiere alle Aktien der Watchlist im aktuell gewählten Modus.
+                        Aktualisiere alle Aktien der Watchlist für alle drei Modi (Defensiv, Aggressiv, Quant).
                         Dies speichert die BX-Trender Performance-Daten für jede Aktie.
                       </p>
                     </div>
@@ -999,11 +1145,75 @@ function AdminPanel() {
                   >
                     Lutz (Aggressiv)
                   </button>
+                  <button
+                    onClick={() => setBotTab('quant')}
+                    className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                      botTab === 'quant'
+                        ? 'bg-violet-500 text-white'
+                        : 'bg-dark-700 text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    Quant
+                  </button>
                 </div>
 
                 {/* Info */}
                 <div className="p-4 bg-blue-500/10 border border-blue-500/30 rounded-xl text-sm text-blue-300">
                   <p>Trades bearbeiten um echte Werte einzutragen. Positionen werden automatisch aktualisiert.</p>
+                </div>
+
+                {/* BXtrender Configuration */}
+                <div className={`p-4 rounded-xl border ${
+                  botTab === 'flipper'
+                    ? 'bg-blue-500/10 border-blue-500/30'
+                    : 'bg-orange-500/10 border-orange-500/30'
+                }`}>
+                  <h3 className={`text-sm font-medium mb-4 ${
+                    botTab === 'flipper' ? 'text-blue-300' : 'text-orange-300'
+                  }`}>
+                    B-Xtrender Konfiguration ({botTab === 'flipper' ? 'Defensiv' : 'Aggressiv'})
+                  </h3>
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+                    {[
+                      { key: 'short_l1', label: 'Short L1', desc: 'EMA kurz' },
+                      { key: 'short_l2', label: 'Short L2', desc: 'EMA lang' },
+                      { key: 'short_l3', label: 'Short L3', desc: 'RSI Periode' },
+                      { key: 'long_l1', label: 'Long L1', desc: 'EMA Periode' },
+                      { key: 'long_l2', label: 'Long L2', desc: 'RSI Periode' }
+                    ].map(({ key, label, desc }) => (
+                      <div key={key} className="bg-dark-800 rounded-lg p-3">
+                        <label className="text-xs text-gray-500 block mb-1">{label}</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="200"
+                          value={bxtrenderConfig[botTab === 'flipper' ? 'defensive' : 'aggressive']?.[key] || ''}
+                          onChange={(e) => updateConfigValue(
+                            botTab === 'flipper' ? 'defensive' : 'aggressive',
+                            key,
+                            e.target.value
+                          )}
+                          className="w-full bg-dark-700 border border-dark-500 rounded px-2 py-1 text-white text-sm"
+                        />
+                        <span className="text-[10px] text-gray-600">{desc}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-gray-500">
+                      Short: RSI(EMA(close, L1) - EMA(close, L2), L3) - 50<br/>
+                      Long: RSI(EMA(close, L1), L2) - 50
+                    </p>
+                    <button
+                      onClick={() => handleSaveBXtrenderConfig(botTab === 'flipper' ? 'defensive' : 'aggressive')}
+                      disabled={savingConfig}
+                      className={`px-4 py-2 rounded-lg font-medium text-white disabled:opacity-50 ${
+                        botTab === 'flipper' ? 'bg-blue-500 hover:bg-blue-400' : 'bg-orange-500 hover:bg-orange-400'
+                      }`}
+                    >
+                      {savingConfig ? 'Speichern...' : 'Speichern'}
+                    </button>
+                  </div>
                 </div>
 
                 {/* Reset Buttons */}
@@ -1052,18 +1262,41 @@ function AdminPanel() {
                       </svg>
                       Lutz Reset
                     </button>
+                    <button
+                      onClick={async () => {
+                        if (!confirm('Quant komplett zurücksetzen? Alle Trades und Positionen werden gelöscht!')) return
+                        try {
+                          await fetch('/api/quant/reset', {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${token}` }
+                          })
+                          fetchBotData()
+                          alert('Quant wurde zurückgesetzt')
+                        } catch (err) {
+                          alert('Fehler beim Zurücksetzen')
+                        }
+                      }}
+                      className="px-4 py-2 bg-violet-500/20 text-violet-400 rounded-lg hover:bg-violet-500/30 transition-colors font-medium text-sm flex items-center gap-2"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                      Quant Reset
+                    </button>
                   </div>
                 </div>
 
-                {/* Backfill - for both bots */}
+                {/* Backfill - for all bots */}
                 <div className={`p-4 rounded-xl ${
                   botTab === 'flipper'
                     ? 'bg-purple-500/10 border border-purple-500/30'
-                    : 'bg-orange-500/10 border border-orange-500/30'
+                    : botTab === 'lutz'
+                    ? 'bg-orange-500/10 border border-orange-500/30'
+                    : 'bg-violet-500/10 border border-violet-500/30'
                 }`}>
                   <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                     <div>
-                      <h3 className={`text-sm font-medium ${botTab === 'flipper' ? 'text-purple-300' : 'text-orange-300'}`}>
+                      <h3 className={`text-sm font-medium ${botTab === 'flipper' ? 'text-purple-300' : botTab === 'lutz' ? 'text-orange-300' : 'text-violet-300'}`}>
                         Rückwirkende Trades
                       </h3>
                       <p className="text-xs text-gray-500 mt-1">
@@ -1078,12 +1311,14 @@ function AdminPanel() {
                         className="bg-dark-700 border border-dark-500 rounded-lg px-3 py-2 text-white text-sm"
                       />
                       <button
-                        onClick={() => handleBackfill(botTab === 'flipper' ? 'flipperbot' : 'lutz')}
+                        onClick={() => handleBackfill(getBotApiName())}
                         disabled={backfilling || !backfillDate}
                         className={`px-4 py-2 text-white rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 whitespace-nowrap ${
                           botTab === 'flipper'
                             ? 'bg-purple-500 hover:bg-purple-400'
-                            : 'bg-orange-500 hover:bg-orange-400'
+                            : botTab === 'lutz'
+                            ? 'bg-orange-500 hover:bg-orange-400'
+                            : 'bg-violet-500 hover:bg-violet-400'
                         }`}
                       >
                         {backfilling ? (
@@ -1170,7 +1405,7 @@ function AdminPanel() {
                 )}
 
                 {/* Pending Trades Section */}
-                {((botTab === 'flipper' && flipperPendingTrades.length > 0) || (botTab === 'lutz' && lutzPendingTrades.length > 0)) && (
+                {((botTab === 'flipper' && flipperPendingTrades.length > 0) || (botTab === 'lutz' && lutzPendingTrades.length > 0) || (botTab === 'quant' && quantPendingTrades.length > 0)) && (
                   <div className={`p-4 rounded-xl ${
                     botTab === 'flipper'
                       ? 'bg-yellow-500/10 border border-yellow-500/30'
@@ -1182,14 +1417,14 @@ function AdminPanel() {
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                           </svg>
-                          Ausstehende Trades ({(botTab === 'flipper' ? flipperPendingTrades : lutzPendingTrades).length})
+                          Ausstehende Trades ({(botTab === 'flipper' ? flipperPendingTrades : botTab === 'lutz' ? lutzPendingTrades : quantPendingTrades).length})
                         </h3>
                         <p className="text-xs text-gray-500 mt-1">
                           Trades warten auf Freigabe. Akzeptierte Trades werden öffentlich sichtbar.
                         </p>
                       </div>
                       <button
-                        onClick={() => handleAcceptAllTrades(botTab === 'flipper' ? 'flipperbot' : 'lutz')}
+                        onClick={() => handleAcceptAllTrades(getBotApiName())}
                         className="px-4 py-2 bg-green-500 text-white rounded-lg font-medium hover:bg-green-400 text-sm flex items-center gap-2"
                       >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1212,7 +1447,7 @@ function AdminPanel() {
                           </tr>
                         </thead>
                         <tbody>
-                          {(botTab === 'flipper' ? flipperPendingTrades : lutzPendingTrades).map((trade) => (
+                          {(botTab === 'flipper' ? flipperPendingTrades : botTab === 'lutz' ? lutzPendingTrades : quantPendingTrades).map((trade) => (
                             <tr key={trade.id} className="border-b border-dark-700 hover:bg-dark-700/50">
                               <td className="p-2 text-sm text-gray-400">
                                 {new Date(trade.signal_date).toLocaleDateString('de-DE')}
@@ -1236,7 +1471,7 @@ function AdminPanel() {
                               </td>
                               <td className="p-2 text-right">
                                 <button
-                                  onClick={() => handleAcceptTrade(botTab === 'flipper' ? 'flipperbot' : 'lutz', trade.id)}
+                                  onClick={() => handleAcceptTrade(getBotApiName(), trade.id)}
                                   disabled={acceptingTrade === trade.id}
                                   className="px-3 py-1 bg-green-500 text-white rounded-lg text-xs font-medium hover:bg-green-400 disabled:opacity-50 flex items-center gap-1 ml-auto"
                                 >
@@ -1280,7 +1515,7 @@ function AdminPanel() {
                         </tr>
                       </thead>
                       <tbody>
-                        {(botTab === 'flipper' ? flipperTrades : lutzTrades).slice(0, 50).map((trade) => (
+                        {(botTab === 'flipper' ? flipperTrades : botTab === 'lutz' ? lutzTrades : quantTrades).slice(0, 50).map((trade) => (
                           <tr key={trade.id} className={`border-b border-dark-700/50 hover:bg-dark-700/30 ${trade.is_live ? 'bg-green-500/5' : ''}`}>
                             {editingItem?.type === 'trade' && editingItem?.id === trade.id ? (
                               <>
@@ -1331,7 +1566,7 @@ function AdminPanel() {
                                 <td className="p-3">
                                   <div className="flex gap-2">
                                     <button
-                                      onClick={() => handleUpdateTrade(botTab === 'flipper' ? 'flipperbot' : 'lutz', editingItem)}
+                                      onClick={() => handleUpdateTrade(getBotApiName(), editingItem)}
                                       className="px-3 py-1 bg-green-500 text-white rounded text-xs font-medium"
                                     >
                                       Speichern
@@ -1386,7 +1621,7 @@ function AdminPanel() {
                                     </button>
                                     <button
                                       onClick={() => handleDeleteTrade(
-                                        botTab === 'flipper' ? 'flipperbot' : 'lutz',
+                                        getBotApiName(),
                                         trade.id,
                                         trade.symbol,
                                         trade.action
@@ -1404,7 +1639,7 @@ function AdminPanel() {
                             )}
                           </tr>
                         ))}
-                        {(botTab === 'flipper' ? flipperTrades : lutzTrades).length === 0 && (
+                        {(botTab === 'flipper' ? flipperTrades : botTab === 'lutz' ? lutzTrades : quantTrades).length === 0 && (
                           <tr>
                             <td colSpan={7} className="p-8 text-center text-gray-500">
                               Keine Trades vorhanden
@@ -1413,6 +1648,158 @@ function AdminPanel() {
                         )}
                       </tbody>
                     </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Quant Tab */}
+            {activeTab === 'quant' && (
+              <div className="space-y-6">
+                <div className="p-4 bg-violet-500/10 border border-violet-500/30 rounded-xl">
+                  <h3 className="text-lg font-medium text-violet-300 mb-2 flex items-center gap-2">
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                    </svg>
+                    B-Xtrender Quant Konfiguration
+                  </h3>
+                  <p className="text-sm text-gray-400 mb-6">
+                    Basiert auf dem QuantTherapy Backtest Edition Algorithmus. Kauft wenn BEIDE Indikatoren positiv sind, verkauft wenn EINER negativ wird.
+                  </p>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+                    {/* Short-Term Settings */}
+                    <div className="bg-dark-800 rounded-lg p-4">
+                      <label className="text-sm text-violet-400 font-medium block mb-2">Short L1</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="200"
+                        value={quantConfig.short_l1 || 5}
+                        onChange={(e) => updateQuantConfigValue('short_l1', e.target.value)}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-white mb-2"
+                      />
+                      <p className="text-xs text-gray-500">Schnelle EMA-Periode. Höher = glatter, weniger rauschig. Niedriger = reaktionsschneller.</p>
+                    </div>
+                    <div className="bg-dark-800 rounded-lg p-4">
+                      <label className="text-sm text-violet-400 font-medium block mb-2">Short L2</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="200"
+                        value={quantConfig.short_l2 || 20}
+                        onChange={(e) => updateQuantConfigValue('short_l2', e.target.value)}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-white mb-2"
+                      />
+                      <p className="text-xs text-gray-500">Langsame EMA-Periode. Höher = stabilere Signale. Niedriger = mehr Trades.</p>
+                    </div>
+                    <div className="bg-dark-800 rounded-lg p-4">
+                      <label className="text-sm text-violet-400 font-medium block mb-2">Short L3</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="200"
+                        value={quantConfig.short_l3 || 15}
+                        onChange={(e) => updateQuantConfigValue('short_l3', e.target.value)}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-white mb-2"
+                      />
+                      <p className="text-xs text-gray-500">RSI-Periode für kurzfristigen Indikator. Höher = weniger Schwankungen.</p>
+                    </div>
+
+                    {/* Long-Term Settings */}
+                    <div className="bg-dark-800 rounded-lg p-4">
+                      <label className="text-sm text-violet-400 font-medium block mb-2">Long L1</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="200"
+                        value={quantConfig.long_l1 || 20}
+                        onChange={(e) => updateQuantConfigValue('long_l1', e.target.value)}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-white mb-2"
+                      />
+                      <p className="text-xs text-gray-500">EMA-Periode für langfristigen Indikator. Höher = langsamere Trenderfassung.</p>
+                    </div>
+                    <div className="bg-dark-800 rounded-lg p-4">
+                      <label className="text-sm text-violet-400 font-medium block mb-2">Long L2</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="200"
+                        value={quantConfig.long_l2 || 15}
+                        onChange={(e) => updateQuantConfigValue('long_l2', e.target.value)}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-white mb-2"
+                      />
+                      <p className="text-xs text-gray-500">RSI-Periode für langfristigen Indikator. Höher = stabilere Signale.</p>
+                    </div>
+
+                    {/* MA Filter Settings */}
+                    <div className="bg-dark-800 rounded-lg p-4">
+                      <label className="text-sm text-violet-400 font-medium block mb-2">MA Filter</label>
+                      <button
+                        onClick={() => updateQuantConfigValue('ma_filter_on', !quantConfig.ma_filter_on)}
+                        className={`px-4 py-2 rounded font-bold transition-colors mb-2 ${
+                          quantConfig.ma_filter_on
+                            ? 'bg-violet-500 text-white'
+                            : 'bg-dark-600 text-gray-400'
+                        }`}
+                      >
+                        {quantConfig.ma_filter_on ? 'AN' : 'AUS'}
+                      </button>
+                      <p className="text-xs text-gray-500">Kauft nur wenn Preis über MA liegt. AN = konservativer, weniger Trades in Bärenmärkten.</p>
+                    </div>
+                    <div className="bg-dark-800 rounded-lg p-4">
+                      <label className="text-sm text-violet-400 font-medium block mb-2">MA Länge</label>
+                      <input
+                        type="number"
+                        min="10"
+                        max="500"
+                        value={quantConfig.ma_length || 200}
+                        onChange={(e) => updateQuantConfigValue('ma_length', e.target.value)}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-white mb-2"
+                      />
+                      <p className="text-xs text-gray-500">Perioden für MA-Filter. 200 = klassisch. Höher = langfristigerer Trend.</p>
+                    </div>
+                    <div className="bg-dark-800 rounded-lg p-4">
+                      <label className="text-sm text-violet-400 font-medium block mb-2">MA Typ</label>
+                      <select
+                        value={quantConfig.ma_type || 'EMA'}
+                        onChange={(e) => updateQuantConfigValue('ma_type', e.target.value)}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-white mb-2"
+                      >
+                        <option value="SMA">SMA (Simple)</option>
+                        <option value="EMA">EMA (Exponential)</option>
+                      </select>
+                      <p className="text-xs text-gray-500">SMA = gleichmäßig gewichtet. EMA = reagiert schneller auf aktuelle Preise.</p>
+                    </div>
+
+                    {/* TSL Percent */}
+                    <div className="bg-dark-800 rounded-lg p-4">
+                      <label className="text-sm text-violet-400 font-medium block mb-2">TSL Prozent</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="100"
+                        step="0.5"
+                        value={quantConfig.tsl_percent || 20}
+                        onChange={(e) => updateQuantConfigValue('tsl_percent', e.target.value)}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-white mb-2"
+                      />
+                      <p className="text-xs text-gray-500">Trailing Stop Loss in %. Höher = mehr Spielraum. Niedriger = schnellerer Ausstieg bei Verlust.</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-4 border-t border-violet-500/20">
+                    <div className="text-sm text-gray-400">
+                      <strong className="text-violet-400">Entry:</strong> Short &gt; 0 UND Long &gt; 0 UND (Preis &gt; MA oder MA-Filter aus)<br/>
+                      <strong className="text-violet-400">Exit:</strong> Short &lt; 0 ODER Long &lt; 0
+                    </div>
+                    <button
+                      onClick={handleSaveQuantConfig}
+                      disabled={savingQuantConfig}
+                      className="px-6 py-2 bg-violet-500 hover:bg-violet-400 text-white rounded-lg font-medium disabled:opacity-50"
+                    >
+                      {savingQuantConfig ? 'Speichern...' : 'Speichern'}
+                    </button>
                   </div>
                 </div>
               </div>

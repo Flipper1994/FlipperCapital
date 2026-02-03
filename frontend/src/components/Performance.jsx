@@ -1,18 +1,30 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useCurrency } from '../context/CurrencyContext'
+import { useTradingMode } from '../context/TradingModeContext'
 
 function Performance({ token }) {
   const navigate = useNavigate()
+  const { mode, isDefensive, isAggressive, isQuant } = useTradingMode()
   const [trades, setTrades] = useState([])
   const [loading, setLoading] = useState(true)
   const [itemsPerPage, setItemsPerPage] = useState(10)
-  const [defensivePage, setDefensivePage] = useState(1)
-  const [aggressivePage, setAggressivePage] = useState(1)
-  const [defensiveSort, setDefensiveSort] = useState({ field: 'entry_date', dir: 'desc' })
-  const [aggressiveSort, setAggressiveSort] = useState({ field: 'entry_date', dir: 'desc' })
+  const [currentPage, setCurrentPage] = useState(1)
+  const [currentSort, setCurrentSort] = useState({ field: 'entry_date', dir: 'desc' })
   const [timeRange, setTimeRange] = useState('1y') // 1m, 1y, 2y, all
   const { formatPrice } = useCurrency()
+
+  // Filter state
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [filters, setFilters] = useState({
+    minWinrate: '',
+    maxWinrate: '',
+    minRR: '',
+    maxRR: '',
+    minAvgReturn: '',
+    maxAvgReturn: '',
+    minMarketCap: ''
+  })
 
   // Redirect to home if not logged in
   useEffect(() => {
@@ -69,9 +81,28 @@ function Performance({ token }) {
   }
   const cutoffDate = getCutoffDate()
 
-  // Filter trades by mode and time range
-  const defensiveTrades = trades.filter(t => t.mode === 'defensive' && t.entry_date >= cutoffDate)
-  const aggressiveTrades = trades.filter(t => t.mode === 'aggressive' && t.entry_date >= cutoffDate)
+  // Get current mode string
+  const currentMode = isQuant ? 'quant' : isAggressive ? 'aggressive' : 'defensive'
+
+  // Filter trades by current mode, time range, and custom filters
+  const applyFilters = (tradeList) => {
+    return tradeList.filter(t => {
+      // Filter by stock-level metrics (from backend)
+      if (filters.minWinrate && t.win_rate < parseFloat(filters.minWinrate)) return false
+      if (filters.maxWinrate && t.win_rate > parseFloat(filters.maxWinrate)) return false
+      if (filters.minRR && t.risk_reward < parseFloat(filters.minRR)) return false
+      if (filters.maxRR && t.risk_reward > parseFloat(filters.maxRR)) return false
+      if (filters.minAvgReturn && t.avg_return < parseFloat(filters.minAvgReturn)) return false
+      if (filters.maxAvgReturn && t.avg_return > parseFloat(filters.maxAvgReturn)) return false
+      if (filters.minMarketCap && t.market_cap < parseFloat(filters.minMarketCap) * 1e9) return false
+      return true
+    })
+  }
+
+  // Filter trades by mode and time range first
+  const modeFilteredTrades = trades.filter(t => t.mode === currentMode && t.entry_date >= cutoffDate)
+  // Then apply custom filters
+  const filteredTrades = applyFilters(modeFilteredTrades)
 
   // Calculate statistics
   const calcStats = (tradeList) => {
@@ -90,8 +121,7 @@ function Performance({ token }) {
     return { winRate, riskReward, totalReturn, avgReturn, tradeCount: tradeList.length, wins: wins.length, losses: losses.length }
   }
 
-  const defensiveStats = calcStats(defensiveTrades)
-  const aggressiveStats = calcStats(aggressiveTrades)
+  const stats = calcStats(filteredTrades)
 
   // Sort function
   const sortTrades = (tradeList, sort) => {
@@ -105,21 +135,46 @@ function Performance({ token }) {
     })
   }
 
-  const sortedDefensive = sortTrades(defensiveTrades, defensiveSort)
-  const sortedAggressive = sortTrades(aggressiveTrades, aggressiveSort)
+  const sortedTrades = sortTrades(filteredTrades, currentSort)
 
   // Pagination
-  const defensivePages = Math.ceil(sortedDefensive.length / itemsPerPage) || 1
-  const aggressivePages = Math.ceil(sortedAggressive.length / itemsPerPage) || 1
+  const totalPages = Math.ceil(sortedTrades.length / itemsPerPage) || 1
 
-  const paginatedDefensive = sortedDefensive.slice(
-    (defensivePage - 1) * itemsPerPage,
-    defensivePage * itemsPerPage
+  const paginatedTrades = sortedTrades.slice(
+    (currentPage - 1) * itemsPerPage,
+    currentPage * itemsPerPage
   )
-  const paginatedAggressive = sortedAggressive.slice(
-    (aggressivePage - 1) * itemsPerPage,
-    aggressivePage * itemsPerPage
-  )
+
+  // Reset page when mode or filters change
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [mode, filters, timeRange])
+
+  // Get mode display info
+  const getModeInfo = () => {
+    if (isQuant) return { title: 'Quant', color: 'from-violet-500/20 to-transparent' }
+    if (isAggressive) return { title: 'Aggressiv', color: 'from-orange-500/20 to-transparent' }
+    return { title: 'Defensiv', color: 'from-blue-500/20 to-transparent' }
+  }
+  const modeInfo = getModeInfo()
+
+  const handleFilterChange = (field, value) => {
+    setFilters(prev => ({ ...prev, [field]: value }))
+  }
+
+  const clearFilters = () => {
+    setFilters({
+      minWinrate: '',
+      maxWinrate: '',
+      minRR: '',
+      maxRR: '',
+      minAvgReturn: '',
+      maxAvgReturn: '',
+      minMarketCap: ''
+    })
+  }
+
+  const hasActiveFilters = Object.values(filters).some(v => v !== '')
 
   const formatDate = (timestamp) => {
     if (!timestamp) return '-'
@@ -136,26 +191,26 @@ function Performance({ token }) {
     return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
   }
 
-  const SortButton = ({ field, sort, setSort, children }) => {
-    const isActive = sort.field === field
+  const SortButton = ({ field, children }) => {
+    const isActive = currentSort.field === field
     const handleClick = () => {
       if (isActive) {
-        setSort({ field, dir: sort.dir === 'asc' ? 'desc' : 'asc' })
+        setCurrentSort({ field, dir: currentSort.dir === 'asc' ? 'desc' : 'asc' })
       } else {
-        setSort({ field, dir: 'desc' })
+        setCurrentSort({ field, dir: 'desc' })
       }
     }
     return (
       <button onClick={handleClick} className="flex items-center gap-1 hover:text-white transition-colors">
         {children}
         {isActive && (
-          <span className="text-accent-400">{sort.dir === 'asc' ? '↑' : '↓'}</span>
+          <span className="text-accent-400">{currentSort.dir === 'asc' ? '↑' : '↓'}</span>
         )}
       </button>
     )
   }
 
-  const TradeTable = ({ data, page, setPage, totalPages, title, color, stats, sort, setSort, paginatedData }) => (
+  const TradeTable = ({ data, page, setPage, totalPages, title, color, stats, paginatedData }) => (
     <div className="flex-1 min-w-0">
       <div className="bg-dark-800 rounded-xl border border-dark-600 overflow-hidden h-full flex flex-col">
         <div className={`p-4 border-b border-dark-600 bg-gradient-to-r ${color}`}>
@@ -210,13 +265,13 @@ function Performance({ token }) {
                   <tr>
                     <th className="px-3 py-3 text-left text-xs font-medium text-gray-400 uppercase">Symbol</th>
                     <th className="px-3 py-3 text-center text-xs font-medium text-gray-400 uppercase">
-                      <SortButton field="entry_date" sort={sort} setSort={setSort}>BUY</SortButton>
+                      <SortButton field="entry_date">BUY</SortButton>
                     </th>
                     <th className="px-3 py-3 text-right text-xs font-medium text-gray-400 uppercase">Einstieg</th>
                     <th className="px-3 py-3 text-center text-xs font-medium text-gray-400 uppercase">SELL / OPEN</th>
                     <th className="px-3 py-3 text-right text-xs font-medium text-gray-400 uppercase">Ausstieg</th>
                     <th className="px-3 py-3 text-right text-xs font-medium text-gray-400 uppercase">
-                      <SortButton field="return_pct" sort={sort} setSort={setSort}>Rendite</SortButton>
+                      <SortButton field="return_pct">Rendite</SortButton>
                     </th>
                   </tr>
                 </thead>
@@ -337,10 +392,10 @@ function Performance({ token }) {
   ]
 
   return (
-    <div className="p-4 md:p-6 h-full flex flex-col max-w-7xl mx-auto w-full">
+    <div className="p-4 md:p-6 h-full flex flex-col max-w-4xl mx-auto w-full">
       <div className="mb-4 text-center">
         <h1 className="text-2xl font-bold text-white">Performance</h1>
-        <p className="text-gray-400 mt-1">Trade-Historie der Watchlist</p>
+        <p className="text-gray-400 mt-1">Trade-Historie der Watchlist - {modeInfo.title} Modus</p>
       </div>
 
       {/* Time Range Selection */}
@@ -349,11 +404,7 @@ function Performance({ token }) {
           {timeRangeOptions.map((option) => (
             <button
               key={option.value}
-              onClick={() => {
-                setTimeRange(option.value)
-                setDefensivePage(1)
-                setAggressivePage(1)
-              }}
+              onClick={() => setTimeRange(option.value)}
               className={`px-4 py-2 text-sm font-medium rounded-md transition-all ${
                 timeRange === option.value
                   ? 'bg-accent-500 text-white'
@@ -366,31 +417,135 @@ function Performance({ token }) {
         </div>
       </div>
 
-      {/* Two Column Layout */}
-      <div className="flex-1 flex flex-col md:flex-row gap-4 min-h-0">
+      {/* Collapsible Filter Panel */}
+      <div className="mb-4 bg-dark-800 rounded-xl border border-dark-600 overflow-hidden">
+        <button
+          onClick={() => setFiltersOpen(!filtersOpen)}
+          className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-dark-700/50 transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+            </svg>
+            <span className="text-white font-medium">Filter</span>
+            {hasActiveFilters && (
+              <span className="px-2 py-0.5 text-xs bg-accent-500 text-white rounded-full">Aktiv</span>
+            )}
+          </div>
+          <svg className={`w-5 h-5 text-gray-400 transition-transform ${filtersOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        {filtersOpen && (
+          <div className="px-4 pb-4 border-t border-dark-600">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
+              {/* Winrate Filter */}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Winrate (%)</label>
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    placeholder="Min"
+                    value={filters.minWinrate}
+                    onChange={(e) => handleFilterChange('minWinrate', e.target.value)}
+                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500"
+                  />
+                  <input
+                    type="number"
+                    placeholder="Max"
+                    value={filters.maxWinrate}
+                    onChange={(e) => handleFilterChange('maxWinrate', e.target.value)}
+                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500"
+                  />
+                </div>
+              </div>
+
+              {/* Risk/Reward Filter */}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Risk/Reward</label>
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    step="0.1"
+                    placeholder="Min"
+                    value={filters.minRR}
+                    onChange={(e) => handleFilterChange('minRR', e.target.value)}
+                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500"
+                  />
+                  <input
+                    type="number"
+                    step="0.1"
+                    placeholder="Max"
+                    value={filters.maxRR}
+                    onChange={(e) => handleFilterChange('maxRR', e.target.value)}
+                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500"
+                  />
+                </div>
+              </div>
+
+              {/* Avg Return Filter */}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Ø Rendite (%)</label>
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    step="0.1"
+                    placeholder="Min"
+                    value={filters.minAvgReturn}
+                    onChange={(e) => handleFilterChange('minAvgReturn', e.target.value)}
+                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500"
+                  />
+                  <input
+                    type="number"
+                    step="0.1"
+                    placeholder="Max"
+                    value={filters.maxAvgReturn}
+                    onChange={(e) => handleFilterChange('maxAvgReturn', e.target.value)}
+                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500"
+                  />
+                </div>
+              </div>
+
+              {/* Market Cap Filter */}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Min Market Cap (Mrd)</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  placeholder="z.B. 10"
+                  value={filters.minMarketCap}
+                  onChange={(e) => handleFilterChange('minMarketCap', e.target.value)}
+                  className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500"
+                />
+              </div>
+            </div>
+
+            {hasActiveFilters && (
+              <div className="mt-3 flex justify-end">
+                <button
+                  onClick={clearFilters}
+                  className="px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+                >
+                  Filter zurücksetzen
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Single Mode Table */}
+      <div className="flex-1 min-h-0">
         <TradeTable
-          data={sortedDefensive}
-          paginatedData={paginatedDefensive}
-          page={defensivePage}
-          setPage={setDefensivePage}
-          totalPages={defensivePages}
-          title="Defensiv"
-          color="from-blue-500/20 to-transparent"
-          stats={defensiveStats}
-          sort={defensiveSort}
-          setSort={setDefensiveSort}
-        />
-        <TradeTable
-          data={sortedAggressive}
-          paginatedData={paginatedAggressive}
-          page={aggressivePage}
-          setPage={setAggressivePage}
-          totalPages={aggressivePages}
-          title="Aggressiv"
-          color="from-orange-500/20 to-transparent"
-          stats={aggressiveStats}
-          sort={aggressiveSort}
-          setSort={setAggressiveSort}
+          data={sortedTrades}
+          paginatedData={paginatedTrades}
+          page={currentPage}
+          setPage={setCurrentPage}
+          totalPages={totalPages}
+          title={modeInfo.title}
+          color={modeInfo.color}
+          stats={stats}
         />
       </div>
     </div>

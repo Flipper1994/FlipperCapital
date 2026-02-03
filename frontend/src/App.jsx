@@ -14,6 +14,7 @@ import AdminPanel from './components/AdminPanel'
 import FlipperBot from './components/FlipperBot'
 import FlipperBotLab from './components/FlipperBotLab'
 import LutzLab from './components/LutzLab'
+import QuantLab from './components/QuantLab'
 import Performance from './components/Performance'
 import Help from './components/Help'
 
@@ -149,6 +150,10 @@ function App() {
               <Route
                 path="/lutz-lab"
                 element={<LutzLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} />}
+              />
+              <Route
+                path="/quant-lab"
+                element={<QuantLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} />}
               />
             </Routes>
           </div>

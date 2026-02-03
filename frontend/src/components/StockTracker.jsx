@@ -74,7 +74,7 @@ function StockTracker() {
   const [signalFilter, setSignalFilter] = useState(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [, forceUpdate] = useState(0)
-  const { mode, isAggressive } = useTradingMode()
+  const { mode, isAggressive, isQuant, isDefensive } = useTradingMode()
   const { formatPrice } = useCurrency()
 
   // Selected month - default to PREVIOUS month (signal is based on last completed month)
@@ -96,12 +96,17 @@ function StockTracker() {
 
   useEffect(() => {
     fetchStocks()
-  }, [isAggressive])
+  }, [mode])
 
   const fetchStocks = async () => {
     setLoading(true)
     try {
-      const endpoint = isAggressive ? '/api/performance/aggressive' : '/api/performance'
+      let endpoint = '/api/performance'
+      if (isQuant) {
+        endpoint = '/api/performance/quant'
+      } else if (isAggressive) {
+        endpoint = '/api/performance/aggressive'
+      }
       const res = await fetch(endpoint)
       const data = await res.json()
       setStocks(data || [])
@@ -121,8 +126,9 @@ function StockTracker() {
 
     return stocks.map(stock => {
       const trades = stock.trades || []
-      const currentSignal = calculateSignalForMonth(trades, year, month - 1, isAggressive)
-      const prevSignal = calculateSignalForMonth(trades, prevYear, prevMonth - 1, isAggressive)
+      // All modes use the same trade-based signal calculation
+      const currentSignal = calculateSignalForMonth(trades, year, month - 1, isAggressive || isQuant)
+      const prevSignal = calculateSignalForMonth(trades, prevYear, prevMonth - 1, isAggressive || isQuant)
 
       const signalChanged = currentSignal.signal !== prevSignal.signal
 
@@ -137,7 +143,7 @@ function StockTracker() {
           : currentSignal.signal
       }
     })
-  }, [stocks, selectedMonth, isAggressive])
+  }, [stocks, selectedMonth, isAggressive, isQuant])
 
   // Signal priority for sorting
   const signalPriority = { 'BUY': 0, 'SELL': 1, 'HOLD': 2, 'WAIT': 3 }
@@ -293,11 +299,20 @@ function StockTracker() {
               <h1 className="text-xl md:text-2xl font-bold text-white">Aktien Tracker</h1>
               <span className="text-accent-400 font-medium">- {selectedMonthLabel}</span>
               <span className={`px-2 py-1 text-xs font-bold rounded flex items-center gap-1.5 ${
-                isAggressive
-                  ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
-                  : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                isQuant
+                  ? 'bg-violet-500/20 text-violet-400 border border-violet-500/30'
+                  : isAggressive
+                    ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
+                    : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
               }`}>
-                {isAggressive ? (
+                {isQuant ? (
+                  <>
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                    </svg>
+                    Quant
+                  </>
+                ) : isAggressive ? (
                   <>
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z" />
@@ -328,7 +343,8 @@ function StockTracker() {
           </div>
           <p className="text-gray-500 text-sm mt-1">
             BX Trender Signale basierend auf abgeschlossenem Monat
-            {isAggressive && <span className="text-orange-400"> (Aggressive Signale)</span>}
+            {isQuant && <span className="text-violet-400"> (Quant Signale: Beide Indikatoren positiv = BUY)</span>}
+            {isAggressive && !isQuant && <span className="text-orange-400"> (Aggressive Signale)</span>}
           </p>
 
           {/* Search Input */}
@@ -474,7 +490,7 @@ function StockTracker() {
                       {stock.monthSignal}
                     </span>
                   </div>
-                  <div className="grid grid-cols-3 gap-2 text-sm">
+                  <div className="grid grid-cols-4 gap-2 text-sm">
                     <div>
                       <div className="text-xs text-gray-500">Win Rate</div>
                       <div className={`font-medium ${stock.win_rate >= 50 ? 'text-green-400' : 'text-red-400'}`}>
@@ -482,9 +498,15 @@ function StockTracker() {
                       </div>
                     </div>
                     <div>
-                      <div className="text-xs text-gray-500">Total Return</div>
+                      <div className="text-xs text-gray-500">Total</div>
                       <div className={`font-medium ${stock.total_return >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                         {formatPercent(stock.total_return)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500">Ø/Trade</div>
+                      <div className={`font-medium ${(stock.avg_return || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {formatPercent(stock.avg_return)}
                       </div>
                     </div>
                     <div>
@@ -544,6 +566,12 @@ function StockTracker() {
                       </th>
                       <th
                         className="p-4 cursor-pointer hover:text-white transition-colors text-right"
+                        onClick={() => handleSort('avg_return')}
+                      >
+                        Ø/Trade <SortIcon field="avg_return" />
+                      </th>
+                      <th
+                        className="p-4 cursor-pointer hover:text-white transition-colors text-right"
                         onClick={() => handleSort('total_trades')}
                       >
                         Trades <SortIcon field="total_trades" />
@@ -579,6 +607,9 @@ function StockTracker() {
                         </td>
                         <td className={`p-4 text-right font-bold ${stock.total_return >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                           {formatPercent(stock.total_return)}
+                        </td>
+                        <td className={`p-4 text-right font-medium ${(stock.avg_return || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {formatPercent(stock.avg_return)}
                         </td>
                         <td className="p-4 text-right">
                           <span className="text-white">{stock.total_trades}</span>
@@ -711,7 +742,7 @@ function StockTracker() {
               </div>
 
               {/* Stats */}
-              <div className="p-4 border-b border-dark-600 grid grid-cols-3 md:grid-cols-6 gap-3">
+              <div className="p-4 border-b border-dark-600 grid grid-cols-4 md:grid-cols-7 gap-3">
                 <div className="bg-dark-700 rounded-lg p-3 text-center">
                   <div className="text-xs text-gray-500">Kurs</div>
                   <div className="text-lg font-bold text-white">{formatPrice(selectedStock.current_price, selectedStock.symbol)}</div>
@@ -729,9 +760,15 @@ function StockTracker() {
                   </div>
                 </div>
                 <div className="bg-dark-700 rounded-lg p-3 text-center">
-                  <div className="text-xs text-gray-500">Total Return</div>
+                  <div className="text-xs text-gray-500">Total</div>
                   <div className={`text-lg font-bold ${selectedStock.total_return >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                     {formatPercent(selectedStock.total_return)}
+                  </div>
+                </div>
+                <div className="bg-dark-700 rounded-lg p-3 text-center">
+                  <div className="text-xs text-gray-500">Ø/Trade</div>
+                  <div className={`text-lg font-bold ${(selectedStock.avg_return || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {formatPercent(selectedStock.avg_return)}
                   </div>
                 </div>
                 <div className="bg-dark-700 rounded-lg p-3 text-center">

@@ -261,7 +261,7 @@ function PortfolioCompareContent({ token }) {
                     {/* Expanded Positions */}
                     {expandedPortfolio === portfolio.user_id && (
                       <div className="px-4 pb-4 space-y-2">
-                        {portfolio.positions.map((pos, idx) => (
+                        {portfolio.positions.slice().sort((a, b) => (b.total_return_pct || 0) - (a.total_return_pct || 0)).map((pos, idx) => (
                           <div key={idx} className="bg-dark-700 rounded-lg p-3">
                             <div className="flex justify-between items-start mb-2">
                               <div>
@@ -390,7 +390,7 @@ function PortfolioCompareContent({ token }) {
                                     </tr>
                                   </thead>
                                   <tbody>
-                                    {portfolio.positions.map((pos, idx) => (
+                                    {portfolio.positions.slice().sort((a, b) => (b.total_return_pct || 0) - (a.total_return_pct || 0)).map((pos, idx) => (
                                       <tr key={idx} className={`border-t border-dark-700/50 ${pos.is_live ? 'bg-green-500/5' : ''}`}>
                                         <td className="py-2 font-medium text-white flex items-center gap-2">
                                           {pos.symbol}
