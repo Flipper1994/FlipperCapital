@@ -614,6 +614,36 @@ export function calculateBXtrenderQuant(ohlcv, config = null) {
       returnPct: unrealizedReturn,
       isOpen: true
     })
+  } else if (!inPosition && closes.length > 0 && shortTermXtrender.length > 0 && longTermXtrender.length > 0) {
+    // Not in position but check if current conditions warrant a BUY signal
+    // If both indicators are positive now, add an open trade for consistency
+    const lastIdx = closes.length - 1
+    const lastShort = shortTermXtrender[lastIdx]
+    const lastLong = longTermXtrender[lastIdx]
+    const lastPrice = closes[lastIdx]
+    const lastMA = ma ? ma[lastIdx] : 0
+    const maConditionMet = !maFilterOn || lastPrice > lastMA
+
+    if (lastShort > 0 && lastLong > 0 && maConditionMet) {
+      // Conditions for BUY are met now - add open trade at current price
+      trades.push({
+        entryDate: times[lastIdx],
+        entryPrice: lastPrice,
+        exitDate: null,
+        exitPrice: null,
+        currentPrice: lastPrice,
+        returnPct: 0,
+        isOpen: true
+      })
+
+      markers.push({
+        time: times[lastIdx],
+        position: 'belowBar',
+        color: '#00FF00',
+        shape: 'arrowUp',
+        text: `BUY $${lastPrice.toFixed(2)}`
+      })
+    }
   }
 
   return { short: shortData, long: longData, signal: signalData, trades, markers }

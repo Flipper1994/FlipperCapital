@@ -14,7 +14,12 @@ function ChartArea({ stock, stocks, onBacktestUpdate, onSelectStock, backtestDat
     return () => window.removeEventListener('currencyChanged', handleCurrencyChange)
   }, [])
 
+  const [currentSignal, setCurrentSignal] = useState(null)
+
   const handleTradesUpdate = useCallback((data) => {
+    if (data.signal) {
+      setCurrentSignal(data.signal)
+    }
     if (onBacktestUpdate) {
       onBacktestUpdate(data)
     }
@@ -284,9 +289,14 @@ function ChartArea({ stock, stocks, onBacktestUpdate, onSelectStock, backtestDat
         <div>
           <div className="flex items-center gap-3">
             <h2 className="text-2xl font-bold text-white">{stock.symbol}</h2>
-            {changeData && (
-              <span className={`px-2 py-1 rounded text-xs font-medium ${changeData.isPositive ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
-                {changeData.isPositive ? 'UP' : 'DOWN'}
+            {currentSignal && (
+              <span className={`px-2 py-1 rounded text-xs font-bold ${
+                currentSignal === 'BUY' ? 'bg-green-500/20 text-green-400' :
+                currentSignal === 'SELL' ? 'bg-red-500/20 text-red-400' :
+                currentSignal === 'HOLD' ? 'bg-blue-500/20 text-blue-400' :
+                'bg-gray-500/20 text-gray-400'
+              }`}>
+                {currentSignal}
               </span>
             )}
           </div>

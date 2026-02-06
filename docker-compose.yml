@@ -17,6 +17,7 @@ services:
     environment:
       - ADMIN_PASSWORD=admin123
       - DB_PATH=/data/watchlist.db
+      - TZ=Europe/Berlin
     volumes:
       - ./watchlist.db:/data/watchlist.db
     networks:

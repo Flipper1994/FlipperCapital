@@ -126,9 +126,25 @@ function StockTracker() {
 
     return stocks.map(stock => {
       const trades = stock.trades || []
-      // All modes use the same trade-based signal calculation
-      const currentSignal = calculateSignalForMonth(trades, year, month - 1, isAggressive || isQuant)
-      const prevSignal = calculateSignalForMonth(trades, prevYear, prevMonth - 1, isAggressive || isQuant)
+
+      // In Quant mode: use the real-time indicator signal from backend
+      // In other modes: calculate signal based on historical trades for the month
+      if (isQuant) {
+        // Quant mode uses the current indicator signal (both indicators positive = BUY)
+        // This matches what the Quant Bot uses for trading decisions
+        return {
+          ...stock,
+          monthSignal: stock.signal || 'WAIT',
+          prevMonthSignal: stock.signal || 'WAIT', // No historical comparison in Quant
+          signalChanged: false,
+          currentTrade: null,
+          displaySignal: stock.signal || 'WAIT'
+        }
+      }
+
+      // Defensive/Aggressive mode: trade-based signal calculation
+      const currentSignal = calculateSignalForMonth(trades, year, month - 1, isAggressive)
+      const prevSignal = calculateSignalForMonth(trades, prevYear, prevMonth - 1, isAggressive)
 
       const signalChanged = currentSignal.signal !== prevSignal.signal
 
@@ -540,6 +556,8 @@ function StockTracker() {
                       >
                         Signal <SortIcon field="signal" />
                       </th>
+                      <th className="p-4 text-xs">Seit</th>
+                      <th className="p-4 text-xs">Vorheriges</th>
                       <th
                         className="p-4 cursor-pointer hover:text-white transition-colors text-right"
                         onClick={() => handleSort('current_price')}
@@ -597,6 +615,21 @@ function StockTracker() {
                           <span className={`px-2 py-1 text-xs font-bold rounded border ${getSignalStyle(stock.monthSignal)}`}>
                             {stock.monthSignal}
                           </span>
+                        </td>
+                        <td className="p-4 text-xs text-gray-400">
+                          {stock.signal_since ? new Date(stock.signal_since).toLocaleDateString('de-DE', { month: 'short', year: '2-digit' }) : '-'}
+                        </td>
+                        <td className="p-4">
+                          {stock.prev_signal ? (
+                            <div className="flex items-center gap-1">
+                              <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded ${getSignalStyle(stock.prev_signal)}`}>
+                                {stock.prev_signal}
+                              </span>
+                              <span className="text-[10px] text-gray-500">
+                                {stock.prev_signal_since ? new Date(stock.prev_signal_since).toLocaleDateString('de-DE', { month: 'short', year: '2-digit' }) : ''}
+                              </span>
+                            </div>
+                          ) : <span className="text-gray-600 text-xs">-</span>}
                         </td>
                         <td className="p-4 text-right text-white">{formatPrice(stock.current_price, stock.symbol)}</td>
                         <td className={`p-4 text-right font-medium ${stock.win_rate >= 50 ? 'text-green-400' : 'text-red-400'}`}>
@@ -725,8 +758,8 @@ function StockTracker() {
                 <div>
                   <h2 className="text-xl font-bold text-white flex items-center gap-3">
                     {selectedStock.symbol}
-                    <span className={`px-2 py-1 text-xs font-bold rounded border ${getSignalStyle(selectedStock.signal)}`}>
-                      {selectedStock.signal}
+                    <span className={`px-2 py-1 text-xs font-bold rounded border ${getSignalStyle(selectedStock.monthSignal || selectedStock.signal)}`}>
+                      {selectedStock.monthSignal || selectedStock.signal}
                     </span>
                   </h2>
                   <p className="text-gray-500 text-sm">{selectedStock.name}</p>

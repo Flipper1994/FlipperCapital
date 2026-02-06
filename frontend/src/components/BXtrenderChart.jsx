@@ -5,6 +5,7 @@ import {
   calculateBXtrender,
   calculateBXtrenderQuant,
   calculateMetrics,
+  calculateSignal,
   savePerformanceToBackend,
   saveQuantPerformanceToBackend,
   fetchBXtrenderConfig,
@@ -114,10 +115,26 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
           return
         }
 
-        // Calculate and report metrics
+        // Calculate current signal and report metrics
         const metrics = calculateMetrics(trades)
+        let currentSignal = 'WAIT'
+        if (isQuant) {
+          // Quant signal: check both indicators at second-to-last bar
+          if (short.length >= 2 && long.length >= 2) {
+            const idx = short.length - 2
+            const sv = short[idx].value
+            const lv = long[idx].value
+            const hasOpen = trades && trades.some(t => t.isOpen)
+            if (sv > 0 && lv > 0) currentSignal = hasOpen ? 'HOLD' : 'BUY'
+            else if (hasOpen) currentSignal = 'SELL'
+            else currentSignal = sv < 0 && lv < 0 ? 'SELL' : 'WAIT'
+          }
+        } else {
+          const sig = calculateSignal(short, isAggressive, trades)
+          currentSignal = sig.signal
+        }
         if (onTradesUpdate) {
-          onTradesUpdate({ trades, metrics })
+          onTradesUpdate({ trades, metrics, signal: currentSignal })
         }
 
         // Get current price and save to backend (only for monthly timeframe)
@@ -193,15 +210,24 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
           histogramSeries.setMarkers(markers)
         }
 
-        // Add signal line (T3)
+        // Add long-term Xtrender as colored line (like TradingView)
+        const longSeries = chart.addLineSeries({
+          lineWidth: 2,
+          priceScaleId: 'right',
+          lastValueVisible: false,
+          priceLineVisible: false,
+          crosshairMarkerVisible: false,
+        })
+        longSeries.setData(long.map(d => ({ time: d.time, value: d.value, color: d.color })))
+
+        // Add signal line (T3) with per-point coloring
         const signalSeries = chart.addLineSeries({
-          color: '#ffffff',
           lineWidth: 2,
           priceScaleId: 'right',
           lastValueVisible: false,
           priceLineVisible: false,
         })
-        signalSeries.setData(signal.map(d => ({ time: d.time, value: d.value })))
+        signalSeries.setData(signal.map(d => ({ time: d.time, value: d.value, color: d.color })))
 
         // Add zero line
         const zeroLine = chart.addLineSeries({
