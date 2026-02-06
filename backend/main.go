@@ -7940,38 +7940,32 @@ func deleteQuantTrade(c *gin.Context) {
 
 	if trade.Action == "BUY" {
 		if !wasDeleted {
-			// Soft-deleting a BUY → close position, remove from portfolio
-			var pos QuantPosition
-			if err := db.Where("symbol = ? AND is_closed = ?", symbol, false).First(&pos).Error; err == nil {
-				pos.IsClosed = true
-				pos.UpdatedAt = time.Now()
-				db.Save(&pos)
-			}
+			// Soft-deleting a BUY → delete position and portfolio entry
+			db.Where("symbol = ? AND is_closed = ?", symbol, false).Delete(&QuantPosition{})
 			db.Where("user_id = ? AND symbol = ?", QUANT_USER_ID, symbol).Delete(&PortfolioPosition{})
 		} else {
-			// Restoring a BUY → reopen position, recreate portfolio entry
-			var pos QuantPosition
-			if err := db.Where("symbol = ?", symbol).Order("updated_at desc").First(&pos).Error; err == nil {
-				pos.IsClosed = false
-				pos.SellPrice = 0
-				pos.SellDate = nil
-				pos.ProfitLoss = nil
-				pos.ProfitLossPct = nil
-				pos.UpdatedAt = time.Now()
-				db.Save(&pos)
-
-				qty := pos.Quantity
-				buyDate := pos.BuyDate
-				portfolioPos := PortfolioPosition{
-					UserID:       QUANT_USER_ID,
-					Symbol:       pos.Symbol,
-					Name:         pos.Name,
-					AvgPrice:     pos.AvgPrice,
-					PurchaseDate: &buyDate,
-					Quantity:     &qty,
-				}
-				db.Create(&portfolioPos)
+			// Restoring a BUY → recreate position and portfolio entry from trade data
+			qty := trade.Quantity
+			buyDate := trade.SignalDate
+			newPos := QuantPosition{
+				Symbol:   symbol,
+				Name:     trade.Name,
+				Quantity: qty,
+				AvgPrice: trade.Price,
+				IsLive:   trade.IsLive,
+				BuyDate:  buyDate,
 			}
+			db.Create(&newPos)
+
+			portfolioPos := PortfolioPosition{
+				UserID:       QUANT_USER_ID,
+				Symbol:       symbol,
+				Name:         trade.Name,
+				AvgPrice:     trade.Price,
+				PurchaseDate: &buyDate,
+				Quantity:     &qty,
+			}
+			db.Create(&portfolioPos)
 		}
 	} else if trade.Action == "SELL" {
 		if !wasDeleted {
