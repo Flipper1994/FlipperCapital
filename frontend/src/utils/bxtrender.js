@@ -445,7 +445,7 @@ export function calculateBXtrender(ohlcv, isAggressive = false, config = null) {
  * Entry: Both short-term AND long-term indicators positive (with optional MA filter)
  * Exit: Either short-term OR long-term indicator turns negative
  */
-export function calculateBXtrenderQuant(ohlcv, config = null) {
+export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant') {
   const cfg = config || DEFAULT_QUANT_CONFIG
   const shortL1 = cfg.shortL1 || cfg.short_l1 || 5
   const shortL2 = cfg.shortL2 || cfg.short_l2 || 20
@@ -558,8 +558,10 @@ export function calculateBXtrenderQuant(ohlcv, config = null) {
       maFilterLong &&
       (shortPrev <= 0 || longPrev <= 0) // At least one was negative before
 
-    // Exit condition: EITHER indicator turns negative
-    const exitSignal = inPosition && (shortVal < 0 || longVal < 0)
+    // Exit condition: Ditz = BOTH negative (line turns red), Quant = EITHER negative
+    const exitSignal = inPosition && (mode === 'ditz'
+      ? (shortVal < 0 && longVal < 0)
+      : (shortVal < 0 || longVal < 0))
 
     if (entrySignal && opens[i] > 0) {
       // Enter at next bar open (signal evaluated at bar close)
@@ -938,10 +940,56 @@ export async function saveQuantPerformanceToBackend(symbol, name, metrics, trade
   }
 }
 
+// Calculate signal for Ditz mode (hold through mixed signals)
+function calculateDitzSignal(shortData, longData, trades) {
+  if (!shortData || shortData.length < 2 || !longData || longData.length < 2) {
+    return { signal: 'WAIT', bars: 0 }
+  }
+
+  const idx = shortData.length - 2
+  const shortVal = shortData[idx].value
+  const longVal = longData[idx].value
+
+  const hasOpenPosition = trades && trades.some(t => t.isOpen)
+
+  let consecutiveBars = 1
+  const bothPositive = shortVal > 0 && longVal > 0
+  const bothNegative = shortVal < 0 && longVal < 0
+
+  for (let i = idx - 1; i >= 0; i--) {
+    const sv = shortData[i].value
+    const lv = longData[i].value
+    const wasPositive = sv > 0 && lv > 0
+    const wasNegative = sv < 0 && lv < 0
+
+    if ((bothPositive && wasPositive) || (bothNegative && wasNegative)) {
+      consecutiveBars++
+    } else {
+      break
+    }
+  }
+
+  if (bothPositive) {
+    return consecutiveBars <= 2
+      ? { signal: 'BUY', bars: consecutiveBars }
+      : { signal: 'HOLD', bars: consecutiveBars }
+  } else if (bothNegative) {
+    return consecutiveBars <= 2
+      ? { signal: 'SELL', bars: consecutiveBars }
+      : { signal: 'WAIT', bars: consecutiveBars }
+  } else {
+    // Mixed signals - HOLD position (don't exit until both negative)
+    if (hasOpenPosition) {
+      return { signal: 'HOLD', bars: 1 }
+    }
+    return { signal: 'WAIT', bars: 1 }
+  }
+}
+
 // Save Ditz mode performance data to backend
 export async function saveDitzPerformanceToBackend(symbol, name, metrics, trades, shortData, longData, currentPrice, marketCap = 0) {
   try {
-    const { signal, bars } = calculateQuantSignal(shortData, longData, trades)
+    const { signal, bars } = calculateDitzSignal(shortData, longData, trades)
 
     const res = await fetch('/api/performance/ditz', {
       method: 'POST',
@@ -1005,14 +1053,10 @@ function calculateQuantSignal(shortData, longData, trades) {
   }
 
   if (bothPositive) {
-    // Both indicators positive
-    if (hasOpenPosition) {
-      return consecutiveBars <= 2
-        ? { signal: 'BUY', bars: consecutiveBars }
-        : { signal: 'HOLD', bars: consecutiveBars }
-    } else {
-      return { signal: 'BUY', bars: consecutiveBars }
-    }
+    // Both indicators positive - BUY for first 2 bars, then HOLD
+    return consecutiveBars <= 2
+      ? { signal: 'BUY', bars: consecutiveBars }
+      : { signal: 'HOLD', bars: consecutiveBars }
   } else if (bothNegative) {
     // Both indicators negative
     return consecutiveBars <= 2
@@ -1101,7 +1145,7 @@ export async function processStock(symbol, name) {
     await saveQuantPerformanceToBackend(symbol, name, quantMetrics, quantResult.trades, quantResult.short, quantResult.long, currentPrice, marketCap)
 
     // Calculate and save ditz mode
-    const ditzResult = calculateBXtrenderQuant(monthlyData, ditzConfig)
+    const ditzResult = calculateBXtrenderQuant(monthlyData, ditzConfig, 'ditz')
     const ditzMetrics = calculateMetrics(ditzResult.trades)
     await saveDitzPerformanceToBackend(symbol, name, ditzMetrics, ditzResult.trades, ditzResult.short, ditzResult.long, currentPrice, marketCap)
 

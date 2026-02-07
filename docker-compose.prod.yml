@@ -17,6 +17,7 @@ services:
     environment:
       - ADMIN_PASSWORD=admin123
       - DB_PATH=/data/watchlist.db
+      - TWELVE_DATA_API_KEY=f125a695443840f6b40e22c1b071b87e
     volumes:
       - backend-data:/data
     networks:

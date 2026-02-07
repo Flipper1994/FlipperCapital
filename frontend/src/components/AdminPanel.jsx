@@ -117,6 +117,16 @@ function AdminPanel() {
   const [ditzManualTrade, setDitzManualTrade] = useState({ symbol: '', name: '', action: 'BUY', price: '', quantity: '', date: '', is_live: false })
   const [showDitzManualTrade, setShowDitzManualTrade] = useState(false)
 
+  // Completed trades state
+  const [flipperCompletedTrades, setFlipperCompletedTrades] = useState([])
+  const [lutzCompletedTrades, setLutzCompletedTrades] = useState([])
+  const [quantCompletedTrades, setQuantCompletedTrades] = useState([])
+  const [ditzCompletedTrades, setDitzCompletedTrades] = useState([])
+  const [showFlipperTradeHistory, setShowFlipperTradeHistory] = useState(false)
+  const [showLutzTradeHistory, setShowLutzTradeHistory] = useState(false)
+  const [showQuantTradeHistory, setShowQuantTradeHistory] = useState(false)
+  const [showDitzTradeHistory, setShowDitzTradeHistory] = useState(false)
+
   const [manualTradeSearch, setManualTradeSearch] = useState('')
   const [manualTradeResults, setManualTradeResults] = useState([])
   const [manualTradeSearching, setManualTradeSearching] = useState(false)
@@ -649,7 +659,7 @@ function AdminPanel() {
   const fetchBotData = async () => {
     setLoading(true)
     try {
-      const [fpRes, ftRes, lpRes, ltRes, fptRes, lptRes, qpRes, qtRes, qptRes, dpRes, dtRes, dptRes, fspRes, lspRes] = await Promise.all([
+      const [fpRes, ftRes, lpRes, ltRes, fptRes, lptRes, qpRes, qtRes, qptRes, dpRes, dtRes, dptRes, fspRes, lspRes, fctRes, lctRes, qctRes, dctRes] = await Promise.all([
         fetch('/api/flipperbot/simulated-portfolio', { headers: { 'Authorization': `Bearer ${token}` } }),
         fetch('/api/flipperbot/actions-all', { headers: { 'Authorization': `Bearer ${token}` } }),
         fetch('/api/lutz/simulated-portfolio', { headers: { 'Authorization': `Bearer ${token}` } }),
@@ -663,13 +673,18 @@ function AdminPanel() {
         fetch('/api/ditz/actions-all', { headers: { 'Authorization': `Bearer ${token}` } }),
         fetch('/api/ditz/pending-trades', { headers: { 'Authorization': `Bearer ${token}` } }),
         fetch('/api/flipperbot/simulated-performance', { headers: { 'Authorization': `Bearer ${token}` } }),
-        fetch('/api/lutz/simulated-performance', { headers: { 'Authorization': `Bearer ${token}` } })
+        fetch('/api/lutz/simulated-performance', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/flipperbot/completed-trades', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/lutz/completed-trades', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/quant/completed-trades', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/ditz/completed-trades', { headers: { 'Authorization': `Bearer ${token}` } })
       ])
-      const [fp, ft, lp, lt, fpt, lpt, qp, qt, qpt, dp, dtt, dpt, fsp, lsp] = await Promise.all([
+      const [fp, ft, lp, lt, fpt, lpt, qp, qt, qpt, dp, dtt, dpt, fsp, lsp, fct, lct, qct, dct] = await Promise.all([
         fpRes.json(), ftRes.json(), lpRes.json(), ltRes.json(), fptRes.json(), lptRes.json(),
         qpRes.json(), qtRes.json(), qptRes.json(),
         dpRes.json(), dtRes.json(), dptRes.json(),
-        fspRes.json(), lspRes.json()
+        fspRes.json(), lspRes.json(),
+        fctRes.json(), lctRes.json(), qctRes.json(), dctRes.json()
       ])
       setFlipperPositions(fp?.positions || [])
       setFlipperTrades(ft || [])
@@ -690,6 +705,10 @@ function AdminPanel() {
       setDitzPositions(dp?.positions || [])
       setDitzTrades(dtt || [])
       setDitzPendingTrades(dpt || [])
+      setFlipperCompletedTrades(fct || [])
+      setLutzCompletedTrades(lct || [])
+      setQuantCompletedTrades(qct || [])
+      setDitzCompletedTrades(dct || [])
       fetchDitzUnreadCount()
     } catch (err) {
       console.error('Failed to fetch bot data:', err)
@@ -1151,6 +1170,11 @@ function AdminPanel() {
     }
   }
 
+  const formatPercent = (val) => {
+    const v = val || 0
+    return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
+  }
+
   const formatDate = (dateStr) => {
     if (!dateStr) return '-'
     const date = new Date(dateStr)
@@ -1161,6 +1185,11 @@ function AdminPanel() {
       hour: '2-digit',
       minute: '2-digit'
     })
+  }
+
+  const formatDateShort = (dateStr) => {
+    if (!dateStr) return '-'
+    return new Date(dateStr).toLocaleDateString('de-DE')
   }
 
   const formatRelative = (dateStr) => {
@@ -2069,25 +2098,61 @@ function AdminPanel() {
                     </div>
 
                     {flipperPrivatePerformance && (
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-                        <div className="bg-dark-800 rounded-lg p-3">
-                          <div className="text-xs text-gray-500 mb-1">Gesamt Rendite</div>
-                          <div className={`text-xl font-bold ${(flipperPrivatePerformance.overall_return_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {(flipperPrivatePerformance.overall_return_pct || 0) >= 0 ? '+' : ''}{flipperPrivatePerformance.overall_return_pct?.toFixed(2) || '0.00'}%
+                      <div className="mb-4">
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-4">
+                          <div className="bg-gradient-to-r from-blue-500/20 to-indigo-500/20 rounded-lg p-3 md:p-4 border border-blue-500/30">
+                            <div className="text-xs text-gray-400 mb-1">Gesamt Rendite</div>
+                            <div className={`text-xl md:text-2xl font-bold ${flipperPrivatePerformance.overall_return_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPercent(flipperPrivatePerformance.overall_return_pct)}
+                            </div>
+                            <div className={`text-xs mt-1 ${(flipperPrivatePerformance.total_gain || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPrice(flipperPrivatePerformance.total_gain || 0)} Gewinn
+                            </div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3 md:p-4">
+                            <div className="text-xs text-gray-500 mb-1">Investiert</div>
+                            <div className="text-lg md:text-xl font-bold text-white">{formatPrice(flipperPrivatePerformance.invested_in_positions || 0)}</div>
+                            <div className="text-xs text-gray-500 mt-1">Aktuell: {formatPrice(flipperPrivatePerformance.current_value || 0)}</div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3 md:p-4">
+                            <div className="text-xs text-gray-500 mb-1">Unrealisiert</div>
+                            <div className={`text-lg md:text-xl font-bold ${(flipperPrivatePerformance.unrealized_gain || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPrice(flipperPrivatePerformance.unrealized_gain || 0)}
+                            </div>
+                            <div className={`text-xs mt-1 ${(flipperPrivatePerformance.total_return_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPercent(flipperPrivatePerformance.total_return_pct)}
+                            </div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3 md:p-4">
+                            <div className="text-xs text-gray-500 mb-1">Realisiert</div>
+                            <div className={`text-lg md:text-xl font-bold ${(flipperPrivatePerformance.realized_profit || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPrice(flipperPrivatePerformance.realized_profit || 0)}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">{flipperPrivatePerformance.total_trades || 0} Trades</div>
                           </div>
                         </div>
-                        <div className="bg-dark-800 rounded-lg p-3">
-                          <div className="text-xs text-gray-500 mb-1">Win Rate</div>
-                          <div className="text-xl font-bold text-blue-400">{flipperPrivatePerformance.win_rate?.toFixed(1) || '0'}%</div>
-                        </div>
-                        <div className="bg-dark-800 rounded-lg p-3">
-                          <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
-                          <div className="text-xl font-bold text-blue-400">{flipperPrivatePerformance.open_positions || 0}</div>
-                        </div>
-                        <div className="bg-dark-800 rounded-lg p-3">
-                          <div className="text-xs text-gray-500 mb-1">Unrealisiert</div>
-                          <div className={`text-xl font-bold ${(flipperPrivatePerformance.unrealized_pl_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {(flipperPrivatePerformance.unrealized_pl_pct || 0) >= 0 ? '+' : ''}{flipperPrivatePerformance.unrealized_pl_pct?.toFixed(2) || '0.00'}%
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Win Rate</div>
+                            <div className="text-base font-bold text-white">{flipperPrivatePerformance.win_rate?.toFixed(1) || 0}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{flipperPrivatePerformance.wins || 0}W / {flipperPrivatePerformance.losses || 0}L</div>
+                          </div>
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Ø Rendite/Trade</div>
+                            <div className={`text-base font-bold ${(flipperPrivatePerformance.avg_return_per_trade || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPercent(flipperPrivatePerformance.avg_return_per_trade)}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">gleichgewichtet</div>
+                          </div>
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
+                            <div className="text-base font-bold text-white">{flipperPrivatePerformance.open_positions || 0}</div>
+                            <div className="text-xs text-gray-500 mt-1">von {flipperPrivatePerformance.total_buys || 0} Käufen</div>
+                          </div>
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Live Positionen</div>
+                            <div className="text-base font-bold text-green-400">{flipperPrivatePortfolio?.positions?.filter(p => p.is_live)?.length || 0}</div>
+                            <div className="text-xs text-gray-500 mt-1">mit echtem Geld</div>
                           </div>
                         </div>
                       </div>
@@ -2175,6 +2240,63 @@ function AdminPanel() {
                         <p className="text-xs mt-1">Klicke "Refresh" um Signale zu verarbeiten</p>
                       </div>
                     )}
+
+                    {/* Flipper Trade History */}
+                    <div className="mt-4 rounded-xl border border-dark-600 overflow-hidden">
+                      <button
+                        onClick={() => setShowFlipperTradeHistory(!showFlipperTradeHistory)}
+                        className="w-full p-4 flex items-center justify-between hover:bg-dark-700/50 transition-colors"
+                      >
+                        <h3 className="text-sm font-semibold text-white">Trade History ({flipperCompletedTrades.length})</h3>
+                        <svg className={`w-5 h-5 text-gray-400 transition-transform ${showFlipperTradeHistory ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+                      {showFlipperTradeHistory && (
+                        <div className="border-t border-dark-600">
+                          {flipperCompletedTrades.length === 0 ? (
+                            <div className="p-8 text-center text-gray-500">Noch keine abgeschlossenen Trades</div>
+                          ) : (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-sm">
+                                <thead>
+                                  <tr className="text-left text-xs text-gray-500 border-b border-dark-600">
+                                    <th className="pt-4 pb-3 px-4">Symbol</th>
+                                    <th className="pt-4 pb-3 px-4">Kauf</th>
+                                    <th className="pt-4 pb-3 px-4">Verkauf</th>
+                                    <th className="pt-4 pb-3 px-4 text-right">Rendite</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {flipperCompletedTrades.map((trade) => (
+                                    <tr key={trade.id} className={`border-b border-dark-700/50 last:border-0 ${trade.is_live ? 'bg-green-500/5' : ''}`}>
+                                      <td className="py-3 px-4">
+                                        <div className="flex items-center gap-2">
+                                          <div className="font-medium text-white">{trade.symbol}</div>
+                                          {trade.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
+                                        </div>
+                                      </td>
+                                      <td className="py-3 px-4">
+                                        <div className="text-gray-300">{formatPrice(trade.buy_price)}</div>
+                                        <div className="text-xs text-gray-500">{formatDateShort(trade.buy_date)}</div>
+                                      </td>
+                                      <td className="py-3 px-4">
+                                        <div className="text-gray-300">{formatPrice(trade.sell_price)}</div>
+                                        <div className="text-xs text-gray-500">{formatDateShort(trade.sell_date)}</div>
+                                      </td>
+                                      <td className={`py-3 px-4 text-right font-medium ${trade.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                        <div>{formatPercent(trade.profit_loss_pct)}</div>
+                                        <div className="text-xs">{trade.profit_loss >= 0 ? '+' : ''}{formatPrice(trade.profit_loss)}</div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -2215,25 +2337,61 @@ function AdminPanel() {
                     </div>
 
                     {lutzPrivatePerformance && (
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-                        <div className="bg-dark-800 rounded-lg p-3">
-                          <div className="text-xs text-gray-500 mb-1">Gesamt Rendite</div>
-                          <div className={`text-xl font-bold ${(lutzPrivatePerformance.overall_return_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {(lutzPrivatePerformance.overall_return_pct || 0) >= 0 ? '+' : ''}{lutzPrivatePerformance.overall_return_pct?.toFixed(2) || '0.00'}%
+                      <div className="mb-4">
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-4">
+                          <div className="bg-gradient-to-r from-orange-500/20 to-amber-500/20 rounded-lg p-3 md:p-4 border border-orange-500/30">
+                            <div className="text-xs text-gray-400 mb-1">Gesamt Rendite</div>
+                            <div className={`text-xl md:text-2xl font-bold ${lutzPrivatePerformance.overall_return_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPercent(lutzPrivatePerformance.overall_return_pct)}
+                            </div>
+                            <div className={`text-xs mt-1 ${(lutzPrivatePerformance.total_gain || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPrice(lutzPrivatePerformance.total_gain || 0)} Gewinn
+                            </div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3 md:p-4">
+                            <div className="text-xs text-gray-500 mb-1">Investiert</div>
+                            <div className="text-lg md:text-xl font-bold text-white">{formatPrice(lutzPrivatePerformance.invested_in_positions || 0)}</div>
+                            <div className="text-xs text-gray-500 mt-1">Aktuell: {formatPrice(lutzPrivatePerformance.current_value || 0)}</div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3 md:p-4">
+                            <div className="text-xs text-gray-500 mb-1">Unrealisiert</div>
+                            <div className={`text-lg md:text-xl font-bold ${(lutzPrivatePerformance.unrealized_gain || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPrice(lutzPrivatePerformance.unrealized_gain || 0)}
+                            </div>
+                            <div className={`text-xs mt-1 ${(lutzPrivatePerformance.total_return_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPercent(lutzPrivatePerformance.total_return_pct)}
+                            </div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3 md:p-4">
+                            <div className="text-xs text-gray-500 mb-1">Realisiert</div>
+                            <div className={`text-lg md:text-xl font-bold ${(lutzPrivatePerformance.realized_profit || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPrice(lutzPrivatePerformance.realized_profit || 0)}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">{lutzPrivatePerformance.total_trades || 0} Trades</div>
                           </div>
                         </div>
-                        <div className="bg-dark-800 rounded-lg p-3">
-                          <div className="text-xs text-gray-500 mb-1">Win Rate</div>
-                          <div className="text-xl font-bold text-orange-400">{lutzPrivatePerformance.win_rate?.toFixed(1) || '0'}%</div>
-                        </div>
-                        <div className="bg-dark-800 rounded-lg p-3">
-                          <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
-                          <div className="text-xl font-bold text-orange-400">{lutzPrivatePerformance.open_positions || 0}</div>
-                        </div>
-                        <div className="bg-dark-800 rounded-lg p-3">
-                          <div className="text-xs text-gray-500 mb-1">Unrealisiert</div>
-                          <div className={`text-xl font-bold ${(lutzPrivatePerformance.unrealized_pl_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {(lutzPrivatePerformance.unrealized_pl_pct || 0) >= 0 ? '+' : ''}{lutzPrivatePerformance.unrealized_pl_pct?.toFixed(2) || '0.00'}%
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Win Rate</div>
+                            <div className="text-base font-bold text-white">{lutzPrivatePerformance.win_rate?.toFixed(1) || 0}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{lutzPrivatePerformance.wins || 0}W / {lutzPrivatePerformance.losses || 0}L</div>
+                          </div>
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Ø Rendite/Trade</div>
+                            <div className={`text-base font-bold ${(lutzPrivatePerformance.avg_return_per_trade || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPercent(lutzPrivatePerformance.avg_return_per_trade)}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">gleichgewichtet</div>
+                          </div>
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
+                            <div className="text-base font-bold text-white">{lutzPrivatePerformance.open_positions || 0}</div>
+                            <div className="text-xs text-gray-500 mt-1">von {lutzPrivatePerformance.total_buys || 0} Käufen</div>
+                          </div>
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Live Positionen</div>
+                            <div className="text-base font-bold text-green-400">{lutzPrivatePortfolio?.positions?.filter(p => p.is_live)?.length || 0}</div>
+                            <div className="text-xs text-gray-500 mt-1">mit echtem Geld</div>
                           </div>
                         </div>
                       </div>
@@ -2321,6 +2479,63 @@ function AdminPanel() {
                         <p className="text-xs mt-1">Klicke "Refresh" um Signale zu verarbeiten</p>
                       </div>
                     )}
+
+                    {/* Lutz Trade History */}
+                    <div className="mt-4 rounded-xl border border-dark-600 overflow-hidden">
+                      <button
+                        onClick={() => setShowLutzTradeHistory(!showLutzTradeHistory)}
+                        className="w-full p-4 flex items-center justify-between hover:bg-dark-700/50 transition-colors"
+                      >
+                        <h3 className="text-sm font-semibold text-white">Trade History ({lutzCompletedTrades.length})</h3>
+                        <svg className={`w-5 h-5 text-gray-400 transition-transform ${showLutzTradeHistory ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+                      {showLutzTradeHistory && (
+                        <div className="border-t border-dark-600">
+                          {lutzCompletedTrades.length === 0 ? (
+                            <div className="p-8 text-center text-gray-500">Noch keine abgeschlossenen Trades</div>
+                          ) : (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-sm">
+                                <thead>
+                                  <tr className="text-left text-xs text-gray-500 border-b border-dark-600">
+                                    <th className="pt-4 pb-3 px-4">Symbol</th>
+                                    <th className="pt-4 pb-3 px-4">Kauf</th>
+                                    <th className="pt-4 pb-3 px-4">Verkauf</th>
+                                    <th className="pt-4 pb-3 px-4 text-right">Rendite</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {lutzCompletedTrades.map((trade) => (
+                                    <tr key={trade.id} className={`border-b border-dark-700/50 last:border-0 ${trade.is_live ? 'bg-green-500/5' : ''}`}>
+                                      <td className="py-3 px-4">
+                                        <div className="flex items-center gap-2">
+                                          <div className="font-medium text-white">{trade.symbol}</div>
+                                          {trade.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
+                                        </div>
+                                      </td>
+                                      <td className="py-3 px-4">
+                                        <div className="text-gray-300">{formatPrice(trade.buy_price)}</div>
+                                        <div className="text-xs text-gray-500">{formatDateShort(trade.buy_date)}</div>
+                                      </td>
+                                      <td className="py-3 px-4">
+                                        <div className="text-gray-300">{formatPrice(trade.sell_price)}</div>
+                                        <div className="text-xs text-gray-500">{formatDateShort(trade.sell_date)}</div>
+                                      </td>
+                                      <td className={`py-3 px-4 text-right font-medium ${trade.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                        <div>{formatPercent(trade.profit_loss_pct)}</div>
+                                        <div className="text-xs">{trade.profit_loss >= 0 ? '+' : ''}{formatPrice(trade.profit_loss)}</div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -2455,38 +2670,61 @@ function AdminPanel() {
 
                     {/* Performance Stats */}
                     {quantPrivatePerformance && (
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-                        <div className="bg-dark-800 rounded-lg p-3">
-                          <div className="text-xs text-gray-500 mb-1">Gesamt Rendite</div>
-                          <div className={`text-xl font-bold ${
-                            quantPrivatePerformance.overall_return_pct >= 0 ? 'text-green-400' : 'text-red-400'
-                          }`}>
-                            {quantPrivatePerformance.overall_return_pct >= 0 ? '+' : ''}
-                            {quantPrivatePerformance.overall_return_pct?.toFixed(2) || '0.00'}%
+                      <div className="mb-4">
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-4">
+                          <div className="bg-gradient-to-r from-violet-500/20 to-purple-500/20 rounded-lg p-3 md:p-4 border border-violet-500/30">
+                            <div className="text-xs text-gray-400 mb-1">Gesamt Rendite</div>
+                            <div className={`text-xl md:text-2xl font-bold ${quantPrivatePerformance.overall_return_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPercent(quantPrivatePerformance.overall_return_pct)}
+                            </div>
+                            <div className={`text-xs mt-1 ${(quantPrivatePerformance.total_gain || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPrice(quantPrivatePerformance.total_gain || 0)} Gewinn
+                            </div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3 md:p-4">
+                            <div className="text-xs text-gray-500 mb-1">Investiert</div>
+                            <div className="text-lg md:text-xl font-bold text-white">{formatPrice(quantPrivatePerformance.invested_in_positions || 0)}</div>
+                            <div className="text-xs text-gray-500 mt-1">Aktuell: {formatPrice(quantPrivatePerformance.current_value || 0)}</div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3 md:p-4">
+                            <div className="text-xs text-gray-500 mb-1">Unrealisiert</div>
+                            <div className={`text-lg md:text-xl font-bold ${(quantPrivatePerformance.unrealized_gain || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPrice(quantPrivatePerformance.unrealized_gain || 0)}
+                            </div>
+                            <div className={`text-xs mt-1 ${(quantPrivatePerformance.total_return_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPercent(quantPrivatePerformance.total_return_pct)}
+                            </div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3 md:p-4">
+                            <div className="text-xs text-gray-500 mb-1">Realisiert</div>
+                            <div className={`text-lg md:text-xl font-bold ${(quantPrivatePerformance.realized_profit || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPrice(quantPrivatePerformance.realized_profit || 0)}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">{quantPrivatePerformance.total_trades || 0} Trades</div>
                           </div>
                         </div>
-                        <div className="bg-dark-800 rounded-lg p-3">
-                          <div className="text-xs text-gray-500 mb-1">Win Rate</div>
-                          <div className="text-xl font-bold text-white">
-                            {quantPrivatePerformance.win_rate?.toFixed(1) || '0.0'}%
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Win Rate</div>
+                            <div className="text-base font-bold text-white">{quantPrivatePerformance.win_rate?.toFixed(1) || 0}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{quantPrivatePerformance.wins || 0}W / {quantPrivatePerformance.losses || 0}L</div>
                           </div>
-                          <div className="text-xs text-gray-500">
-                            {quantPrivatePerformance.wins || 0}W / {quantPrivatePerformance.losses || 0}L
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Ø Rendite/Trade</div>
+                            <div className={`text-base font-bold ${(quantPrivatePerformance.avg_return_per_trade || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPercent(quantPrivatePerformance.avg_return_per_trade)}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">gleichgewichtet</div>
                           </div>
-                        </div>
-                        <div className="bg-dark-800 rounded-lg p-3">
-                          <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
-                          <div className="text-xl font-bold text-violet-400">
-                            {quantPrivatePerformance.open_positions || 0}
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
+                            <div className="text-base font-bold text-white">{quantPrivatePerformance.open_positions || 0}</div>
+                            <div className="text-xs text-gray-500 mt-1">von {quantPrivatePerformance.total_buys || 0} Käufen</div>
                           </div>
-                        </div>
-                        <div className="bg-dark-800 rounded-lg p-3">
-                          <div className="text-xs text-gray-500 mb-1">Unrealisiert</div>
-                          <div className={`text-xl font-bold ${
-                            (quantPrivatePerformance.unrealized_pl_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'
-                          }`}>
-                            {(quantPrivatePerformance.unrealized_pl_pct || 0) >= 0 ? '+' : ''}
-                            {quantPrivatePerformance.unrealized_pl_pct?.toFixed(2) || '0.00'}%
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Live Positionen</div>
+                            <div className="text-base font-bold text-green-400">{quantPrivatePortfolio?.positions?.filter(p => p.is_live)?.length || 0}</div>
+                            <div className="text-xs text-gray-500 mt-1">mit echtem Geld</div>
                           </div>
                         </div>
                       </div>
@@ -2609,6 +2847,63 @@ function AdminPanel() {
                         <p className="text-xs mt-1">Backtest-Trades ohne "Live" Flag erscheinen hier</p>
                       </div>
                     )}
+
+                    {/* Quant Trade History */}
+                    <div className="mt-4 rounded-xl border border-dark-600 overflow-hidden">
+                      <button
+                        onClick={() => setShowQuantTradeHistory(!showQuantTradeHistory)}
+                        className="w-full p-4 flex items-center justify-between hover:bg-dark-700/50 transition-colors"
+                      >
+                        <h3 className="text-sm font-semibold text-white">Trade History ({quantCompletedTrades.length})</h3>
+                        <svg className={`w-5 h-5 text-gray-400 transition-transform ${showQuantTradeHistory ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+                      {showQuantTradeHistory && (
+                        <div className="border-t border-dark-600">
+                          {quantCompletedTrades.length === 0 ? (
+                            <div className="p-8 text-center text-gray-500">Noch keine abgeschlossenen Trades</div>
+                          ) : (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-sm">
+                                <thead>
+                                  <tr className="text-left text-xs text-gray-500 border-b border-dark-600">
+                                    <th className="pt-4 pb-3 px-4">Symbol</th>
+                                    <th className="pt-4 pb-3 px-4">Kauf</th>
+                                    <th className="pt-4 pb-3 px-4">Verkauf</th>
+                                    <th className="pt-4 pb-3 px-4 text-right">Rendite</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {quantCompletedTrades.map((trade) => (
+                                    <tr key={trade.id} className={`border-b border-dark-700/50 last:border-0 ${trade.is_live ? 'bg-green-500/5' : ''}`}>
+                                      <td className="py-3 px-4">
+                                        <div className="flex items-center gap-2">
+                                          <div className="font-medium text-white">{trade.symbol}</div>
+                                          {trade.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
+                                        </div>
+                                      </td>
+                                      <td className="py-3 px-4">
+                                        <div className="text-gray-300">{formatPrice(trade.buy_price)}</div>
+                                        <div className="text-xs text-gray-500">{formatDateShort(trade.buy_date)}</div>
+                                      </td>
+                                      <td className="py-3 px-4">
+                                        <div className="text-gray-300">{formatPrice(trade.sell_price)}</div>
+                                        <div className="text-xs text-gray-500">{formatDateShort(trade.sell_date)}</div>
+                                      </td>
+                                      <td className={`py-3 px-4 text-right font-medium ${trade.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                        <div>{formatPercent(trade.profit_loss_pct)}</div>
+                                        <div className="text-xs">{trade.profit_loss >= 0 ? '+' : ''}{formatPrice(trade.profit_loss)}</div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -2743,38 +3038,61 @@ function AdminPanel() {
 
                     {/* Performance Stats */}
                     {ditzPrivatePerformance && (
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-                        <div className="bg-dark-800 rounded-lg p-3">
-                          <div className="text-xs text-gray-500 mb-1">Gesamt Rendite</div>
-                          <div className={`text-xl font-bold ${
-                            ditzPrivatePerformance.overall_return_pct >= 0 ? 'text-green-400' : 'text-red-400'
-                          }`}>
-                            {ditzPrivatePerformance.overall_return_pct >= 0 ? '+' : ''}
-                            {ditzPrivatePerformance.overall_return_pct?.toFixed(2) || '0.00'}%
+                      <div className="mb-4">
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-4">
+                          <div className="bg-gradient-to-r from-cyan-500/20 to-teal-500/20 rounded-lg p-3 md:p-4 border border-cyan-500/30">
+                            <div className="text-xs text-gray-400 mb-1">Gesamt Rendite</div>
+                            <div className={`text-xl md:text-2xl font-bold ${ditzPrivatePerformance.overall_return_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPercent(ditzPrivatePerformance.overall_return_pct)}
+                            </div>
+                            <div className={`text-xs mt-1 ${(ditzPrivatePerformance.total_gain || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPrice(ditzPrivatePerformance.total_gain || 0)} Gewinn
+                            </div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3 md:p-4">
+                            <div className="text-xs text-gray-500 mb-1">Investiert</div>
+                            <div className="text-lg md:text-xl font-bold text-white">{formatPrice(ditzPrivatePerformance.invested_in_positions || 0)}</div>
+                            <div className="text-xs text-gray-500 mt-1">Aktuell: {formatPrice(ditzPrivatePerformance.current_value || 0)}</div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3 md:p-4">
+                            <div className="text-xs text-gray-500 mb-1">Unrealisiert</div>
+                            <div className={`text-lg md:text-xl font-bold ${(ditzPrivatePerformance.unrealized_gain || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPrice(ditzPrivatePerformance.unrealized_gain || 0)}
+                            </div>
+                            <div className={`text-xs mt-1 ${(ditzPrivatePerformance.total_return_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPercent(ditzPrivatePerformance.total_return_pct)}
+                            </div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3 md:p-4">
+                            <div className="text-xs text-gray-500 mb-1">Realisiert</div>
+                            <div className={`text-lg md:text-xl font-bold ${(ditzPrivatePerformance.realized_profit || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPrice(ditzPrivatePerformance.realized_profit || 0)}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">{ditzPrivatePerformance.total_trades || 0} Trades</div>
                           </div>
                         </div>
-                        <div className="bg-dark-800 rounded-lg p-3">
-                          <div className="text-xs text-gray-500 mb-1">Win Rate</div>
-                          <div className="text-xl font-bold text-white">
-                            {ditzPrivatePerformance.win_rate?.toFixed(1) || '0.0'}%
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Win Rate</div>
+                            <div className="text-base font-bold text-white">{ditzPrivatePerformance.win_rate?.toFixed(1) || 0}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{ditzPrivatePerformance.wins || 0}W / {ditzPrivatePerformance.losses || 0}L</div>
                           </div>
-                          <div className="text-xs text-gray-500">
-                            {ditzPrivatePerformance.wins || 0}W / {ditzPrivatePerformance.losses || 0}L
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Ø Rendite/Trade</div>
+                            <div className={`text-base font-bold ${(ditzPrivatePerformance.avg_return_per_trade || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPercent(ditzPrivatePerformance.avg_return_per_trade)}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">gleichgewichtet</div>
                           </div>
-                        </div>
-                        <div className="bg-dark-800 rounded-lg p-3">
-                          <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
-                          <div className="text-xl font-bold text-cyan-400">
-                            {ditzPrivatePerformance.open_positions || 0}
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
+                            <div className="text-base font-bold text-white">{ditzPrivatePerformance.open_positions || 0}</div>
+                            <div className="text-xs text-gray-500 mt-1">von {ditzPrivatePerformance.total_buys || 0} Käufen</div>
                           </div>
-                        </div>
-                        <div className="bg-dark-800 rounded-lg p-3">
-                          <div className="text-xs text-gray-500 mb-1">Unrealisiert</div>
-                          <div className={`text-xl font-bold ${
-                            (ditzPrivatePerformance.unrealized_pl_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'
-                          }`}>
-                            {(ditzPrivatePerformance.unrealized_pl_pct || 0) >= 0 ? '+' : ''}
-                            {ditzPrivatePerformance.unrealized_pl_pct?.toFixed(2) || '0.00'}%
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Live Positionen</div>
+                            <div className="text-base font-bold text-green-400">{ditzPrivatePortfolio?.positions?.filter(p => p.is_live)?.length || 0}</div>
+                            <div className="text-xs text-gray-500 mt-1">mit echtem Geld</div>
                           </div>
                         </div>
                       </div>
@@ -2897,6 +3215,63 @@ function AdminPanel() {
                         <p className="text-xs mt-1">Backtest-Trades ohne "Live" Flag erscheinen hier</p>
                       </div>
                     )}
+
+                    {/* Ditz Trade History */}
+                    <div className="mt-4 rounded-xl border border-dark-600 overflow-hidden">
+                      <button
+                        onClick={() => setShowDitzTradeHistory(!showDitzTradeHistory)}
+                        className="w-full p-4 flex items-center justify-between hover:bg-dark-700/50 transition-colors"
+                      >
+                        <h3 className="text-sm font-semibold text-white">Trade History ({ditzCompletedTrades.length})</h3>
+                        <svg className={`w-5 h-5 text-gray-400 transition-transform ${showDitzTradeHistory ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+                      {showDitzTradeHistory && (
+                        <div className="border-t border-dark-600">
+                          {ditzCompletedTrades.length === 0 ? (
+                            <div className="p-8 text-center text-gray-500">Noch keine abgeschlossenen Trades</div>
+                          ) : (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-sm">
+                                <thead>
+                                  <tr className="text-left text-xs text-gray-500 border-b border-dark-600">
+                                    <th className="pt-4 pb-3 px-4">Symbol</th>
+                                    <th className="pt-4 pb-3 px-4">Kauf</th>
+                                    <th className="pt-4 pb-3 px-4">Verkauf</th>
+                                    <th className="pt-4 pb-3 px-4 text-right">Rendite</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {ditzCompletedTrades.map((trade) => (
+                                    <tr key={trade.id} className={`border-b border-dark-700/50 last:border-0 ${trade.is_live ? 'bg-green-500/5' : ''}`}>
+                                      <td className="py-3 px-4">
+                                        <div className="flex items-center gap-2">
+                                          <div className="font-medium text-white">{trade.symbol}</div>
+                                          {trade.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
+                                        </div>
+                                      </td>
+                                      <td className="py-3 px-4">
+                                        <div className="text-gray-300">{formatPrice(trade.buy_price)}</div>
+                                        <div className="text-xs text-gray-500">{formatDateShort(trade.buy_date)}</div>
+                                      </td>
+                                      <td className="py-3 px-4">
+                                        <div className="text-gray-300">{formatPrice(trade.sell_price)}</div>
+                                        <div className="text-xs text-gray-500">{formatDateShort(trade.sell_date)}</div>
+                                      </td>
+                                      <td className={`py-3 px-4 text-right font-medium ${trade.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                        <div>{formatPercent(trade.profit_loss_pct)}</div>
+                                        <div className="text-xs">{trade.profit_loss >= 0 ? '+' : ''}{formatPrice(trade.profit_loss)}</div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 

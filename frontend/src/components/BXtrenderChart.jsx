@@ -28,6 +28,7 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [intervalWarning, setIntervalWarning] = useState(null) // Warning if Yahoo returns different interval
+  const [dataSource, setDataSource] = useState(null)
   const { isAggressive, isQuant, isDitz, mode } = useTradingMode()
 
   useEffect(() => {
@@ -58,6 +59,7 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
       setLoading(true)
       setError(null)
       setIntervalWarning(null)
+      setDataSource(null)
 
       try {
         // Fetch appropriate config based on mode
@@ -87,6 +89,11 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
           const requestedLabel = intervalLabels[json.requestedInterval] || json.requestedInterval
           const actualLabel = intervalLabels[json.actualInterval] || json.actualInterval
           setIntervalWarning(`${requestedLabel} nicht verfügbar, zeige ${actualLabel}`)
+        }
+
+        // Set data source
+        if (json.source) {
+          setDataSource(json.source)
         }
 
         // Nur abgeschlossene Monatskerzen für Signalberechnung (aktuellen Monat entfernen)
@@ -336,6 +343,18 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
               </svg>
               {intervalWarning}
+            </span>
+          )}
+          {dataSource && dataSource !== 'yahoo' && (
+            <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded flex items-center gap-1 ${
+              dataSource === 'twelvedata'
+                ? 'bg-cyan-500/20 text-cyan-400'
+                : 'bg-gray-500/20 text-gray-400'
+            }`}>
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+              </svg>
+              {dataSource === 'twelvedata' ? 'Twelve Data' : dataSource}
             </span>
           )}
         </div>

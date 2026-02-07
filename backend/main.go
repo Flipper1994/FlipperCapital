@@ -538,6 +538,7 @@ type LastFullUpdate struct {
 var db *gorm.DB
 var sessions = make(map[string]Session) // Legacy in-memory cache, DB is source of truth
 var httpClient = &http.Client{Timeout: 10 * time.Second}
+var twelveDataAPIKey string
 
 // Session helper functions for persistent storage
 func createSession(userID uint, isAdmin bool) string {
@@ -609,6 +610,11 @@ func main() {
 	dbPath := os.Getenv("DB_PATH")
 	if dbPath == "" {
 		dbPath = "./data/watchlist.db"
+	}
+
+	twelveDataAPIKey = os.Getenv("TWELVE_DATA_API_KEY")
+	if twelveDataAPIKey != "" {
+		fmt.Println("[Config] Twelve Data API key configured - will use as fallback for monthly data")
 	}
 
 	var err error
@@ -1476,15 +1482,36 @@ func getHistory(c *gin.Context) {
 		actualGranularity = yahooResp.Chart.Result[0].Meta.DataGranularity
 	}
 
-	// Fallback: If monthly was requested but Yahoo returned 3mo, aggregate from daily/weekly data
+	// Track data source
+	dataSource := "yahoo"
+
+	// Fallback: If monthly was requested but Yahoo returned 3mo, try Twelve Data then aggregate
 	if interval == "1mo" && actualGranularity != "1mo" {
-		fmt.Printf("[History] %s: Monthly not available (got %s), aggregating from daily/weekly\n", symbol, actualGranularity)
-		fallbackData, err := fetchWeeklyAndAggregateToMonthly(symbol)
-		if err == nil && len(fallbackData) > 0 {
-			data = fallbackData
-			actualGranularity = "1mo"
-		} else {
-			fmt.Printf("[History] %s: Fallback aggregation failed: %v\n", symbol, err)
+		fmt.Printf("[History] %s: Monthly not available from Yahoo (got %s)\n", symbol, actualGranularity)
+
+		// Fallback 1: Twelve Data API
+		if twelveDataAPIKey != "" {
+			tdData, err := fetchMonthlyFromTwelveData(symbol)
+			if err == nil && len(tdData) > 0 {
+				fmt.Printf("[History] %s: Got %d monthly bars from Twelve Data\n", symbol, len(tdData))
+				data = tdData
+				actualGranularity = "1mo"
+				dataSource = "twelvedata"
+			} else {
+				fmt.Printf("[History] %s: Twelve Data fallback failed: %v\n", symbol, err)
+			}
+		}
+
+		// Fallback 2: Aggregate from daily/weekly (if Twelve Data didn't work)
+		if actualGranularity != "1mo" {
+			fallbackData, err := fetchWeeklyAndAggregateToMonthly(symbol)
+			if err == nil && len(fallbackData) > 0 {
+				data = fallbackData
+				actualGranularity = "1mo"
+				dataSource = "yahoo-aggregated"
+			} else {
+				fmt.Printf("[History] %s: Aggregation fallback also failed: %v\n", symbol, err)
+			}
 		}
 	}
 
@@ -1493,6 +1520,7 @@ func getHistory(c *gin.Context) {
 		"data":              data,
 		"requestedInterval": interval,
 		"actualInterval":    actualGranularity,
+		"source":            dataSource,
 	})
 }
 
@@ -1619,6 +1647,83 @@ func fetchIntervalAndAggregateToMonthly(symbol, interval string) ([]OHLCV, error
 				Volume: bar.Volume,
 			})
 		}
+	}
+
+	return data, nil
+}
+
+// fetchMonthlyFromTwelveData fetches monthly OHLCV data from Twelve Data API
+func fetchMonthlyFromTwelveData(symbol string) ([]OHLCV, error) {
+	if twelveDataAPIKey == "" {
+		return nil, fmt.Errorf("no Twelve Data API key configured")
+	}
+
+	apiURL := fmt.Sprintf("https://api.twelvedata.com/time_series?symbol=%s&interval=1month&outputsize=5000&apikey=%s",
+		url.QueryEscape(symbol), twelveDataAPIKey)
+
+	req, _ := http.NewRequest("GET", apiURL, nil)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("twelve data request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	var tdResp struct {
+		Status string `json:"status"`
+		Code   int    `json:"code"`
+		Values []struct {
+			Datetime string  `json:"datetime"`
+			Open     string  `json:"open"`
+			High     string  `json:"high"`
+			Low      string  `json:"low"`
+			Close    string  `json:"close"`
+			Volume   string  `json:"volume"`
+		} `json:"values"`
+	}
+
+	if err := json.Unmarshal(body, &tdResp); err != nil {
+		return nil, fmt.Errorf("twelve data parse error: %v", err)
+	}
+
+	if tdResp.Status == "error" {
+		return nil, fmt.Errorf("twelve data API error (code %d)", tdResp.Code)
+	}
+
+	if len(tdResp.Values) == 0 {
+		return nil, fmt.Errorf("no monthly data from Twelve Data")
+	}
+
+	data := make([]OHLCV, 0, len(tdResp.Values))
+	for _, v := range tdResp.Values {
+		t, err := time.Parse("2006-01-02", v.Datetime)
+		if err != nil {
+			continue
+		}
+		open, _ := strconv.ParseFloat(v.Open, 64)
+		high, _ := strconv.ParseFloat(v.High, 64)
+		low, _ := strconv.ParseFloat(v.Low, 64)
+		cl, _ := strconv.ParseFloat(v.Close, 64)
+		vol, _ := strconv.ParseFloat(v.Volume, 64)
+
+		if cl <= 0 {
+			continue
+		}
+
+		data = append(data, OHLCV{
+			Time:   t.Unix(),
+			Open:   open,
+			High:   high,
+			Low:    low,
+			Close:  cl,
+			Volume: vol,
+		})
+	}
+
+	// Twelve Data returns newest first, reverse to chronological order
+	for i, j := 0, len(data)-1; i < j; i, j = i+1, j-1 {
+		data[i], data[j] = data[j], data[i]
 	}
 
 	return data, nil
@@ -10213,12 +10318,24 @@ func fetchHistoricalDataServer(symbol string) ([]OHLCV, error) {
 	// Check if Yahoo returned monthly data or something else
 	actualGranularity := yahooResp.Chart.Result[0].Meta.DataGranularity
 	if actualGranularity != "" && actualGranularity != "1mo" {
-		fmt.Printf("[HistoryServer] %s: Monthly not available (got %s), aggregating from daily/weekly\n", symbol, actualGranularity)
+		fmt.Printf("[HistoryServer] %s: Monthly not available (got %s)\n", symbol, actualGranularity)
+
+		// Fallback 1: Twelve Data API
+		if twelveDataAPIKey != "" {
+			tdData, err := fetchMonthlyFromTwelveData(symbol)
+			if err == nil && len(tdData) > 0 {
+				fmt.Printf("[HistoryServer] %s: Got %d monthly bars from Twelve Data\n", symbol, len(tdData))
+				return tdData, nil
+			}
+			fmt.Printf("[HistoryServer] %s: Twelve Data fallback failed: %v\n", symbol, err)
+		}
+
+		// Fallback 2: Aggregate from daily/weekly
 		fallbackData, err := fetchWeeklyAndAggregateToMonthly(symbol)
 		if err == nil && len(fallbackData) > 0 {
 			return fallbackData, nil
 		}
-		fmt.Printf("[HistoryServer] %s: Fallback aggregation failed: %v, using original data\n", symbol, err)
+		fmt.Printf("[HistoryServer] %s: Aggregation fallback also failed: %v, using original data\n", symbol, err)
 	}
 
 	result := yahooResp.Chart.Result[0]
@@ -13034,7 +13151,8 @@ func getDitzSimulatedPerformance(c *gin.Context) {
 	})
 }
 
-// calculateBXtrenderDitzServer calculates BXtrender for Ditz mode with trailing stop loss
+// calculateBXtrenderDitzServer calculates BXtrender for Ditz mode
+// BUY when line turns green (both indicators positive), SELL when line turns red (both negative)
 func calculateBXtrenderDitzServer(ohlcv []OHLCV, config BXtrenderDitzConfig) BXtrenderResult {
 	shortL1 := config.ShortL1
 	shortL2 := config.ShortL2
@@ -13117,7 +13235,7 @@ func calculateBXtrenderDitzServer(ohlcv []OHLCV, config BXtrenderDitzConfig) BXt
 		longXtrender[i] -= 50
 	}
 
-	// Generate trades with trailing stop loss
+	// Generate Ditz trades - buy when green, sell when red
 	trades := []ServerTrade{}
 	inPosition := false
 	var lastBuyPrice, highestPrice float64
@@ -13125,6 +13243,7 @@ func calculateBXtrenderDitzServer(ohlcv []OHLCV, config BXtrenderDitzConfig) BXt
 	for i := 1; i < len(ohlcv); i++ {
 		shortPrev := shortXtrender[i-1]
 		shortCurr := shortXtrender[i]
+		longPrev := longXtrender[i-1]
 		longCurr := longXtrender[i]
 		price := ohlcv[i].Close
 
@@ -13145,11 +13264,16 @@ func calculateBXtrenderDitzServer(ohlcv []OHLCV, config BXtrenderDitzConfig) BXt
 		// MA filter condition
 		maCondition := !maFilterOn || price > maFilter[i]
 
-		// Buy signal: short crosses above 0 AND long > 0 AND (MA filter off OR price > MA)
-		buySignal := shortPrev <= 0 && shortCurr > 0 && longCurr > 0 && maCondition
+		// Both indicators alignment
+		bothPositiveNow := shortCurr > 0 && longCurr > 0
+		bothPositivePrev := shortPrev > 0 && longPrev > 0
+		bothNegativeNow := shortCurr < 0 && longCurr < 0
 
-		// Sell signal: short crosses below 0 OR TSL triggered
-		sellSignal := (shortPrev >= 0 && shortCurr < 0) || tslTriggered
+		// Buy signal: both turn positive (line turns green) AND MA filter
+		buySignal := bothPositiveNow && !bothPositivePrev && maCondition
+
+		// Sell signal: both turn negative (line turns red) OR TSL triggered
+		sellSignal := bothNegativeNow || tslTriggered
 
 		if buySignal && !inPosition {
 			trades = append(trades, ServerTrade{
@@ -13212,8 +13336,10 @@ func calculateBXtrenderDitzServer(ohlcv []OHLCV, config BXtrenderDitzConfig) BXt
 				})
 				inPosition = true
 				bars = 0
-			} else {
+			} else if lastShort < 0 && lastLong < 0 {
 				signal = "SELL"
+			} else {
+				signal = "WAIT"
 			}
 		}
 	}

@@ -849,7 +849,7 @@ function StockTracker() {
                           <td className="py-2 pr-2 text-gray-500">{selectedStock.trades.length - idx}</td>
                           <td className="py-2 pr-2">
                             <div className="text-gray-400">{formatTradeDate(trade.entryDate)}</div>
-                            <div className="text-green-400 font-medium">{formatPrice(trade.entryPrice, selectedStock.symbol)}</div>
+                            <div className="text-gray-300 font-medium">{formatPrice(trade.entryPrice, selectedStock.symbol)}</div>
                           </td>
                           <td className="py-2 pr-2">
                             {trade.isOpen ? (
@@ -860,7 +860,7 @@ function StockTracker() {
                             ) : (
                               <div>
                                 <div className="text-gray-400">{formatTradeDate(trade.exitDate)}</div>
-                                <div className="text-red-400 font-medium">{formatPrice(trade.exitPrice, selectedStock.symbol)}</div>
+                                <div className="text-gray-300 font-medium">{formatPrice(trade.exitPrice, selectedStock.symbol)}</div>
                               </div>
                             )}
                           </td>
