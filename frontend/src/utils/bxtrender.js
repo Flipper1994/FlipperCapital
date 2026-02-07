@@ -138,6 +138,10 @@ let quantConfigPromise = null
 let ditzConfigCache = null
 let ditzConfigPromise = null
 
+// Cache for Trader config
+let traderConfigCache = null
+let traderConfigPromise = null
+
 // Fetch BXtrender config from backend
 export async function fetchBXtrenderConfig() {
   if (configCache) return configCache
@@ -212,6 +216,30 @@ export async function fetchBXtrenderDitzConfig() {
 export function clearDitzConfigCache() {
   ditzConfigCache = null
   ditzConfigPromise = null
+}
+
+// Fetch Trader config from backend
+export async function fetchBXtrenderTraderConfig() {
+  if (traderConfigCache) return traderConfigCache
+  if (traderConfigPromise) return traderConfigPromise
+
+  traderConfigPromise = fetch('/api/bxtrender-trader-config')
+    .then(res => res.json())
+    .then(data => {
+      traderConfigCache = data
+      return data
+    })
+    .catch(() => {
+      return { ...DEFAULT_QUANT_CONFIG, maFilterOn: false }
+    })
+
+  return traderConfigPromise
+}
+
+// Clear trader config cache
+export function clearTraderConfigCache() {
+  traderConfigCache = null
+  traderConfigPromise = null
 }
 
 export function calculateBXtrender(ohlcv, isAggressive = false, config = null) {
@@ -551,17 +579,27 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant') {
     // MA Filter: for long entry, price must be above MA (if filter enabled)
     const maFilterLong = !maFilterOn || price > maVal
 
-    // Entry condition: BOTH indicators positive AND MA filter passes
-    // Check if this is the first bar where both turn positive
-    const entrySignal = !inPosition &&
-      shortVal > 0 && longVal > 0 &&
-      maFilterLong &&
-      (shortPrev <= 0 || longPrev <= 0) // At least one was negative before
+    let entrySignal, exitSignal
 
-    // Exit condition: Ditz = BOTH negative (line turns red), Quant = EITHER negative
-    const exitSignal = inPosition && (mode === 'ditz'
-      ? (shortVal < 0 && longVal < 0)
-      : (shortVal < 0 || longVal < 0))
+    if (mode === 'ditz' || mode === 'trader') {
+      // Ditz/Trader mode: trade based on signal line (T3) color changes
+      const lineIsGreen = sigVal > sigPrev
+      const lineWasGreen = i > startIdx ? sigPrev > signalLine[i - 2] : false
+
+      // BUY when signal line turns from red to green
+      // Trader mode: no MA filter on entries
+      entrySignal = !inPosition && lineIsGreen && !lineWasGreen && (mode === 'trader' ? true : maFilterLong)
+      // SELL when signal line turns from green to red
+      exitSignal = inPosition && !lineIsGreen && lineWasGreen
+    } else {
+      // Quant mode: both indicators alignment
+      entrySignal = !inPosition &&
+        shortVal > 0 && longVal > 0 &&
+        maFilterLong &&
+        (shortPrev <= 0 || longPrev <= 0)
+
+      exitSignal = inPosition && (shortVal < 0 || longVal < 0)
+    }
 
     if (entrySignal && opens[i] > 0) {
       // Enter at next bar open (signal evaluated at bar close)
@@ -644,34 +682,77 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant') {
       returnPct: unrealizedReturn,
       isOpen: true
     })
-  } else if (!inPosition && closes.length > 0 && shortTermXtrender.length > 0 && longTermXtrender.length > 0) {
-    // Not in position but check if current conditions warrant a BUY signal
-    // If both indicators are positive now, add an open trade for consistency
+  } else if (!inPosition && closes.length > 0) {
+    // Not in position - check if current conditions warrant a BUY signal
     const lastIdx = closes.length - 1
-    const lastShort = shortTermXtrender[lastIdx]
-    const lastLong = longTermXtrender[lastIdx]
     const lastPrice = closes[lastIdx]
     const lastMA = ma ? ma[lastIdx] : 0
     const maConditionMet = !maFilterOn || lastPrice > lastMA
 
-    if (lastShort > 0 && lastLong > 0 && maConditionMet) {
-      // Conditions for BUY are met now - add open trade at current price
+    let shouldBuy = false
+    if (mode === 'ditz' || mode === 'trader') {
+      const lastSig = signalLine[lastIdx]
+      const prevSig = signalLine[lastIdx - 1]
+      shouldBuy = lastSig > prevSig && (mode === 'trader' ? true : maConditionMet)
+    } else {
+      shouldBuy = shortTermXtrender[lastIdx] > 0 && longTermXtrender[lastIdx] > 0 && maConditionMet
+    }
+
+    if (shouldBuy) {
+      // Find the correct historical entry point instead of using last candle price
+      // Search from after the last exit trade to find when entry conditions first appeared
+      let searchStart = startIdx
+      if (trades.length > 0) {
+        const lastTrade = trades[trades.length - 1]
+        if (lastTrade.exitDate) {
+          for (let j = startIdx; j <= lastIdx; j++) {
+            if (times[j] === lastTrade.exitDate) {
+              searchStart = j
+              break
+            }
+          }
+        }
+      }
+
+      let entryIdx = lastIdx
+      for (let j = searchStart; j < lastIdx; j++) {
+        let signalFound = false
+        if (mode === 'ditz' || mode === 'trader') {
+          const sigGreen = signalLine[j] > signalLine[j - 1]
+          const sigWasRed = j >= 2 && signalLine[j - 1] <= signalLine[j - 2]
+          const maCond = mode === 'trader' ? true : (!maFilterOn || closes[j] > (ma ? ma[j] : 0))
+          signalFound = sigGreen && sigWasRed && maCond
+        } else {
+          const bothPos = shortTermXtrender[j] > 0 && longTermXtrender[j] > 0
+          const prevNotBoth = shortTermXtrender[j - 1] <= 0 || longTermXtrender[j - 1] <= 0
+          const maCond = !maFilterOn || closes[j] > (ma ? ma[j] : 0)
+          signalFound = bothPos && prevNotBoth && maCond
+        }
+        if (signalFound && j + 1 <= lastIdx && opens[j + 1] > 0) {
+          entryIdx = j + 1
+          break
+        }
+      }
+
+      const actualEntryPrice = opens[entryIdx] > 0 ? opens[entryIdx] : closes[entryIdx]
+      const unrealizedReturn = actualEntryPrice > 0 ? ((lastPrice - actualEntryPrice) / actualEntryPrice) * 100 : 0
+
       trades.push({
-        entryDate: times[lastIdx],
-        entryPrice: lastPrice,
+        entryDate: times[entryIdx],
+        entryPrice: actualEntryPrice,
         exitDate: null,
         exitPrice: null,
         currentPrice: lastPrice,
-        returnPct: 0,
+        returnPct: unrealizedReturn,
         isOpen: true
       })
 
       markers.push({
-        time: times[lastIdx],
+        time: times[entryIdx],
         position: 'belowBar',
         color: '#00FF00',
         shape: 'arrowUp',
-        text: `BUY $${lastPrice.toFixed(2)}`
+        text: `BUY $${actualEntryPrice.toFixed(2)}`
       })
     }
   }
@@ -757,9 +838,8 @@ export function calculateMetrics(trades) {
 export function calculateSignal(shortData, isAggressive = false, trades = []) {
   if (shortData.length < 4) return { signal: 'WAIT', bars: 0 }
 
-  // Use second-to-last bar (previous month = last completed month)
-  // Last bar is current month (still open/changing)
-  const prevMonthIdx = shortData.length - 2
+  // Use last bar = last completed month (current incomplete month was already removed by processStock)
+  const prevMonthIdx = shortData.length - 1
   const prevMonthValue = shortData[prevMonthIdx].value
   const prevPrevValue = shortData[prevMonthIdx - 1].value
   const isPositive = prevMonthValue > 0
@@ -940,56 +1020,43 @@ export async function saveQuantPerformanceToBackend(symbol, name, metrics, trade
   }
 }
 
-// Calculate signal for Ditz mode (hold through mixed signals)
-function calculateDitzSignal(shortData, longData, trades) {
-  if (!shortData || shortData.length < 2 || !longData || longData.length < 2) {
-    return { signal: 'WAIT', bars: 0 }
-  }
-
-  const idx = shortData.length - 2
-  const shortVal = shortData[idx].value
-  const longVal = longData[idx].value
+// Calculate signal for Ditz mode based on trade history
+// BUY  = a BUY trade was triggered this month (color change red→green)
+// SELL = a SELL trade was triggered this month (color change green→red)
+// HOLD = open position exists but BUY was 1+ months ago
+// WAIT = no open position and no recent SELL
+export function calculateDitzSignal(signalData, trades) {
+  if (!signalData || signalData.length < 3) return { signal: 'WAIT', bars: 0 }
 
   const hasOpenPosition = trades && trades.some(t => t.isOpen)
+  const lastIdx = signalData.length - 1
+  const lastBarTime = signalData[lastIdx].time
 
-  let consecutiveBars = 1
-  const bothPositive = shortVal > 0 && longVal > 0
-  const bothNegative = shortVal < 0 && longVal < 0
+  // 1. Pending signal: line changed color at the last bar (trade can't execute yet = actionable NOW)
+  const lineIsGreen = signalData[lastIdx].value > signalData[lastIdx - 1].value
+  const lineWasGreen = signalData[lastIdx - 1].value > signalData[lastIdx - 2].value
 
-  for (let i = idx - 1; i >= 0; i--) {
-    const sv = shortData[i].value
-    const lv = longData[i].value
-    const wasPositive = sv > 0 && lv > 0
-    const wasNegative = sv < 0 && lv < 0
+  if (lineIsGreen !== lineWasGreen) {
+    return lineIsGreen ? { signal: 'BUY', bars: 1 } : { signal: 'SELL', bars: 1 }
+  }
 
-    if ((bothPositive && wasPositive) || (bothNegative && wasNegative)) {
-      consecutiveBars++
-    } else {
-      break
+  // 2. Trade executed at the last bar (signal fired at bar before)
+  if (trades) {
+    for (const trade of trades) {
+      if (trade.entryDate === lastBarTime) return { signal: 'BUY', bars: 1 }
+      if (trade.exitDate === lastBarTime) return { signal: 'SELL', bars: 1 }
     }
   }
 
-  if (bothPositive) {
-    return consecutiveBars <= 2
-      ? { signal: 'BUY', bars: consecutiveBars }
-      : { signal: 'HOLD', bars: consecutiveBars }
-  } else if (bothNegative) {
-    return consecutiveBars <= 2
-      ? { signal: 'SELL', bars: consecutiveBars }
-      : { signal: 'WAIT', bars: consecutiveBars }
-  } else {
-    // Mixed signals - HOLD position (don't exit until both negative)
-    if (hasOpenPosition) {
-      return { signal: 'HOLD', bars: 1 }
-    }
-    return { signal: 'WAIT', bars: 1 }
-  }
+  // 3. No recent signal change
+  if (hasOpenPosition) return { signal: 'HOLD', bars: 1 }
+  return { signal: 'WAIT', bars: 0 }
 }
 
 // Save Ditz mode performance data to backend
-export async function saveDitzPerformanceToBackend(symbol, name, metrics, trades, shortData, longData, currentPrice, marketCap = 0) {
+export async function saveDitzPerformanceToBackend(symbol, name, metrics, trades, signalData, currentPrice, marketCap = 0) {
   try {
-    const { signal, bars } = calculateDitzSignal(shortData, longData, trades)
+    const { signal, bars } = calculateDitzSignal(signalData, trades)
 
     const res = await fetch('/api/performance/ditz', {
       method: 'POST',
@@ -1017,6 +1084,45 @@ export async function saveDitzPerformanceToBackend(symbol, name, metrics, trades
     }
   } catch (err) {
     console.warn('Failed to save ditz performance data:', err)
+  }
+}
+
+// Calculate signal for Trader mode (same as Ditz - based on signal line color changes)
+export function calculateTraderSignal(signalData, trades) {
+  return calculateDitzSignal(signalData, trades)
+}
+
+// Save Trader mode performance data to backend
+export async function saveTraderPerformanceToBackend(symbol, name, metrics, trades, signalData, currentPrice, marketCap = 0) {
+  try {
+    const { signal, bars } = calculateTraderSignal(signalData, trades)
+
+    const res = await fetch('/api/performance/trader', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol,
+        name,
+        win_rate: metrics.winRate,
+        risk_reward: metrics.riskReward,
+        total_return: metrics.totalReturn,
+        avg_return: metrics.avgReturn,
+        total_trades: metrics.totalTrades,
+        wins: metrics.wins,
+        losses: metrics.losses,
+        signal,
+        signal_bars: bars,
+        trades,
+        current_price: currentPrice,
+        market_cap: marketCap
+      })
+    })
+
+    if (!res.ok) {
+      console.warn(`Failed to save trader performance for ${symbol}: ${res.status}`)
+    }
+  } catch (err) {
+    console.warn('Failed to save trader performance data:', err)
   }
 }
 
@@ -1104,10 +1210,11 @@ export async function fetchMarketCap(symbol) {
 export async function processStock(symbol, name) {
   try {
     // Fetch config and data in parallel
-    const [configData, quantConfig, ditzConfig, historyData, marketCap] = await Promise.all([
+    const [configData, quantConfig, ditzConfig, traderConfig, historyData, marketCap] = await Promise.all([
       fetchBXtrenderConfig(),
       fetchBXtrenderQuantConfig(),
       fetchBXtrenderDitzConfig(),
+      fetchBXtrenderTraderConfig(),
       fetchHistoricalData(symbol),
       fetchMarketCap(symbol)
     ])
@@ -1147,7 +1254,12 @@ export async function processStock(symbol, name) {
     // Calculate and save ditz mode
     const ditzResult = calculateBXtrenderQuant(monthlyData, ditzConfig, 'ditz')
     const ditzMetrics = calculateMetrics(ditzResult.trades)
-    await saveDitzPerformanceToBackend(symbol, name, ditzMetrics, ditzResult.trades, ditzResult.short, ditzResult.long, currentPrice, marketCap)
+    await saveDitzPerformanceToBackend(symbol, name, ditzMetrics, ditzResult.trades, ditzResult.signal, currentPrice, marketCap)
+
+    // Calculate and save trader mode
+    const traderResult = calculateBXtrenderQuant(monthlyData, traderConfig, 'trader')
+    const traderMetrics = calculateMetrics(traderResult.trades)
+    await saveTraderPerformanceToBackend(symbol, name, traderMetrics, traderResult.trades, traderResult.signal, currentPrice, marketCap)
 
     return { success: true }
   } catch (err) {

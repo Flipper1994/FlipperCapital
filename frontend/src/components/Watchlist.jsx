@@ -25,7 +25,7 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock, o
   const searchRef = useRef(null)
   const contextMenuRef = useRef(null)
   const debounceRef = useRef(null)
-  const { isAggressive, isQuant, isDitz } = useTradingMode()
+  const { isAggressive, isQuant, isDitz, isTrader } = useTradingMode()
 
   // Fetch categories
   useEffect(() => {
@@ -107,13 +107,15 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock, o
   useEffect(() => {
     const fetchSignals = async () => {
       try {
-        const endpoint = isDitz
-          ? '/api/performance/ditz'
-          : isQuant
-            ? '/api/performance/quant'
-            : isAggressive
-              ? '/api/performance/aggressive'
-              : '/api/performance'
+        const endpoint = isTrader
+          ? '/api/performance/trader'
+          : isDitz
+            ? '/api/performance/ditz'
+            : isQuant
+              ? '/api/performance/quant'
+              : isAggressive
+                ? '/api/performance/aggressive'
+                : '/api/performance'
         const res = await fetch(endpoint)
         const data = await res.json()
         const signalMap = {}
@@ -126,7 +128,7 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock, o
       }
     }
     fetchSignals()
-  }, [isAggressive, isQuant, isDitz, stocks])
+  }, [isAggressive, isQuant, isDitz, isTrader, stocks])
 
   useEffect(() => {
     const handleClickOutside = (e) => {

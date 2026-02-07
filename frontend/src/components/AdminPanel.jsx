@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { Link, Navigate } from 'react-router-dom'
 import { useTradingMode } from '../context/TradingModeContext'
 import { useCurrency } from '../context/CurrencyContext'
@@ -117,23 +117,105 @@ function AdminPanel() {
   const [ditzManualTrade, setDitzManualTrade] = useState({ symbol: '', name: '', action: 'BUY', price: '', quantity: '', date: '', is_live: false })
   const [showDitzManualTrade, setShowDitzManualTrade] = useState(false)
 
+  // Trader state
+  const [traderPositions, setTraderPositions] = useState([])
+  const [traderTrades, setTraderTrades] = useState([])
+  const [traderPendingTrades, setTraderPendingTrades] = useState([])
+  const [traderPrivatePortfolio, setTraderPrivatePortfolio] = useState(null)
+  const [traderPrivatePerformance, setTraderPrivatePerformance] = useState(null)
+  const [lastTraderRefresh, setLastTraderRefresh] = useState(null)
+  const [traderRefreshing, setTraderRefreshing] = useState(false)
+  const [traderRefreshLogs, setTraderRefreshLogs] = useState([])
+  const [traderSortColumn, setTraderSortColumn] = useState('symbol')
+  const [traderSortDir, setTraderSortDir] = useState('asc')
+  const [traderConfig, setTraderConfig] = useState({
+    short_l1: 5, short_l2: 20, short_l3: 15,
+    long_l1: 20, long_l2: 15,
+    ma_filter_on: false, ma_length: 200, ma_type: 'EMA',
+    tsl_percent: 20.0
+  })
+  const [savingTraderConfig, setSavingTraderConfig] = useState(false)
+  const [traderUnreadCount, setTraderUnreadCount] = useState(0)
+  const [traderUnreadTrades, setTraderUnreadTrades] = useState([])
+  const [traderManualTrade, setTraderManualTrade] = useState({ symbol: '', name: '', action: 'BUY', price: '', quantity: '', date: '', is_live: false })
+  const [showTraderManualTrade, setShowTraderManualTrade] = useState(false)
+
   // Completed trades state
   const [flipperCompletedTrades, setFlipperCompletedTrades] = useState([])
   const [lutzCompletedTrades, setLutzCompletedTrades] = useState([])
   const [quantCompletedTrades, setQuantCompletedTrades] = useState([])
   const [ditzCompletedTrades, setDitzCompletedTrades] = useState([])
+  const [traderCompletedTrades, setTraderCompletedTrades] = useState([])
   const [showFlipperTradeHistory, setShowFlipperTradeHistory] = useState(false)
   const [showLutzTradeHistory, setShowLutzTradeHistory] = useState(false)
   const [showQuantTradeHistory, setShowQuantTradeHistory] = useState(false)
   const [showDitzTradeHistory, setShowDitzTradeHistory] = useState(false)
+  const [showTraderTradeHistory, setShowTraderTradeHistory] = useState(false)
 
   const [manualTradeSearch, setManualTradeSearch] = useState('')
   const [manualTradeResults, setManualTradeResults] = useState([])
   const [manualTradeSearching, setManualTradeSearching] = useState(false)
 
+  // Allowlist state
+  const [allowlistData, setAllowlistData] = useState({})
+  const [allowlistLoading, setAllowlistLoading] = useState(false)
+  const [allowlistFilter, setAllowlistFilter] = useState('')
+  const [allowlistMessage, setAllowlistMessage] = useState(null)
+
+  const fetchAllowlist = async () => {
+    setAllowlistLoading(true)
+    try {
+      const res = await fetch('/api/admin/bot-allowlist', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setAllowlistData(data)
+      }
+    } catch (err) {
+      console.error('Failed to fetch allowlist:', err)
+    }
+    setAllowlistLoading(false)
+  }
+
+  const toggleAllowlist = async (botName, symbol, currentAllowed) => {
+    try {
+      const res = await fetch('/api/admin/bot-allowlist', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ bot_name: botName, symbol, allowed: !currentAllowed })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.closed_position) {
+          setAllowlistMessage(`Position ${symbol} bei ${botName} wurde geschlossen`)
+          setTimeout(() => setAllowlistMessage(null), 4000)
+        }
+        // Update local state
+        setAllowlistData(prev => {
+          const updated = { ...prev }
+          if (updated[botName]) {
+            updated[botName] = updated[botName].map(entry =>
+              entry.symbol === symbol ? { ...entry, allowed: !currentAllowed } : entry
+            )
+          }
+          return updated
+        })
+      }
+    } catch (err) {
+      console.error('Failed to toggle allowlist:', err)
+    }
+  }
+
   useEffect(() => {
     checkAdmin()
   }, [])
+
+  useEffect(() => {
+    if (activeTab === 'allowlist' && Object.keys(allowlistData).length === 0) {
+      fetchAllowlist()
+    }
+  }, [activeTab])
 
   useEffect(() => {
     if (isAdmin) {
@@ -162,6 +244,10 @@ function AdminPanel() {
         fetchDitzSimulatedData()
         fetchLastDitzRefresh()
         fetchDitzUnreadCount()
+        fetchTraderConfig()
+        fetchTraderSimulatedData()
+        fetchLastTraderRefresh()
+        fetchTraderUnreadCount()
       }
     }
   }, [isAdmin, activeTab, activityFilter])
@@ -187,6 +273,30 @@ function AdminPanel() {
     const interval = setInterval(calcCountdown, 1000)
     return () => clearInterval(interval)
   }, [schedulerTime])
+
+  // Enrich performance data with win rate, avg_win/loss, risk_reward from ALL trades (closed + open positions)
+  const enrichPerformance = (perf, completedTrades, portfolio) => {
+    if (!perf) return perf
+    const allItems = [
+      ...(completedTrades || []).map(t => ({ pct: t.profit_loss_pct || 0 })),
+      ...((portfolio?.positions) || []).map(p => ({ pct: p.total_return_pct || 0 }))
+    ]
+    const allWins = allItems.filter(i => i.pct > 0)
+    const allLosses = allItems.filter(i => i.pct < 0)
+    const win_rate = allItems.length > 0 ? (allWins.length / allItems.length) * 100 : perf.win_rate || 0
+    const wins = allWins.length
+    const losses = allLosses.length
+    const avg_win_pct = allWins.length > 0 ? allWins.reduce((s, i) => s + i.pct, 0) / allWins.length : 0
+    const avg_loss_pct = allLosses.length > 0 ? Math.abs(allLosses.reduce((s, i) => s + i.pct, 0) / allLosses.length) : 0
+    const risk_reward = avg_loss_pct > 0 ? avg_win_pct / avg_loss_pct : avg_win_pct > 0 ? Infinity : 0
+    return { ...perf, win_rate, wins, losses, avg_win_pct, avg_loss_pct, risk_reward, total_trades: allItems.length }
+  }
+
+  const flipperEnrichedPerf = useMemo(() => enrichPerformance(flipperPrivatePerformance, flipperCompletedTrades, flipperPrivatePortfolio), [flipperPrivatePerformance, flipperCompletedTrades, flipperPrivatePortfolio])
+  const lutzEnrichedPerf = useMemo(() => enrichPerformance(lutzPrivatePerformance, lutzCompletedTrades, lutzPrivatePortfolio), [lutzPrivatePerformance, lutzCompletedTrades, lutzPrivatePortfolio])
+  const quantEnrichedPerf = useMemo(() => enrichPerformance(quantPrivatePerformance, quantCompletedTrades, quantPrivatePortfolio), [quantPrivatePerformance, quantCompletedTrades, quantPrivatePortfolio])
+  const ditzEnrichedPerf = useMemo(() => enrichPerformance(ditzPrivatePerformance, ditzCompletedTrades, ditzPrivatePortfolio), [ditzPrivatePerformance, ditzCompletedTrades, ditzPrivatePortfolio])
+  const traderEnrichedPerf = useMemo(() => enrichPerformance(traderPrivatePerformance, traderCompletedTrades, traderPrivatePortfolio), [traderPrivatePerformance, traderCompletedTrades, traderPrivatePortfolio])
 
   const fetchLastFullUpdate = async () => {
     try {
@@ -578,6 +688,122 @@ function AdminPanel() {
     } catch (err) { /* ignore */ }
   }
 
+  const fetchTraderSimulatedData = async () => {
+    try {
+      const [portfolioRes, perfRes] = await Promise.all([
+        fetch('/api/trader/simulated-portfolio', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/trader/simulated-performance', { headers: { 'Authorization': `Bearer ${token}` } })
+      ])
+      const portfolioData = await portfolioRes.json()
+      const perfData = await perfRes.json()
+      setTraderPrivatePortfolio(portfolioData)
+      setTraderPrivatePerformance(perfData)
+    } catch (err) {
+      console.error('Failed to fetch Trader simulated data:', err)
+    }
+  }
+
+  const fetchLastTraderRefresh = async () => {
+    try {
+      const res = await fetch('/api/trader/last-refresh', { headers: { 'Authorization': `Bearer ${token}` } })
+      const data = await res.json()
+      if (data && data.updated_at) {
+        setLastTraderRefresh(data)
+        if (data.logs) setTraderRefreshLogs(data.logs)
+      }
+    } catch (err) {
+      console.error('Failed to fetch last Trader refresh:', err)
+    }
+  }
+
+  const fetchTraderConfig = async () => {
+    try {
+      const res = await fetch('/api/admin/bxtrender-trader-config', { headers: { 'Authorization': `Bearer ${token}` } })
+      const data = await res.json()
+      if (data && data.id) setTraderConfig(data)
+    } catch (err) {
+      console.error('Failed to fetch Trader config:', err)
+    }
+  }
+
+  const handleSaveTraderConfig = async () => {
+    setSavingTraderConfig(true)
+    try {
+      const res = await fetch('/api/admin/bxtrender-trader-config', {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          short_l1: parseInt(traderConfig.short_l1),
+          short_l2: parseInt(traderConfig.short_l2),
+          short_l3: parseInt(traderConfig.short_l3),
+          long_l1: parseInt(traderConfig.long_l1),
+          long_l2: parseInt(traderConfig.long_l2),
+          ma_filter_on: traderConfig.ma_filter_on,
+          ma_length: parseInt(traderConfig.ma_length),
+          ma_type: traderConfig.ma_type,
+          tsl_percent: parseFloat(traderConfig.tsl_percent)
+        })
+      })
+      if (res.ok) {
+        const { clearTraderConfigCache } = await import('../utils/bxtrender')
+        clearTraderConfigCache()
+        alert('Trader Konfiguration gespeichert!')
+      } else {
+        alert('Fehler beim Speichern')
+      }
+    } catch (err) {
+      console.error('Failed to save Trader config:', err)
+      alert('Fehler beim Speichern')
+    } finally {
+      setSavingTraderConfig(false)
+    }
+  }
+
+  const updateTraderConfigValue = (field, value) => {
+    setTraderConfig(prev => ({ ...prev, [field]: value }))
+  }
+
+  const fetchTraderUnreadCount = async () => {
+    try {
+      const res = await fetch('/api/trader/trades/unread-count', { headers: { 'Authorization': `Bearer ${token}` } })
+      const data = await res.json()
+      if (res.ok) {
+        setTraderUnreadCount(data.count || 0)
+        setTraderUnreadTrades(data.trades || [])
+      }
+    } catch (err) { /* ignore */ }
+  }
+
+  const toggleTraderTradeRead = async (tradeId) => {
+    try {
+      const res = await fetch(`/api/trader/trade/${tradeId}/read`, { method: 'PUT', headers: { 'Authorization': `Bearer ${token}` } })
+      if (res.ok) {
+        fetchBotData()
+        fetchTraderUnreadCount()
+      }
+    } catch (err) { /* ignore */ }
+  }
+
+  const markAllTraderTradesRead = async () => {
+    try {
+      const res = await fetch('/api/trader/trades/read-all', { method: 'PUT', headers: { 'Authorization': `Bearer ${token}` } })
+      if (res.ok) {
+        fetchBotData()
+        fetchTraderUnreadCount()
+      }
+    } catch (err) { /* ignore */ }
+  }
+
+  const markAllTraderTradesUnread = async () => {
+    try {
+      const res = await fetch('/api/trader/trades/unread-all', { method: 'PUT', headers: { 'Authorization': `Bearer ${token}` } })
+      if (res.ok) {
+        fetchBotData()
+        fetchTraderUnreadCount()
+      }
+    } catch (err) { /* ignore */ }
+  }
+
   const checkAdmin = async () => {
     if (!token) {
       setIsAdmin(false)
@@ -659,7 +885,7 @@ function AdminPanel() {
   const fetchBotData = async () => {
     setLoading(true)
     try {
-      const [fpRes, ftRes, lpRes, ltRes, fptRes, lptRes, qpRes, qtRes, qptRes, dpRes, dtRes, dptRes, fspRes, lspRes, fctRes, lctRes, qctRes, dctRes] = await Promise.all([
+      const [fpRes, ftRes, lpRes, ltRes, fptRes, lptRes, qpRes, qtRes, qptRes, dpRes, dtRes, dptRes, fspRes, lspRes, fctRes, lctRes, qctRes, dctRes, trpRes, trtRes, trptRes, trctRes] = await Promise.all([
         fetch('/api/flipperbot/simulated-portfolio', { headers: { 'Authorization': `Bearer ${token}` } }),
         fetch('/api/flipperbot/actions-all', { headers: { 'Authorization': `Bearer ${token}` } }),
         fetch('/api/lutz/simulated-portfolio', { headers: { 'Authorization': `Bearer ${token}` } }),
@@ -677,14 +903,19 @@ function AdminPanel() {
         fetch('/api/flipperbot/completed-trades', { headers: { 'Authorization': `Bearer ${token}` } }),
         fetch('/api/lutz/completed-trades', { headers: { 'Authorization': `Bearer ${token}` } }),
         fetch('/api/quant/completed-trades', { headers: { 'Authorization': `Bearer ${token}` } }),
-        fetch('/api/ditz/completed-trades', { headers: { 'Authorization': `Bearer ${token}` } })
+        fetch('/api/ditz/completed-trades', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/trader/simulated-portfolio', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/trader/actions-all', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/trader/pending-trades', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/trader/completed-trades', { headers: { 'Authorization': `Bearer ${token}` } })
       ])
-      const [fp, ft, lp, lt, fpt, lpt, qp, qt, qpt, dp, dtt, dpt, fsp, lsp, fct, lct, qct, dct] = await Promise.all([
+      const [fp, ft, lp, lt, fpt, lpt, qp, qt, qpt, dp, dtt, dpt, fsp, lsp, fct, lct, qct, dct, trp, trt, trpt, trct] = await Promise.all([
         fpRes.json(), ftRes.json(), lpRes.json(), ltRes.json(), fptRes.json(), lptRes.json(),
         qpRes.json(), qtRes.json(), qptRes.json(),
         dpRes.json(), dtRes.json(), dptRes.json(),
         fspRes.json(), lspRes.json(),
-        fctRes.json(), lctRes.json(), qctRes.json(), dctRes.json()
+        fctRes.json(), lctRes.json(), qctRes.json(), dctRes.json(),
+        trpRes.json(), trtRes.json(), trptRes.json(), trctRes.json()
       ])
       setFlipperPositions(fp?.positions || [])
       setFlipperTrades(ft || [])
@@ -710,6 +941,11 @@ function AdminPanel() {
       setQuantCompletedTrades(qct || [])
       setDitzCompletedTrades(dct || [])
       fetchDitzUnreadCount()
+      setTraderPositions(trp?.positions || [])
+      setTraderTrades(trt || [])
+      setTraderPendingTrades(trpt || [])
+      setTraderCompletedTrades(trct || [])
+      fetchTraderUnreadCount()
     } catch (err) {
       console.error('Failed to fetch bot data:', err)
     } finally {
@@ -878,9 +1114,46 @@ function AdminPanel() {
     }
   }
 
+  const handleCreateTraderManualTrade = async () => {
+    if (!traderManualTrade.symbol || !traderManualTrade.price) {
+      alert('Symbol und Preis sind Pflichtfelder')
+      return
+    }
+    setCreatingManualTrade(true)
+    try {
+      const priceInUSD = convertToUSD(parseFloat(traderManualTrade.price))
+      const res = await fetch('/api/trader/manual-trade', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol: traderManualTrade.symbol.toUpperCase(),
+          name: traderManualTrade.name || traderManualTrade.symbol.toUpperCase(),
+          action: traderManualTrade.action,
+          price: priceInUSD,
+          quantity: traderManualTrade.quantity ? parseFloat(traderManualTrade.quantity) : 0,
+          date: traderManualTrade.date || '',
+          is_live: traderManualTrade.is_live
+        })
+      })
+      if (res.ok) {
+        setShowTraderManualTrade(false)
+        setTraderManualTrade({ symbol: '', name: '', action: 'BUY', price: '', quantity: '', date: '', is_live: false })
+        fetchBotData()
+        fetchTraderSimulatedData()
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Fehler beim Erstellen')
+      }
+    } catch (err) {
+      console.error('Failed to create Trader manual trade:', err)
+    } finally {
+      setCreatingManualTrade(false)
+    }
+  }
+
   const handleDeleteTrade = async (bot, tradeId, symbol, action, isDeleted) => {
-    // For quant/ditz bot: soft-delete toggle (no confirm needed for restore)
-    if (bot === 'quant' || bot === 'ditz') {
+    // For quant/ditz/trader bot: soft-delete toggle (no confirm needed for restore)
+    if (bot === 'quant' || bot === 'ditz' || bot === 'trader') {
       if (!isDeleted) {
         const msg = action === 'BUY'
           ? `Trade streichen? Die Position für ${symbol} wird geschlossen.`
@@ -904,6 +1177,7 @@ function AdminPanel() {
         if (bot === 'lutz') fetchLutzUnreadCount()
         if (bot === 'quant') fetchQuantUnreadCount()
         if (bot === 'ditz') fetchDitzUnreadCount()
+        if (bot === 'trader') fetchTraderUnreadCount()
       } else {
         const data = await res.json()
         alert(data.error || 'Fehler')
@@ -1042,6 +1316,7 @@ function AdminPanel() {
     if (botTab === 'flipper') return 'flipperbot'
     if (botTab === 'lutz') return 'lutz'
     if (botTab === 'ditz') return 'ditz'
+    if (botTab === 'trader') return 'trader'
     return 'quant'
   }
 
@@ -1072,8 +1347,8 @@ function AdminPanel() {
       alert('Bitte ein Datum auswählen')
       return
     }
-    const botName = bot === 'flipperbot' ? 'FlipperBot' : bot === 'lutz' ? 'Lutz' : bot === 'ditz' ? 'Ditz' : 'Quant'
-    const modeInfo = bot === 'flipperbot' ? 'Defensiv' : bot === 'lutz' ? 'Aggressiv' : bot === 'ditz' ? 'Ditz' : 'Quant'
+    const botName = bot === 'flipperbot' ? 'FlipperBot' : bot === 'lutz' ? 'Lutz' : bot === 'ditz' ? 'Ditz' : bot === 'trader' ? 'Trader' : 'Quant'
+    const modeInfo = bot === 'flipperbot' ? 'Defensiv' : bot === 'lutz' ? 'Aggressiv' : bot === 'ditz' ? 'Ditz' : bot === 'trader' ? 'Trader' : 'Quant'
     if (!confirm(`${botName} Backfill ab ${backfillDate} bis heute durchführen? Historische Trades für ${modeInfo}-Aktien werden erstellt.`)) return
     setBackfilling(true)
     setBackfillResult(null)
@@ -1122,7 +1397,7 @@ function AdminPanel() {
   }
 
   const handleAcceptAllTrades = async (bot) => {
-    const trades = bot === 'flipperbot' ? flipperPendingTrades : bot === 'lutz' ? lutzPendingTrades : quantPendingTrades
+    const trades = bot === 'flipperbot' ? flipperPendingTrades : bot === 'lutz' ? lutzPendingTrades : bot === 'trader' ? traderPendingTrades : quantPendingTrades
     if (trades.length === 0) return
     if (!confirm(`Alle ${trades.length} ausstehenden Trades akzeptieren?`)) return
 
@@ -1242,12 +1517,16 @@ function AdminPanel() {
   }
 
   const handleUpdateAllStocks = async () => {
-    if (!confirm(`Alle Watchlist-Aktien aktualisieren? Das speichert BX-Trender Daten für ALLE Modi (Defensiv, Aggressiv, Quant & Ditz). Das kann mehrere Minuten dauern.`)) {
+    if (!confirm(`Alle Watchlist-Aktien aktualisieren? Das speichert BX-Trender Daten für ALLE Modi (Defensiv, Aggressiv, Quant, Ditz & Trader). Das kann mehrere Minuten dauern.`)) {
       return
     }
 
     setUpdatingStocks(true)
     setUpdateProgress({ current: 0, total: 0, status: 'Lade Aktien-Liste...' })
+
+    let total = 0
+    let successCount = 0
+    let errorCount = 0
 
     try {
       // Get all stocks from watchlist
@@ -1263,9 +1542,7 @@ function AdminPanel() {
       }
 
       const stocks = data.stocks
-      const total = stocks.length
-      let successCount = 0
-      let errorCount = 0
+      total = stocks.length
 
       setUpdateProgress({ current: 0, total, status: 'Verarbeite Aktien...' })
 
@@ -1298,32 +1575,31 @@ function AdminPanel() {
         status: `Fertig! ${successCount} erfolgreich, ${errorCount} fehlgeschlagen`,
         currentStock: null
       })
-
-      // Record the full update to backend
-      try {
-        await fetch('/api/admin/record-full-update', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            stocks_count: total,
-            success: successCount,
-            failed: errorCount
-          })
-        })
-        fetchLastFullUpdate()
-      } catch (err) {
-        console.error('Failed to record full update:', err)
-      }
-
-      // Refresh stats
-      fetchStats()
     } catch (err) {
       console.error('Failed to update stocks:', err)
       setUpdateProgress({ status: 'Fehler: ' + err.message, current: 0, total: 0 })
     } finally {
+      // Always record update and refresh, even if loop was interrupted
+      if (total > 0) {
+        try {
+          await fetch('/api/admin/record-full-update', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              stocks_count: total,
+              success: successCount,
+              failed: errorCount
+            })
+          })
+        } catch (err) {
+          console.error('Failed to record full update:', err)
+        }
+        fetchLastFullUpdate()
+      }
+      fetchStats()
       setUpdatingStocks(false)
     }
   }
@@ -1358,7 +1634,9 @@ function AdminPanel() {
             { key: 'traffic', label: 'Traffic' },
             { key: 'bots', label: 'Bots' },
             { key: 'quant', label: 'Quant' },
-            { key: 'ditz', label: 'Ditz' }
+            { key: 'ditz', label: 'Ditz' },
+            { key: 'trader', label: 'Trader' },
+            { key: 'allowlist', label: 'Aktien Listen' }
           ].map(tab => (
             <button
               key={tab.key}
@@ -1402,7 +1680,7 @@ function AdminPanel() {
                         </span>
                       </h2>
                       <p className="text-sm text-gray-400 mt-1">
-                        Aktualisiere alle Aktien der Watchlist für alle vier Modi (Defensiv, Aggressiv, Quant, Ditz).
+                        Aktualisiere alle Aktien der Watchlist für alle Modi (Defensiv, Aggressiv, Quant, Ditz, Trader).
                         Dies speichert die BX-Trender Performance-Daten für jede Aktie.
                       </p>
                     </div>
@@ -1990,6 +2268,21 @@ function AdminPanel() {
                       </span>
                     )}
                   </button>
+                  <button
+                    onClick={() => setBotTab('trader')}
+                    className={`px-4 py-2 rounded-lg font-medium transition-colors relative ${
+                      botTab === 'trader'
+                        ? 'bg-emerald-500 text-white'
+                        : 'bg-dark-700 text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    Trader
+                    {traderUnreadCount > 0 && (
+                      <span className="absolute -top-1 -right-1 w-5 h-5 bg-emerald-500 text-white text-xs rounded-full flex items-center justify-center font-bold">
+                        {traderUnreadCount > 9 ? '9+' : traderUnreadCount}
+                      </span>
+                    )}
+                  </button>
                 </div>
 
                 {/* Info */}
@@ -2131,28 +2424,33 @@ function AdminPanel() {
                             <div className="text-xs text-gray-500 mt-1">{flipperPrivatePerformance.total_trades || 0} Trades</div>
                           </div>
                         </div>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 md:gap-4">
                           <div className="bg-dark-700/50 rounded-lg p-3">
                             <div className="text-xs text-gray-500 mb-1">Win Rate</div>
-                            <div className="text-base font-bold text-white">{flipperPrivatePerformance.win_rate?.toFixed(1) || 0}%</div>
-                            <div className="text-xs text-gray-500 mt-1">{flipperPrivatePerformance.wins || 0}W / {flipperPrivatePerformance.losses || 0}L</div>
+                            <div className={`text-base font-bold ${(flipperEnrichedPerf.win_rate || 0) >= 50 ? 'text-green-400' : 'text-red-400'}`}>{flipperEnrichedPerf.win_rate?.toFixed(1) || 0}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{flipperEnrichedPerf.wins || 0}W / {flipperEnrichedPerf.losses || 0}L</div>
                           </div>
                           <div className="bg-dark-700/50 rounded-lg p-3">
-                            <div className="text-xs text-gray-500 mb-1">Ø Rendite/Trade</div>
-                            <div className={`text-base font-bold ${(flipperPrivatePerformance.avg_return_per_trade || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                              {formatPercent(flipperPrivatePerformance.avg_return_per_trade)}
+                            <div className="text-xs text-gray-500 mb-1">Risiko-Rendite</div>
+                            <div className={`text-base font-bold ${(flipperEnrichedPerf.risk_reward || 0) >= 1 ? 'text-green-400' : 'text-red-400'}`}>
+                              {(flipperEnrichedPerf.risk_reward || 0).toFixed(2)}
                             </div>
-                            <div className="text-xs text-gray-500 mt-1">gleichgewichtet</div>
+                            <div className="text-xs text-gray-500 mt-1">Ø Gewinn / Ø Verlust</div>
+                          </div>
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Ø Gewinn-Trade</div>
+                            <div className="text-base font-bold text-green-400">+{(flipperEnrichedPerf.avg_win_pct || 0).toFixed(2)}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{flipperEnrichedPerf.wins || 0} Trades</div>
+                          </div>
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Ø Verlust-Trade</div>
+                            <div className="text-base font-bold text-red-400">-{(flipperEnrichedPerf.avg_loss_pct || 0).toFixed(2)}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{flipperEnrichedPerf.losses || 0} Trades</div>
                           </div>
                           <div className="bg-dark-700/50 rounded-lg p-3">
                             <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
-                            <div className="text-base font-bold text-white">{flipperPrivatePerformance.open_positions || 0}</div>
-                            <div className="text-xs text-gray-500 mt-1">von {flipperPrivatePerformance.total_buys || 0} Käufen</div>
-                          </div>
-                          <div className="bg-dark-700/50 rounded-lg p-3">
-                            <div className="text-xs text-gray-500 mb-1">Live Positionen</div>
-                            <div className="text-base font-bold text-green-400">{flipperPrivatePortfolio?.positions?.filter(p => p.is_live)?.length || 0}</div>
-                            <div className="text-xs text-gray-500 mt-1">mit echtem Geld</div>
+                            <div className="text-base font-bold text-white">{flipperEnrichedPerf.open_positions || 0}</div>
+                            <div className="text-xs text-gray-500 mt-1">von {flipperEnrichedPerf.total_buys || 0} Käufen</div>
                           </div>
                         </div>
                       </div>
@@ -2370,28 +2668,33 @@ function AdminPanel() {
                             <div className="text-xs text-gray-500 mt-1">{lutzPrivatePerformance.total_trades || 0} Trades</div>
                           </div>
                         </div>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 md:gap-4">
                           <div className="bg-dark-700/50 rounded-lg p-3">
                             <div className="text-xs text-gray-500 mb-1">Win Rate</div>
-                            <div className="text-base font-bold text-white">{lutzPrivatePerformance.win_rate?.toFixed(1) || 0}%</div>
-                            <div className="text-xs text-gray-500 mt-1">{lutzPrivatePerformance.wins || 0}W / {lutzPrivatePerformance.losses || 0}L</div>
+                            <div className={`text-base font-bold ${(lutzEnrichedPerf.win_rate || 0) >= 50 ? 'text-green-400' : 'text-red-400'}`}>{lutzEnrichedPerf.win_rate?.toFixed(1) || 0}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{lutzEnrichedPerf.wins || 0}W / {lutzEnrichedPerf.losses || 0}L</div>
                           </div>
                           <div className="bg-dark-700/50 rounded-lg p-3">
-                            <div className="text-xs text-gray-500 mb-1">Ø Rendite/Trade</div>
-                            <div className={`text-base font-bold ${(lutzPrivatePerformance.avg_return_per_trade || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                              {formatPercent(lutzPrivatePerformance.avg_return_per_trade)}
+                            <div className="text-xs text-gray-500 mb-1">Risiko-Rendite</div>
+                            <div className={`text-base font-bold ${(lutzEnrichedPerf.risk_reward || 0) >= 1 ? 'text-green-400' : 'text-red-400'}`}>
+                              {(lutzEnrichedPerf.risk_reward || 0).toFixed(2)}
                             </div>
-                            <div className="text-xs text-gray-500 mt-1">gleichgewichtet</div>
+                            <div className="text-xs text-gray-500 mt-1">Ø Gewinn / Ø Verlust</div>
+                          </div>
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Ø Gewinn-Trade</div>
+                            <div className="text-base font-bold text-green-400">+{(lutzEnrichedPerf.avg_win_pct || 0).toFixed(2)}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{lutzEnrichedPerf.wins || 0} Trades</div>
+                          </div>
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Ø Verlust-Trade</div>
+                            <div className="text-base font-bold text-red-400">-{(lutzEnrichedPerf.avg_loss_pct || 0).toFixed(2)}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{lutzEnrichedPerf.losses || 0} Trades</div>
                           </div>
                           <div className="bg-dark-700/50 rounded-lg p-3">
                             <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
-                            <div className="text-base font-bold text-white">{lutzPrivatePerformance.open_positions || 0}</div>
-                            <div className="text-xs text-gray-500 mt-1">von {lutzPrivatePerformance.total_buys || 0} Käufen</div>
-                          </div>
-                          <div className="bg-dark-700/50 rounded-lg p-3">
-                            <div className="text-xs text-gray-500 mb-1">Live Positionen</div>
-                            <div className="text-base font-bold text-green-400">{lutzPrivatePortfolio?.positions?.filter(p => p.is_live)?.length || 0}</div>
-                            <div className="text-xs text-gray-500 mt-1">mit echtem Geld</div>
+                            <div className="text-base font-bold text-white">{lutzEnrichedPerf.open_positions || 0}</div>
+                            <div className="text-xs text-gray-500 mt-1">von {lutzEnrichedPerf.total_buys || 0} Käufen</div>
                           </div>
                         </div>
                       </div>
@@ -2703,28 +3006,33 @@ function AdminPanel() {
                             <div className="text-xs text-gray-500 mt-1">{quantPrivatePerformance.total_trades || 0} Trades</div>
                           </div>
                         </div>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 md:gap-4">
                           <div className="bg-dark-700/50 rounded-lg p-3">
                             <div className="text-xs text-gray-500 mb-1">Win Rate</div>
-                            <div className="text-base font-bold text-white">{quantPrivatePerformance.win_rate?.toFixed(1) || 0}%</div>
-                            <div className="text-xs text-gray-500 mt-1">{quantPrivatePerformance.wins || 0}W / {quantPrivatePerformance.losses || 0}L</div>
+                            <div className={`text-base font-bold ${(quantEnrichedPerf.win_rate || 0) >= 50 ? 'text-green-400' : 'text-red-400'}`}>{quantEnrichedPerf.win_rate?.toFixed(1) || 0}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{quantEnrichedPerf.wins || 0}W / {quantEnrichedPerf.losses || 0}L</div>
                           </div>
                           <div className="bg-dark-700/50 rounded-lg p-3">
-                            <div className="text-xs text-gray-500 mb-1">Ø Rendite/Trade</div>
-                            <div className={`text-base font-bold ${(quantPrivatePerformance.avg_return_per_trade || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                              {formatPercent(quantPrivatePerformance.avg_return_per_trade)}
+                            <div className="text-xs text-gray-500 mb-1">Risiko-Rendite</div>
+                            <div className={`text-base font-bold ${(quantEnrichedPerf.risk_reward || 0) >= 1 ? 'text-green-400' : 'text-red-400'}`}>
+                              {(quantEnrichedPerf.risk_reward || 0).toFixed(2)}
                             </div>
-                            <div className="text-xs text-gray-500 mt-1">gleichgewichtet</div>
+                            <div className="text-xs text-gray-500 mt-1">Ø Gewinn / Ø Verlust</div>
+                          </div>
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Ø Gewinn-Trade</div>
+                            <div className="text-base font-bold text-green-400">+{(quantEnrichedPerf.avg_win_pct || 0).toFixed(2)}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{quantEnrichedPerf.wins || 0} Trades</div>
+                          </div>
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Ø Verlust-Trade</div>
+                            <div className="text-base font-bold text-red-400">-{(quantEnrichedPerf.avg_loss_pct || 0).toFixed(2)}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{quantEnrichedPerf.losses || 0} Trades</div>
                           </div>
                           <div className="bg-dark-700/50 rounded-lg p-3">
                             <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
-                            <div className="text-base font-bold text-white">{quantPrivatePerformance.open_positions || 0}</div>
-                            <div className="text-xs text-gray-500 mt-1">von {quantPrivatePerformance.total_buys || 0} Käufen</div>
-                          </div>
-                          <div className="bg-dark-700/50 rounded-lg p-3">
-                            <div className="text-xs text-gray-500 mb-1">Live Positionen</div>
-                            <div className="text-base font-bold text-green-400">{quantPrivatePortfolio?.positions?.filter(p => p.is_live)?.length || 0}</div>
-                            <div className="text-xs text-gray-500 mt-1">mit echtem Geld</div>
+                            <div className="text-base font-bold text-white">{quantEnrichedPerf.open_positions || 0}</div>
+                            <div className="text-xs text-gray-500 mt-1">von {quantEnrichedPerf.total_buys || 0} Käufen</div>
                           </div>
                         </div>
                       </div>
@@ -3071,28 +3379,33 @@ function AdminPanel() {
                             <div className="text-xs text-gray-500 mt-1">{ditzPrivatePerformance.total_trades || 0} Trades</div>
                           </div>
                         </div>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 md:gap-4">
                           <div className="bg-dark-700/50 rounded-lg p-3">
                             <div className="text-xs text-gray-500 mb-1">Win Rate</div>
-                            <div className="text-base font-bold text-white">{ditzPrivatePerformance.win_rate?.toFixed(1) || 0}%</div>
-                            <div className="text-xs text-gray-500 mt-1">{ditzPrivatePerformance.wins || 0}W / {ditzPrivatePerformance.losses || 0}L</div>
+                            <div className={`text-base font-bold ${(ditzEnrichedPerf.win_rate || 0) >= 50 ? 'text-green-400' : 'text-red-400'}`}>{ditzEnrichedPerf.win_rate?.toFixed(1) || 0}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{ditzEnrichedPerf.wins || 0}W / {ditzEnrichedPerf.losses || 0}L</div>
                           </div>
                           <div className="bg-dark-700/50 rounded-lg p-3">
-                            <div className="text-xs text-gray-500 mb-1">Ø Rendite/Trade</div>
-                            <div className={`text-base font-bold ${(ditzPrivatePerformance.avg_return_per_trade || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                              {formatPercent(ditzPrivatePerformance.avg_return_per_trade)}
+                            <div className="text-xs text-gray-500 mb-1">Risiko-Rendite</div>
+                            <div className={`text-base font-bold ${(ditzEnrichedPerf.risk_reward || 0) >= 1 ? 'text-green-400' : 'text-red-400'}`}>
+                              {(ditzEnrichedPerf.risk_reward || 0).toFixed(2)}
                             </div>
-                            <div className="text-xs text-gray-500 mt-1">gleichgewichtet</div>
+                            <div className="text-xs text-gray-500 mt-1">Ø Gewinn / Ø Verlust</div>
+                          </div>
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Ø Gewinn-Trade</div>
+                            <div className="text-base font-bold text-green-400">+{(ditzEnrichedPerf.avg_win_pct || 0).toFixed(2)}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{ditzEnrichedPerf.wins || 0} Trades</div>
+                          </div>
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Ø Verlust-Trade</div>
+                            <div className="text-base font-bold text-red-400">-{(ditzEnrichedPerf.avg_loss_pct || 0).toFixed(2)}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{ditzEnrichedPerf.losses || 0} Trades</div>
                           </div>
                           <div className="bg-dark-700/50 rounded-lg p-3">
                             <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
-                            <div className="text-base font-bold text-white">{ditzPrivatePerformance.open_positions || 0}</div>
-                            <div className="text-xs text-gray-500 mt-1">von {ditzPrivatePerformance.total_buys || 0} Käufen</div>
-                          </div>
-                          <div className="bg-dark-700/50 rounded-lg p-3">
-                            <div className="text-xs text-gray-500 mb-1">Live Positionen</div>
-                            <div className="text-base font-bold text-green-400">{ditzPrivatePortfolio?.positions?.filter(p => p.is_live)?.length || 0}</div>
-                            <div className="text-xs text-gray-500 mt-1">mit echtem Geld</div>
+                            <div className="text-base font-bold text-white">{ditzEnrichedPerf.open_positions || 0}</div>
+                            <div className="text-xs text-gray-500 mt-1">von {ditzEnrichedPerf.total_buys || 0} Käufen</div>
                           </div>
                         </div>
                       </div>
@@ -3244,6 +3557,378 @@ function AdminPanel() {
                                 </thead>
                                 <tbody>
                                   {ditzCompletedTrades.map((trade) => (
+                                    <tr key={trade.id} className={`border-b border-dark-700/50 last:border-0 ${trade.is_live ? 'bg-green-500/5' : ''}`}>
+                                      <td className="py-3 px-4">
+                                        <div className="flex items-center gap-2">
+                                          <div className="font-medium text-white">{trade.symbol}</div>
+                                          {trade.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
+                                        </div>
+                                      </td>
+                                      <td className="py-3 px-4">
+                                        <div className="text-gray-300">{formatPrice(trade.buy_price)}</div>
+                                        <div className="text-xs text-gray-500">{formatDateShort(trade.buy_date)}</div>
+                                      </td>
+                                      <td className="py-3 px-4">
+                                        <div className="text-gray-300">{formatPrice(trade.sell_price)}</div>
+                                        <div className="text-xs text-gray-500">{formatDateShort(trade.sell_date)}</div>
+                                      </td>
+                                      <td className={`py-3 px-4 text-right font-medium ${trade.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                        <div>{formatPercent(trade.profit_loss_pct)}</div>
+                                        <div className="text-xs">{trade.profit_loss >= 0 ? '+' : ''}{formatPrice(trade.profit_loss)}</div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {botTab === 'trader' && (
+                  <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-xl">
+                    <div className="flex items-center justify-between mb-4">
+                      <div>
+                        <h3 className="text-lg font-semibold text-emerald-300 flex items-center gap-2">
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                          </svg>
+                          Simuliertes Portfolio (Backtest)
+                        </h3>
+                        {lastTraderRefresh && (
+                          <p className="text-xs text-gray-500 mt-1">
+                            Letzter Refresh: {new Date(lastTraderRefresh.updated_at).toLocaleString('de-DE')} von {lastTraderRefresh.triggered_by || 'unbekannt'}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={async () => {
+                            if (!confirm('Trader Bot Refresh - Alle Signale prüfen und Trades ausführen?')) return
+                            setTraderRefreshing(true)
+                            setTraderRefreshLogs([{ level: 'info', message: 'Refresh gestartet...' }])
+                            try {
+                              const res = await fetch('/api/trader/update', {
+                                method: 'GET',
+                                headers: { 'Authorization': `Bearer ${token}` }
+                              })
+                              const data = await res.json()
+                              if (res.ok) {
+                                setTraderRefreshLogs(data.logs || [{ level: 'success', message: 'Update abgeschlossen' }])
+                                fetchBotData()
+                                fetchTraderSimulatedData()
+                                fetchLastTraderRefresh()
+                              } else {
+                                setTraderRefreshLogs([{ level: 'error', message: data.error || 'Unbekannter Fehler' }])
+                              }
+                            } catch (err) {
+                              setTraderRefreshLogs([{ level: 'error', message: err.message }])
+                            } finally {
+                              setTraderRefreshing(false)
+                            }
+                          }}
+                          disabled={traderRefreshing}
+                          className="px-3 py-1.5 bg-emerald-500 text-white rounded-lg font-medium hover:bg-emerald-400 text-sm flex items-center gap-2 disabled:opacity-50"
+                        >
+                          {traderRefreshing ? (
+                            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                          ) : (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                          )}
+                          {traderRefreshing ? 'Läuft...' : 'Refresh'}
+                        </button>
+                        <button
+                          onClick={async () => {
+                            if (!confirm('Alle ausstehenden Trades und Todos löschen?')) return
+                            setTraderRefreshLogs([{ level: 'info', message: 'Cleanup gestartet...' }])
+                            try {
+                              const res = await fetch('/api/trader/cleanup-pending', {
+                                method: 'POST',
+                                headers: { 'Authorization': `Bearer ${token}` }
+                              })
+                              const data = await res.json()
+                              if (res.ok) {
+                                setTraderRefreshLogs([
+                                  { level: 'success', message: `Cleanup abgeschlossen` },
+                                  { level: 'info', message: `${data.deleted_trades} Trades gelöscht` },
+                                  { level: 'info', message: `${data.deleted_positions} Positionen gelöscht` },
+                                  { level: 'info', message: `${data.deleted_todos} Todos gelöscht` }
+                                ])
+                                fetchBotData()
+                                fetchTraderSimulatedData()
+                              } else {
+                                setTraderRefreshLogs([{ level: 'error', message: data.error || 'Unbekannter Fehler' }])
+                              }
+                            } catch (err) {
+                              setTraderRefreshLogs([{ level: 'error', message: err.message }])
+                            }
+                          }}
+                          className="px-3 py-1.5 bg-red-500/20 text-red-400 rounded-lg font-medium hover:bg-red-500/30 text-sm flex items-center gap-2"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
+                          Cleanup
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Log Area */}
+                    {traderRefreshLogs.length > 0 && (
+                      <div className="mb-4 p-3 bg-dark-800 rounded-lg border border-dark-600 max-h-[200px] overflow-y-auto">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-medium text-gray-400">Logs</span>
+                          <button
+                            onClick={() => setTraderRefreshLogs([])}
+                            className="text-xs text-gray-500 hover:text-gray-400"
+                          >
+                            Schließen
+                          </button>
+                        </div>
+                        <div className="space-y-1 font-mono text-xs">
+                          {traderRefreshLogs.map((log, idx) => (
+                            <div key={idx} className={`${
+                              log.level === 'error' ? 'text-red-400' :
+                              log.level === 'success' ? 'text-green-400' :
+                              log.level === 'warning' ? 'text-yellow-400' :
+                              'text-gray-400'
+                            }`}>
+                              [{log.level?.toUpperCase() || 'INFO'}] {log.message}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Sim Performance Chart */}
+                    <div className="mb-4">
+                      <PortfolioChart
+                        token={token}
+                        botType="trader"
+                        extraParams="live=false"
+                        height={200}
+                        title="Simulierte Performance"
+                      />
+                    </div>
+
+                    {/* Performance Stats */}
+                    {traderPrivatePerformance && (
+                      <div className="mb-4">
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-4">
+                          <div className="bg-gradient-to-r from-emerald-500/20 to-teal-500/20 rounded-lg p-3 md:p-4 border border-emerald-500/30">
+                            <div className="text-xs text-gray-400 mb-1">Gesamt Rendite</div>
+                            <div className={`text-xl md:text-2xl font-bold ${traderPrivatePerformance.overall_return_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPercent(traderPrivatePerformance.overall_return_pct)}
+                            </div>
+                            <div className={`text-xs mt-1 ${(traderPrivatePerformance.total_gain || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPrice(traderPrivatePerformance.total_gain || 0)} Gewinn
+                            </div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3 md:p-4">
+                            <div className="text-xs text-gray-500 mb-1">Investiert</div>
+                            <div className="text-lg md:text-xl font-bold text-white">{formatPrice(traderPrivatePerformance.invested_in_positions || 0)}</div>
+                            <div className="text-xs text-gray-500 mt-1">Aktuell: {formatPrice(traderPrivatePerformance.current_value || 0)}</div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3 md:p-4">
+                            <div className="text-xs text-gray-500 mb-1">Unrealisiert</div>
+                            <div className={`text-lg md:text-xl font-bold ${(traderPrivatePerformance.unrealized_gain || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPrice(traderPrivatePerformance.unrealized_gain || 0)}
+                            </div>
+                            <div className={`text-xs mt-1 ${(traderPrivatePerformance.total_return_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPercent(traderPrivatePerformance.total_return_pct)}
+                            </div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3 md:p-4">
+                            <div className="text-xs text-gray-500 mb-1">Realisiert</div>
+                            <div className={`text-lg md:text-xl font-bold ${(traderPrivatePerformance.realized_profit || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {formatPrice(traderPrivatePerformance.realized_profit || 0)}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">{traderPrivatePerformance.total_trades || 0} Trades</div>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 md:gap-4">
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Win Rate</div>
+                            <div className={`text-base font-bold ${(traderEnrichedPerf.win_rate || 0) >= 50 ? 'text-green-400' : 'text-red-400'}`}>{traderEnrichedPerf.win_rate?.toFixed(1) || 0}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{traderEnrichedPerf.wins || 0}W / {traderEnrichedPerf.losses || 0}L</div>
+                          </div>
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Risiko-Rendite</div>
+                            <div className={`text-base font-bold ${(traderEnrichedPerf.risk_reward || 0) >= 1 ? 'text-green-400' : 'text-red-400'}`}>
+                              {(traderEnrichedPerf.risk_reward || 0).toFixed(2)}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">Ø Gewinn / Ø Verlust</div>
+                          </div>
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Ø Gewinn-Trade</div>
+                            <div className="text-base font-bold text-green-400">+{(traderEnrichedPerf.avg_win_pct || 0).toFixed(2)}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{traderEnrichedPerf.wins || 0} Trades</div>
+                          </div>
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Ø Verlust-Trade</div>
+                            <div className="text-base font-bold text-red-400">-{(traderEnrichedPerf.avg_loss_pct || 0).toFixed(2)}%</div>
+                            <div className="text-xs text-gray-500 mt-1">{traderEnrichedPerf.losses || 0} Trades</div>
+                          </div>
+                          <div className="bg-dark-700/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
+                            <div className="text-base font-bold text-white">{traderEnrichedPerf.open_positions || 0}</div>
+                            <div className="text-xs text-gray-500 mt-1">von {traderEnrichedPerf.total_buys || 0} Käufen</div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Private Positions Table */}
+                    {traderPrivatePortfolio?.positions?.length > 0 ? (
+                      <div className="overflow-x-auto">
+                        <table className="w-full">
+                          <thead>
+                            <tr className="text-left text-xs text-gray-500 border-b border-dark-600">
+                              {[
+                                { key: 'symbol', label: 'Symbol', align: 'left' },
+                                { key: 'name', label: 'Name', align: 'left' },
+                                { key: 'quantity', label: 'Menge (Invest.)', align: 'right' },
+                                { key: 'avg_price', label: 'Kaufpreis', align: 'right' },
+                                { key: 'current_price', label: 'Aktuell', align: 'right' },
+                                { key: 'tsl', label: `TSL (${traderConfig.tsl_percent || 20}%)`, align: 'right' },
+                                { key: 'total_return_pct', label: 'Rendite (Wert)', align: 'right' },
+                                { key: 'buy_date', label: 'Kaufdatum', align: 'left' }
+                              ].map(col => (
+                                <th
+                                  key={col.key}
+                                  className={`p-2 cursor-pointer hover:text-emerald-400 select-none ${col.align === 'right' ? 'text-right' : ''}`}
+                                  onClick={() => {
+                                    if (traderSortColumn === col.key) {
+                                      setTraderSortDir(traderSortDir === 'asc' ? 'desc' : 'asc')
+                                    } else {
+                                      setTraderSortColumn(col.key)
+                                      setTraderSortDir('asc')
+                                    }
+                                  }}
+                                >
+                                  {col.label}
+                                  {traderSortColumn === col.key && (
+                                    <span className="ml-1 text-emerald-400">{traderSortDir === 'asc' ? '↑' : '↓'}</span>
+                                  )}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {[...traderPrivatePortfolio.positions]
+                              .sort((a, b) => {
+                                let valA = a[traderSortColumn]
+                                let valB = b[traderSortColumn]
+                                if (traderSortColumn === 'buy_date') {
+                                  valA = new Date(valA).getTime()
+                                  valB = new Date(valB).getTime()
+                                }
+                                if (typeof valA === 'string') {
+                                  return traderSortDir === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA)
+                                }
+                                return traderSortDir === 'asc' ? valA - valB : valB - valA
+                              })
+                              .map((pos) => {
+                                const currentValue = (pos.current_price || 0) * (pos.quantity || 0)
+                                const tslPercent = traderConfig.tsl_percent || 20
+                                const stopPrice = (pos.current_price || 0) * (1 - tslPercent / 100)
+                                const isNearStop = pos.current_price && stopPrice && (pos.current_price - stopPrice) / pos.current_price < 0.05
+                                return (
+                                  <tr key={pos.id} className="border-b border-dark-700/50 hover:bg-dark-700/30">
+                                    <td className="p-2 font-medium text-white">{pos.symbol}</td>
+                                    <td className="p-2 text-gray-400 text-sm">{pos.name}</td>
+                                    <td className="p-2 text-right text-gray-300">
+                                      {pos.quantity?.toFixed(2)}
+                                      <span className="text-gray-500 text-xs ml-1">({formatPrice(pos.invested_eur || pos.avg_price * pos.quantity)})</span>
+                                    </td>
+                                    <td className="p-2 text-right text-gray-300">{formatPrice(pos.avg_price)}</td>
+                                    <td className="p-2 text-right text-white">{formatPrice(pos.current_price)}</td>
+                                    <td className={`p-2 text-right ${isNearStop ? 'text-yellow-400' : 'text-red-400'}`}>
+                                      {formatPrice(stopPrice)}
+                                    </td>
+                                    <td className={`p-2 text-right font-medium ${
+                                      pos.total_return_pct >= 0 ? 'text-green-400' : 'text-red-400'
+                                    }`}>
+                                      {pos.total_return_pct >= 0 ? '+' : ''}{pos.total_return_pct?.toFixed(2)}%
+                                      <span className="text-gray-400 text-xs ml-1">({formatPrice(currentValue)})</span>
+                                    </td>
+                                    <td className="p-2 text-gray-500 text-sm">
+                                      {new Date(pos.buy_date).toLocaleDateString('de-DE')}
+                                    </td>
+                                  </tr>
+                                )
+                              })}
+                          </tbody>
+                        </table>
+                        <div className="mt-3 p-3 bg-dark-800 rounded-lg flex justify-between text-sm">
+                          <span className="text-gray-400">Gesamt investiert (inkl. geschlossen):</span>
+                          <span className="text-white font-medium">{formatPrice(traderPrivatePortfolio.overall_invested || traderPrivatePortfolio.total_invested)}</span>
+                        </div>
+                        <div className="mt-2 p-3 bg-dark-800 rounded-lg flex justify-between text-sm">
+                          <span className="text-gray-400">Aktueller Wert (offen):</span>
+                          <span className="text-white font-medium">{formatPrice(traderPrivatePortfolio.total_value)}</span>
+                        </div>
+                        {(traderPrivatePortfolio.realized_pl !== undefined && traderPrivatePortfolio.realized_pl !== 0) && (
+                          <div className="mt-2 p-3 bg-dark-800 rounded-lg flex justify-between text-sm">
+                            <span className="text-gray-400">Realisiert (geschlossene Trades):</span>
+                            <span className={`font-medium ${traderPrivatePortfolio.realized_pl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {traderPrivatePortfolio.realized_pl >= 0 ? '+' : ''}{formatPrice(traderPrivatePortfolio.realized_pl)}
+                            </span>
+                          </div>
+                        )}
+                        <div className="mt-2 p-3 bg-dark-800 rounded-lg flex justify-between text-sm">
+                          <span className="text-gray-400">Gesamt Rendite:</span>
+                          <span className={`font-medium ${
+                            (traderPrivatePortfolio.overall_return || traderPrivatePortfolio.total_return) >= 0 ? 'text-green-400' : 'text-red-400'
+                          }`}>
+                            {formatPrice(traderPrivatePortfolio.overall_return || traderPrivatePortfolio.total_return)}
+                            ({traderPrivatePortfolio.total_return_pct >= 0 ? '+' : ''}{traderPrivatePortfolio.total_return_pct?.toFixed(2)}%)
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-center py-8 text-gray-500">
+                        <svg className="w-12 h-12 mx-auto mb-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                        </svg>
+                        <p>Keine simulierten Positionen (is_live = false)</p>
+                        <p className="text-xs mt-1">Backtest-Trades ohne "Live" Flag erscheinen hier</p>
+                      </div>
+                    )}
+
+                    {/* Trader Trade History */}
+                    <div className="mt-4 rounded-xl border border-dark-600 overflow-hidden">
+                      <button
+                        onClick={() => setShowTraderTradeHistory(!showTraderTradeHistory)}
+                        className="w-full p-4 flex items-center justify-between hover:bg-dark-700/50 transition-colors"
+                      >
+                        <h3 className="text-sm font-semibold text-white">Trade History ({traderCompletedTrades.length})</h3>
+                        <svg className={`w-5 h-5 text-gray-400 transition-transform ${showTraderTradeHistory ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+                      {showTraderTradeHistory && (
+                        <div className="border-t border-dark-600">
+                          {traderCompletedTrades.length === 0 ? (
+                            <div className="p-8 text-center text-gray-500">Noch keine abgeschlossenen Trades</div>
+                          ) : (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-sm">
+                                <thead>
+                                  <tr className="text-left text-xs text-gray-500 border-b border-dark-600">
+                                    <th className="pt-4 pb-3 px-4">Symbol</th>
+                                    <th className="pt-4 pb-3 px-4">Kauf</th>
+                                    <th className="pt-4 pb-3 px-4">Verkauf</th>
+                                    <th className="pt-4 pb-3 px-4 text-right">Rendite</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {traderCompletedTrades.map((trade) => (
                                     <tr key={trade.id} className={`border-b border-dark-700/50 last:border-0 ${trade.is_live ? 'bg-green-500/5' : ''}`}>
                                       <td className="py-3 px-4">
                                         <div className="flex items-center gap-2">
@@ -3642,12 +4327,151 @@ function AdminPanel() {
                   </div>
                 )}
 
+                {/* Manual Trade Form (Trader only) */}
+                {botTab === 'trader' && showTraderManualTrade && (
+                  <div className="bg-dark-800 rounded-xl border border-emerald-500/30 overflow-hidden p-4 mb-4">
+                    <h3 className="text-sm font-semibold text-emerald-300 mb-3">Manuellen Trade erstellen</h3>
+
+                    {/* Stock Search */}
+                    {!manualTrade.symbol ? (
+                      <div className="relative">
+                        <input
+                          type="text"
+                          placeholder="Aktie suchen..."
+                          value={manualTradeSearch}
+                          onChange={(e) => searchManualTradeStock(e.target.value)}
+                          className="w-full px-3 py-2 bg-dark-700 border border-dark-500 rounded-lg text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500"
+                          autoFocus
+                        />
+                        {manualTradeSearching && (
+                          <div className="absolute right-3 top-2.5">
+                            <div className="w-4 h-4 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
+                          </div>
+                        )}
+                        {manualTradeResults.length > 0 && (
+                          <div className="absolute z-10 w-full mt-1 bg-dark-700 border border-dark-500 rounded-lg max-h-[200px] overflow-y-auto">
+                            {manualTradeResults.map((stock) => (
+                              <button
+                                key={stock.symbol}
+                                onClick={() => selectManualTradeStock(stock)}
+                                className="w-full px-3 py-2 text-left hover:bg-dark-600 flex items-center justify-between"
+                              >
+                                <div>
+                                  <span className="text-white font-medium">{stock.symbol}</span>
+                                  <span className="text-gray-400 text-sm ml-2">{stock.name}</span>
+                                </div>
+                                <span className="text-gray-500 text-xs">{stock.exchange}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        <div className="flex justify-end mt-2">
+                          <button
+                            onClick={() => { setShowTraderManualTrade(false); setManualTradeSearch(''); setManualTradeResults([]) }}
+                            className="px-3 py-1.5 bg-dark-600 text-gray-400 rounded text-sm hover:bg-dark-500"
+                          >
+                            Abbrechen
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        {/* Selected stock header */}
+                        <div className="flex items-center gap-2 mb-4">
+                          <span className="font-semibold text-white">{manualTrade.symbol}</span>
+                          <span className="text-gray-500 text-sm truncate">{manualTrade.name}</span>
+                          <button
+                            onClick={() => setManualTrade({ ...manualTrade, symbol: '', name: '' })}
+                            className="text-gray-500 hover:text-gray-300 ml-auto text-xs"
+                          >
+                            Andere Aktie
+                          </button>
+                        </div>
+
+                        {/* Trade form fields */}
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+                          <div>
+                            <label className="block text-xs text-gray-500 mb-1">Aktion</label>
+                            <select
+                              value={manualTrade.action}
+                              onChange={(e) => setManualTrade({...manualTrade, action: e.target.value})}
+                              className="w-full px-3 py-2 bg-dark-700 border border-dark-500 rounded-lg text-white focus:outline-none focus:border-emerald-500"
+                            >
+                              <option value="BUY">BUY</option>
+                              <option value="SELL">SELL</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs text-gray-500 mb-1">Kaufkurs ({currencySymbol}) *</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              required
+                              placeholder="0.00"
+                              value={manualTrade.price}
+                              onChange={(e) => setManualTrade({...manualTrade, price: e.target.value})}
+                              className="w-full px-3 py-2 bg-dark-700 border border-dark-500 rounded-lg text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-gray-500 mb-1">Anzahl</label>
+                            <input
+                              type="number"
+                              step="0.0001"
+                              placeholder="auto (100 EUR)"
+                              value={manualTrade.quantity}
+                              onChange={(e) => setManualTrade({...manualTrade, quantity: e.target.value})}
+                              className="w-full px-3 py-2 bg-dark-700 border border-dark-500 rounded-lg text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-gray-500 mb-1">Datum</label>
+                            <input
+                              type="date"
+                              value={manualTrade.date}
+                              onChange={(e) => setManualTrade({...manualTrade, date: e.target.value})}
+                              className="w-full px-3 py-2 bg-dark-700 border border-dark-500 rounded-lg text-white focus:outline-none focus:border-emerald-500"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Actions */}
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={() => setManualTrade({...manualTrade, is_live: !manualTrade.is_live})}
+                            className={`px-4 py-2 rounded-lg text-sm font-bold transition-colors ${
+                              manualTrade.is_live
+                                ? 'bg-green-500 text-white'
+                                : 'bg-dark-600 text-gray-400'
+                            }`}
+                          >
+                            {manualTrade.is_live ? 'LIVE' : 'SIM'}
+                          </button>
+                          <button
+                            onClick={handleCreateTraderManualTrade}
+                            disabled={creatingManualTrade || !manualTrade.price}
+                            className="px-4 py-2 bg-emerald-500 text-white rounded-lg text-sm font-medium hover:bg-emerald-600 disabled:opacity-50"
+                          >
+                            {creatingManualTrade ? 'Erstelle...' : 'Hinzufügen'}
+                          </button>
+                          <button
+                            onClick={() => { setShowTraderManualTrade(false); setManualTrade({ symbol: '', name: '', action: 'BUY', price: '', quantity: '', date: '', is_live: false }) }}
+                            className="px-4 py-2 bg-dark-600 text-gray-300 rounded-lg hover:bg-dark-500 text-sm"
+                          >
+                            Abbrechen
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
                 {/* Trades Table */}
                 <div className="bg-dark-800 rounded-xl border border-dark-600 overflow-hidden">
                   <div className="p-4 border-b border-dark-600 flex items-center justify-between">
                     <div>
                       <h2 className="text-lg font-semibold text-white">
-                        {botTab === 'flipper' ? 'FlipperBot' : botTab === 'lutz' ? 'Lutz' : botTab === 'ditz' ? 'Ditz' : 'Quant'} Trades
+                        {botTab === 'flipper' ? 'FlipperBot' : botTab === 'lutz' ? 'Lutz' : botTab === 'ditz' ? 'Ditz' : botTab === 'trader' ? 'Trader' : 'Quant'} Trades
                       </h2>
                       <p className="text-xs text-gray-500">BUY-Trades bearbeiten um Position zu aktualisieren</p>
                     </div>
@@ -3750,6 +4574,36 @@ function AdminPanel() {
                           Manueller Trade
                         </button>
                       )}
+                      {botTab === 'trader' && (
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={markAllTraderTradesRead}
+                            className="px-2 py-1 text-xs text-gray-400 hover:text-emerald-400 transition-colors"
+                            title="Alle als gelesen markieren"
+                          >
+                            Alle gelesen
+                          </button>
+                          <span className="text-dark-600">|</span>
+                          <button
+                            onClick={markAllTraderTradesUnread}
+                            className="px-2 py-1 text-xs text-gray-400 hover:text-emerald-400 transition-colors"
+                            title="Alle als ungelesen markieren"
+                          >
+                            Alle ungelesen
+                          </button>
+                        </div>
+                      )}
+                      {botTab === 'trader' && !showTraderManualTrade && (
+                        <button
+                          onClick={() => setShowTraderManualTrade(true)}
+                          className="px-3 py-1.5 bg-emerald-500/20 text-emerald-400 rounded-lg text-sm font-medium hover:bg-emerald-500/30 flex items-center gap-1"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                          </svg>
+                          Manueller Trade
+                        </button>
+                      )}
                     </div>
                   </div>
                   <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
@@ -3767,8 +4621,8 @@ function AdminPanel() {
                       </thead>
                       <tbody>
                         {(() => {
-                          const trades = botTab === 'flipper' ? flipperTrades : botTab === 'lutz' ? lutzTrades : botTab === 'ditz' ? ditzTrades : quantTrades
-                          return ((botTab === 'quant' || botTab === 'ditz') ? getGroupedTrades(trades) : trades).slice(0, 50)
+                          const trades = botTab === 'flipper' ? flipperTrades : botTab === 'lutz' ? lutzTrades : botTab === 'ditz' ? ditzTrades : botTab === 'trader' ? traderTrades : quantTrades
+                          return ((botTab === 'quant' || botTab === 'ditz' || botTab === 'trader') ? getGroupedTrades(trades) : trades).slice(0, 50)
                         })().map((trade) => (
                           <tr key={trade.id} className={`border-b border-dark-700/50 hover:bg-dark-700/30 ${
                             trade.is_deleted ? 'opacity-50' : ''
@@ -3780,6 +4634,8 @@ function AdminPanel() {
                             botTab === 'quant' && !trade.is_read && !trade.is_deleted ? 'bg-violet-500/5 border-l-2 border-l-violet-500' : ''
                           } ${
                             botTab === 'ditz' && !trade.is_read && !trade.is_deleted ? 'bg-cyan-500/5 border-l-2 border-l-cyan-500' : ''
+                          } ${
+                            botTab === 'trader' && !trade.is_read && !trade.is_deleted ? 'bg-emerald-500/5 border-l-2 border-l-emerald-500' : ''
                           }`}>
                             {editingItem?.type === 'trade' && editingItem?.id === trade.id ? (
                               <>
@@ -3962,6 +4818,28 @@ function AdminPanel() {
                                         )}
                                       </button>
                                     )}
+                                    {botTab === 'trader' && (
+                                      <button
+                                        onClick={() => toggleTraderTradeRead(trade.id)}
+                                        className={`p-1.5 transition-colors ${
+                                          trade.is_read
+                                            ? 'text-gray-600 hover:text-emerald-400'
+                                            : 'text-emerald-400 hover:text-emerald-300'
+                                        }`}
+                                        title={trade.is_read ? 'Als ungelesen markieren' : 'Als gelesen markieren'}
+                                      >
+                                        {trade.is_read ? (
+                                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 19v-8.93a2 2 0 01.89-1.664l7-4.666a2 2 0 012.22 0l7 4.666A2 2 0 0121 10.07V19M3 19a2 2 0 002 2h14a2 2 0 002-2M3 19l6.75-4.5M21 19l-6.75-4.5M3 10l6.75 4.5M21 10l-6.75 4.5m0 0l-1.14.76a2 2 0 01-2.22 0l-1.14-.76" />
+                                          </svg>
+                                        ) : (
+                                          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                                            <path d="M3 3l18 18M20.94 11c.04.33.06.66.06 1 0 5.52-4.48 10-10 10S1 17.52 1 12 5.48 2 11 2c2.04 0 3.93.61 5.51 1.66L20.94 11zM12 20c4.41 0 8-3.59 8-8 0-.05 0-.1 0-.15L12.15 4H12c-4.41 0-8 3.59-8 8s3.59 8 8 8z" />
+                                            <circle cx="12" cy="12" r="3" />
+                                          </svg>
+                                        )}
+                                      </button>
+                                    )}
                                     {!trade.is_deleted && (
                                       <button
                                         onClick={() => {
@@ -4015,7 +4893,7 @@ function AdminPanel() {
                             )}
                           </tr>
                         ))}
-                        {(botTab === 'flipper' ? flipperTrades : botTab === 'lutz' ? lutzTrades : botTab === 'ditz' ? ditzTrades : quantTrades).length === 0 && (
+                        {(botTab === 'flipper' ? flipperTrades : botTab === 'lutz' ? lutzTrades : botTab === 'ditz' ? ditzTrades : botTab === 'trader' ? traderTrades : quantTrades).length === 0 && (
                           <tr>
                             <td colSpan={7} className="p-8 text-center text-gray-500">
                               Keine Trades vorhanden
@@ -4104,6 +4982,22 @@ function AdminPanel() {
                         </svg>
                         Ditz Reset
                       </button>
+                      <button
+                        onClick={async () => {
+                          if (!confirm('Trader komplett zurücksetzen? Alle Trades und Positionen werden gelöscht!')) return
+                          try {
+                            await fetch('/api/trader/reset', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } })
+                            fetchBotData()
+                            alert('Trader wurde zurückgesetzt')
+                          } catch (err) { alert('Fehler beim Zurücksetzen') }
+                        }}
+                        className="px-4 py-2 bg-emerald-500/20 text-emerald-400 rounded-lg hover:bg-emerald-500/30 transition-colors font-medium text-sm flex items-center gap-2"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                        Trader Reset
+                      </button>
                     </div>
                   )}
                 </div>
@@ -4116,12 +5010,14 @@ function AdminPanel() {
                     ? 'bg-orange-500/10 border border-orange-500/30'
                     : botTab === 'ditz'
                     ? 'bg-cyan-500/10 border border-cyan-500/30'
+                    : botTab === 'trader'
+                    ? 'bg-emerald-500/10 border border-emerald-500/30'
                     : 'bg-violet-500/10 border border-violet-500/30'
                 }`}>
                   <button
                     onClick={() => setShowBackfill(!showBackfill)}
                     className={`w-full p-4 flex items-center justify-between text-sm font-medium ${
-                      botTab === 'flipper' ? 'text-purple-300' : botTab === 'lutz' ? 'text-orange-300' : botTab === 'ditz' ? 'text-cyan-300' : 'text-violet-300'
+                      botTab === 'flipper' ? 'text-purple-300' : botTab === 'lutz' ? 'text-orange-300' : botTab === 'ditz' ? 'text-cyan-300' : botTab === 'trader' ? 'text-emerald-300' : 'text-violet-300'
                     }`}
                   >
                     Rückwirkende Trades
@@ -4151,6 +5047,8 @@ function AdminPanel() {
                               ? 'bg-orange-500 hover:bg-orange-400'
                               : botTab === 'ditz'
                               ? 'bg-cyan-500 hover:bg-cyan-400'
+                              : botTab === 'trader'
+                              ? 'bg-emerald-500 hover:bg-emerald-400'
                               : 'bg-violet-500 hover:bg-violet-400'
                           }`}
                         >
@@ -4383,6 +5281,153 @@ function AdminPanel() {
                       className="px-6 py-2 bg-cyan-500 hover:bg-cyan-400 text-white rounded-lg font-medium disabled:opacity-50"
                     >
                       {savingDitzConfig ? 'Speichern...' : 'Speichern'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'trader' && (
+              <div className="space-y-6">
+                <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-xl">
+                  <h3 className="text-lg font-medium text-emerald-300 mb-2 flex items-center gap-2">
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                    </svg>
+                    B-Xtrender Trader Konfiguration
+                  </h3>
+                  <p className="text-sm text-gray-400 mb-6">
+                    Basiert auf dem QuantTherapy Backtest Edition Algorithmus. Eigene Trade-Regeln (in Entwicklung).
+                  </p>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+                    <div className="bg-dark-800 rounded-lg p-4">
+                      <label className="text-sm text-emerald-400 font-medium block mb-2">Short L1</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="200"
+                        value={traderConfig.short_l1 || 5}
+                        onChange={(e) => updateTraderConfigValue('short_l1', e.target.value)}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-white mb-2"
+                      />
+                      <p className="text-xs text-gray-500">Schnelle EMA-Periode. Höher = glatter, weniger rauschig. Niedriger = reaktionsschneller.</p>
+                    </div>
+                    <div className="bg-dark-800 rounded-lg p-4">
+                      <label className="text-sm text-emerald-400 font-medium block mb-2">Short L2</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="200"
+                        value={traderConfig.short_l2 || 20}
+                        onChange={(e) => updateTraderConfigValue('short_l2', e.target.value)}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-white mb-2"
+                      />
+                      <p className="text-xs text-gray-500">Langsame EMA-Periode. Höher = stabilere Signale. Niedriger = mehr Trades.</p>
+                    </div>
+                    <div className="bg-dark-800 rounded-lg p-4">
+                      <label className="text-sm text-emerald-400 font-medium block mb-2">Short L3</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="200"
+                        value={traderConfig.short_l3 || 15}
+                        onChange={(e) => updateTraderConfigValue('short_l3', e.target.value)}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-white mb-2"
+                      />
+                      <p className="text-xs text-gray-500">RSI-Periode für kurzfristigen Indikator. Höher = weniger Schwankungen.</p>
+                    </div>
+
+                    <div className="bg-dark-800 rounded-lg p-4">
+                      <label className="text-sm text-emerald-400 font-medium block mb-2">Long L1</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="200"
+                        value={traderConfig.long_l1 || 20}
+                        onChange={(e) => updateTraderConfigValue('long_l1', e.target.value)}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-white mb-2"
+                      />
+                      <p className="text-xs text-gray-500">EMA-Periode für langfristigen Indikator. Höher = langsamere Trenderfassung.</p>
+                    </div>
+                    <div className="bg-dark-800 rounded-lg p-4">
+                      <label className="text-sm text-emerald-400 font-medium block mb-2">Long L2</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="200"
+                        value={traderConfig.long_l2 || 15}
+                        onChange={(e) => updateTraderConfigValue('long_l2', e.target.value)}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-white mb-2"
+                      />
+                      <p className="text-xs text-gray-500">RSI-Periode für langfristigen Indikator. Höher = stabilere Signale.</p>
+                    </div>
+
+                    <div className="bg-dark-800 rounded-lg p-4">
+                      <label className="text-sm text-emerald-400 font-medium block mb-2">MA Filter</label>
+                      <button
+                        onClick={() => updateTraderConfigValue('ma_filter_on', !traderConfig.ma_filter_on)}
+                        className={`px-4 py-2 rounded font-bold transition-colors mb-2 ${
+                          traderConfig.ma_filter_on
+                            ? 'bg-emerald-500 text-white'
+                            : 'bg-dark-600 text-gray-400'
+                        }`}
+                      >
+                        {traderConfig.ma_filter_on ? 'AN' : 'AUS'}
+                      </button>
+                      <p className="text-xs text-gray-500">Kauft nur wenn Preis über MA liegt. AN = konservativer, weniger Trades in Bärenmärkten.</p>
+                    </div>
+                    <div className="bg-dark-800 rounded-lg p-4">
+                      <label className="text-sm text-emerald-400 font-medium block mb-2">MA Länge</label>
+                      <input
+                        type="number"
+                        min="10"
+                        max="500"
+                        value={traderConfig.ma_length || 200}
+                        onChange={(e) => updateTraderConfigValue('ma_length', e.target.value)}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-white mb-2"
+                      />
+                      <p className="text-xs text-gray-500">Perioden für MA-Filter. 200 = klassisch. Höher = langfristigerer Trend.</p>
+                    </div>
+                    <div className="bg-dark-800 rounded-lg p-4">
+                      <label className="text-sm text-emerald-400 font-medium block mb-2">MA Typ</label>
+                      <select
+                        value={traderConfig.ma_type || 'EMA'}
+                        onChange={(e) => updateTraderConfigValue('ma_type', e.target.value)}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-white mb-2"
+                      >
+                        <option value="SMA">SMA (Simple)</option>
+                        <option value="EMA">EMA (Exponential)</option>
+                      </select>
+                      <p className="text-xs text-gray-500">SMA = gleichmäßig gewichtet. EMA = reagiert schneller auf aktuelle Preise.</p>
+                    </div>
+
+                    <div className="bg-dark-800 rounded-lg p-4">
+                      <label className="text-sm text-emerald-400 font-medium block mb-2">TSL Prozent</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="100"
+                        step="0.5"
+                        value={traderConfig.tsl_percent || 20}
+                        onChange={(e) => updateTraderConfigValue('tsl_percent', e.target.value)}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-white mb-2"
+                      />
+                      <p className="text-xs text-gray-500">Trailing Stop Loss in %. Höher = mehr Spielraum. Niedriger = schnellerer Ausstieg bei Verlust.</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-4 border-t border-emerald-500/20">
+                    <div className="text-sm text-gray-400">
+                      <strong className="text-emerald-400">Entry:</strong> Short &gt; 0 UND Long &gt; 0 UND (Preis &gt; MA oder MA-Filter aus)<br/>
+                      <strong className="text-emerald-400">Exit:</strong> Short &lt; 0 ODER Long &lt; 0
+                    </div>
+                    <button
+                      onClick={handleSaveTraderConfig}
+                      disabled={savingTraderConfig}
+                      className="px-6 py-2 bg-emerald-500 hover:bg-emerald-400 text-white rounded-lg font-medium disabled:opacity-50"
+                    >
+                      {savingTraderConfig ? 'Speichern...' : 'Speichern'}
                     </button>
                   </div>
                 </div>
@@ -4630,6 +5675,109 @@ function AdminPanel() {
                 </div>
               )}
             </div>
+
+            {/* Aktien Listen Tab */}
+            {activeTab === 'allowlist' && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-medium text-white">Bot Aktien Listen</h3>
+                  <button
+                    onClick={fetchAllowlist}
+                    className="px-3 py-1.5 bg-dark-700 text-gray-300 rounded-lg text-sm hover:bg-dark-600"
+                  >
+                    Aktualisieren
+                  </button>
+                </div>
+
+                {allowlistMessage && (
+                  <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg text-yellow-300 text-sm">
+                    {allowlistMessage}
+                  </div>
+                )}
+
+                <input
+                  type="text"
+                  placeholder="Aktie suchen..."
+                  value={allowlistFilter}
+                  onChange={(e) => setAllowlistFilter(e.target.value)}
+                  className="w-full md:w-64 px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:border-accent-500"
+                />
+
+                {allowlistLoading ? (
+                  <div className="text-center py-12">
+                    <div className="w-8 h-8 border-2 border-accent-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-dark-600">
+                          <th className="text-left py-2 px-3 text-gray-400 font-medium">Symbol</th>
+                          {['flipper', 'lutz', 'quant', 'ditz', 'trader'].map(bot => (
+                            <th key={bot} className="text-center py-2 px-3 text-gray-400 font-medium capitalize">{bot}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          // Collect all unique symbols across all bots
+                          const allSymbols = new Set()
+                          Object.values(allowlistData).forEach(entries => {
+                            if (entries) entries.forEach(e => allSymbols.add(e.symbol))
+                          })
+                          const symbolList = [...allSymbols].sort().filter(s =>
+                            !allowlistFilter || s.toLowerCase().includes(allowlistFilter.toLowerCase())
+                          )
+
+                          return symbolList.map(symbol => (
+                            <tr key={symbol} className="border-b border-dark-700 hover:bg-dark-700/50">
+                              <td className="py-2 px-3 text-white font-mono">{symbol}</td>
+                              {['flipper', 'lutz', 'quant', 'ditz', 'trader'].map(bot => {
+                                const botEntries = allowlistData[bot] || []
+                                const entry = botEntries.find(e => e.symbol === symbol)
+                                const hasStock = !!entry
+                                const isAllowed = entry ? entry.allowed : true
+
+                                return (
+                                  <td key={bot} className="text-center py-2 px-3">
+                                    {hasStock ? (
+                                      <button
+                                        onClick={() => toggleAllowlist(bot, symbol, isAllowed)}
+                                        className={`w-8 h-8 rounded-lg flex items-center justify-center mx-auto transition-colors ${
+                                          isAllowed
+                                            ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                                            : 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
+                                        }`}
+                                        title={isAllowed ? 'Erlaubt - Klicken zum Deaktivieren' : 'Blockiert - Klicken zum Aktivieren'}
+                                      >
+                                        {isAllowed ? (
+                                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                          </svg>
+                                        ) : (
+                                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                          </svg>
+                                        )}
+                                      </button>
+                                    ) : (
+                                      <span className="text-gray-600">-</span>
+                                    )}
+                                  </td>
+                                )
+                              })}
+                            </tr>
+                          ))
+                        })()}
+                      </tbody>
+                    </table>
+                    {Object.keys(allowlistData).length === 0 && (
+                      <div className="text-center py-8 text-gray-500">Keine Daten geladen</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

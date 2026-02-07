@@ -16,6 +16,7 @@ import FlipperBotLab from './components/FlipperBotLab'
 import LutzLab from './components/LutzLab'
 import QuantLab from './components/QuantLab'
 import DitzLab from './components/DitzLab'
+import TraderLab from './components/TraderLab'
 import Performance from './components/Performance'
 import Help from './components/Help'
 
@@ -137,11 +138,11 @@ function App() {
               />
               <Route
                 path="/portfolio"
-                element={<PortfolioManage />}
+                element={isLoggedIn ? <PortfolioManage /> : <Navigate to="/login" />}
               />
               <Route
                 path="/compare"
-                element={<PortfolioCompare />}
+                element={isLoggedIn ? <PortfolioCompare /> : <Navigate to="/login" />}
               />
               <Route
                 path="/tracker"
@@ -165,11 +166,11 @@ function App() {
               />
               <Route
                 path="/flipperbot-lab"
-                element={isAdmin ? <FlipperBotLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} /> : <UnderConstruction />}
+                element={<FlipperBotLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} />}
               />
               <Route
                 path="/lutz-lab"
-                element={isAdmin ? <LutzLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} /> : <UnderConstruction />}
+                element={<LutzLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} />}
               />
               <Route
                 path="/quant-lab"
@@ -177,7 +178,11 @@ function App() {
               />
               <Route
                 path="/ditz-lab"
-                element={isAdmin ? <DitzLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} /> : <UnderConstruction />}
+                element={<DitzLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} />}
+              />
+              <Route
+                path="/trader-lab"
+                element={<TraderLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} />}
               />
             </Routes>
           </div>

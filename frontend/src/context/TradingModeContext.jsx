@@ -7,7 +7,8 @@ export const TRADING_MODES = {
   DEFENSIVE: 'defensive',
   AGGRESSIVE: 'aggressive',
   QUANT: 'quant',
-  DITZ: 'ditz'
+  DITZ: 'ditz',
+  TRADER: 'trader'
 }
 
 export function TradingModeProvider({ children }) {
@@ -26,7 +27,7 @@ export function TradingModeProvider({ children }) {
     window.dispatchEvent(new CustomEvent('tradingModeChanged', { detail: mode }))
   }, [mode])
 
-  // Cycle through modes: defensive -> aggressive -> quant -> ditz -> defensive
+  // Cycle through modes: defensive -> aggressive -> quant -> ditz -> trader -> defensive
   const cycleMode = () => {
     setMode(prev => {
       switch (prev) {
@@ -37,6 +38,8 @@ export function TradingModeProvider({ children }) {
         case TRADING_MODES.QUANT:
           return TRADING_MODES.DITZ
         case TRADING_MODES.DITZ:
+          return TRADING_MODES.TRADER
+        case TRADING_MODES.TRADER:
         default:
           return TRADING_MODES.DEFENSIVE
       }
@@ -49,6 +52,7 @@ export function TradingModeProvider({ children }) {
   const isAggressive = mode === TRADING_MODES.AGGRESSIVE
   const isQuant = mode === TRADING_MODES.QUANT
   const isDitz = mode === TRADING_MODES.DITZ
+  const isTrader = mode === TRADING_MODES.TRADER
   const isDefensive = mode === TRADING_MODES.DEFENSIVE
 
   return (
@@ -60,6 +64,7 @@ export function TradingModeProvider({ children }) {
       isAggressive,
       isQuant,
       isDitz,
+      isTrader,
       isDefensive,
       MODES: TRADING_MODES
     }}>

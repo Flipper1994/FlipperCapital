@@ -28,8 +28,8 @@ function PortfolioChart({ userId, token, height = 300, botType = null, title = "
         textColor: '#9ca3af',
       },
       grid: {
-        vertLines: { color: '#2a2a34', style: 1 },
-        horzLines: { color: '#2a2a34', style: 1 },
+        vertLines: { visible: false },
+        horzLines: { visible: false },
       },
       width: chartContainerRef.current.clientWidth,
       height: height,
@@ -74,14 +74,8 @@ function PortfolioChart({ userId, token, height = 300, botType = null, title = "
 
       try {
         let endpoint
-        if (botType === 'flipperbot') {
-          endpoint = `/api/flipperbot/history?period=${period}`
-        } else if (botType === 'lutz') {
-          endpoint = `/api/lutz/history?period=${period}`
-        } else if (botType === 'quant') {
-          endpoint = `/api/quant/history?period=${period}${extraParams ? '&' + extraParams : ''}`
-        } else if (botType === 'ditz') {
-          endpoint = `/api/ditz/history?period=${period}${extraParams ? '&' + extraParams : ''}`
+        if (botType) {
+          endpoint = `/api/${botType}/history?period=${period}${extraParams ? '&' + extraParams : ''}`
         } else if (userId) {
           endpoint = `/api/portfolios/history/${userId}?period=${period}`
         } else {

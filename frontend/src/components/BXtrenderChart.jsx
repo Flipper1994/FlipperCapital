@@ -9,9 +9,13 @@ import {
   savePerformanceToBackend,
   saveQuantPerformanceToBackend,
   saveDitzPerformanceToBackend,
+  saveTraderPerformanceToBackend,
+  calculateDitzSignal,
+  calculateTraderSignal,
   fetchBXtrenderConfig,
   fetchBXtrenderQuantConfig,
-  fetchBXtrenderDitzConfig
+  fetchBXtrenderDitzConfig,
+  fetchBXtrenderTraderConfig
 } from '../utils/bxtrender'
 
 const timeframeLabels = { 'M': 'Monthly', 'W': 'Weekly', 'D': 'Daily' }
@@ -29,7 +33,7 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
   const [error, setError] = useState(null)
   const [intervalWarning, setIntervalWarning] = useState(null) // Warning if Yahoo returns different interval
   const [dataSource, setDataSource] = useState(null)
-  const { isAggressive, isQuant, isDitz, mode } = useTradingMode()
+  const { isAggressive, isQuant, isDitz, isTrader, mode } = useTradingMode()
 
   useEffect(() => {
     if (!symbol || !chartContainerRef.current) return
@@ -63,7 +67,7 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
 
       try {
         // Fetch appropriate config based on mode
-        const configPromise = isDitz ? fetchBXtrenderDitzConfig() : isQuant ? fetchBXtrenderQuantConfig() : fetchBXtrenderConfig()
+        const configPromise = isTrader ? fetchBXtrenderTraderConfig() : isDitz ? fetchBXtrenderDitzConfig() : isQuant ? fetchBXtrenderQuantConfig() : fetchBXtrenderConfig()
 
         const [configData, res] = await Promise.all([
           configPromise,
@@ -109,9 +113,9 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
         // Get config and calculate B-Xtrender based on mode
         let short, long, signal, trades, markers
 
-        if (isQuant || isDitz) {
-          // Quant/Ditz mode - use QuantTherapy algorithm
-          const result = calculateBXtrenderQuant(calcData, configData)
+        if (isQuant || isDitz || isTrader) {
+          // Quant/Ditz/Trader mode - use QuantTherapy algorithm
+          const result = calculateBXtrenderQuant(calcData, configData, isTrader ? 'trader' : isDitz ? 'ditz' : 'quant')
           short = result.short
           long = result.long
           signal = result.signal
@@ -137,8 +141,15 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
         // Calculate current signal and report metrics
         const metrics = calculateMetrics(trades)
         let currentSignal = 'WAIT'
-        if (isQuant || isDitz) {
-          // Quant/Ditz signal: check both indicators at second-to-last bar
+        if (isTrader) {
+          const traderSig = calculateTraderSignal(signal, trades)
+          currentSignal = traderSig.signal
+        } else if (isDitz) {
+          // Ditz signal: based on trade history
+          const ditzSig = calculateDitzSignal(signal, trades)
+          currentSignal = ditzSig.signal
+        } else if (isQuant) {
+          // Quant signal: check both indicators at second-to-last bar
           if (short.length >= 2 && long.length >= 2) {
             const idx = short.length - 2
             const sv = short[idx].value
@@ -160,9 +171,11 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
         if (timeframe === 'M' && json.data.length > 0) {
           const currentPrice = json.data[json.data.length - 1].close
 
-          if (isDitz) {
+          if (isTrader) {
+            saveTraderPerformanceToBackend(symbol, stockName || symbol, metrics, trades, signal, currentPrice)
+          } else if (isDitz) {
             // Save Ditz mode data
-            saveDitzPerformanceToBackend(symbol, stockName || symbol, metrics, trades, short, long, currentPrice)
+            saveDitzPerformanceToBackend(symbol, stockName || symbol, metrics, trades, signal, currentPrice)
           } else if (isQuant) {
             // Save Quant mode data
             saveQuantPerformanceToBackend(symbol, stockName || symbol, metrics, trades, short, long, currentPrice)
@@ -197,24 +210,26 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
             textColor: '#9ca3af',
           },
           grid: {
-            vertLines: { color: '#1f1f2e' },
-            horzLines: { color: '#1f1f2e' },
+            vertLines: { visible: false },
+            horzLines: { visible: false },
           },
           width: chartContainerRef.current.clientWidth,
           height: 200,
           timeScale: {
-            borderColor: '#2a2a3c',
+            borderColor: '#2a2a34',
             timeVisible: true,
           },
           rightPriceScale: {
-            borderColor: '#2a2a3c',
+            borderColor: '#2a2a34',
             scaleMargins: {
-              top: 0.05,
-              bottom: 0.05,
+              top: 0.1,
+              bottom: 0.1,
             },
           },
           crosshair: {
             mode: 1,
+            vertLine: { color: '#6366f1', width: 1, style: 2 },
+            horzLine: { color: '#6366f1', width: 1, style: 2 },
           },
         })
 
@@ -293,10 +308,10 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
         chartRef.current = null
       }
     }
-  }, [symbol, timeframe, onTradesUpdate, isAggressive, isQuant, isDitz, mode])
+  }, [symbol, timeframe, onTradesUpdate, isAggressive, isQuant, isDitz, isTrader, mode])
 
   return (
-    <div className={`bg-dark-800 rounded-xl border overflow-hidden ${isDitz ? 'border-cyan-500/50' : isQuant ? 'border-violet-500/50' : isAggressive ? 'border-orange-500/50' : 'border-dark-600'}`}>
+    <div className={`bg-dark-800 rounded-xl border overflow-hidden ${isTrader ? 'border-emerald-500/50' : isDitz ? 'border-cyan-500/50' : isQuant ? 'border-violet-500/50' : isAggressive ? 'border-orange-500/50' : 'border-dark-600'}`}>
       <div className="px-4 py-2 border-b border-dark-600 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-white">B-Xtrender</span>
@@ -308,7 +323,14 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
           }`}>
             {timeframeLabels[timeframe] || timeframe}
           </span>
-          {isDitz ? (
+          {isTrader ? (
+            <span className="px-1.5 py-0.5 bg-emerald-500/20 text-emerald-400 text-[10px] font-bold rounded flex items-center gap-1">
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+              </svg>
+              TRADER
+            </span>
+          ) : isDitz ? (
             <span className="px-1.5 py-0.5 bg-cyan-500/20 text-cyan-400 text-[10px] font-bold rounded flex items-center gap-1">
               <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
@@ -359,7 +381,7 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
           )}
         </div>
         <div className="hidden md:flex items-center gap-3 text-xs">
-          {(isQuant || isDitz) ? (
+          {(isQuant || isDitz || isTrader) ? (
             <>
               <div className="flex items-center gap-1">
                 <div className="w-2 h-2 bg-lime-400 rounded-sm"></div>

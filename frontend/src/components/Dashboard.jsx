@@ -9,6 +9,9 @@ function Dashboard({ isAdmin, token }) {
   const [loading, setLoading] = useState(true)
   const [selectedStock, setSelectedStock] = useState(null)
   const [backtestData, setBacktestData] = useState({ trades: [], metrics: null })
+  const [recentSymbols, setRecentSymbols] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('recentStocks')) || [] } catch { return [] }
+  })
 
   // Mobile collapsible state for watchlist (default collapsed)
   const [watchlistExpanded, setWatchlistExpanded] = useState(false)
@@ -135,6 +138,12 @@ function Dashboard({ isAdmin, token }) {
       processStock(stock.symbol, stock.name).catch(err => {
         console.warn('Failed to process stock performance:', err)
       })
+      // Update recent stocks: move to top, no duplicates, max 4
+      setRecentSymbols(prev => {
+        const updated = [stock.symbol, ...prev.filter(s => s !== stock.symbol)].slice(0, 4)
+        localStorage.setItem('recentStocks', JSON.stringify(updated))
+        return updated
+      })
     }
 
     // Restore scroll position after a short delay
@@ -162,6 +171,7 @@ function Dashboard({ isAdmin, token }) {
         <ChartArea
           stock={selectedStock}
           stocks={stocks}
+          recentStocks={recentSymbols.map(sym => stocks.find(s => s.symbol === sym)).filter(Boolean)}
           onBacktestUpdate={handleBacktestUpdate}
           onSelectStock={handleSelectStock}
           backtestData={backtestData}

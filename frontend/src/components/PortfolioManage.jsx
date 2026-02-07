@@ -340,6 +340,47 @@ function PortfolioContent({ token }) {
               </div>
             </div>
 
+            {/* Trading Stats: Win Rate, Risk-Reward (all trades + open positions) */}
+            {(() => {
+              const allItems = [
+                ...trades.map(t => ({ pct: t.profit_loss_pct || 0 })),
+                ...positions.map(p => ({ pct: p.total_return_pct || 0 }))
+              ]
+              if (allItems.length === 0) return null
+              const wins = allItems.filter(i => i.pct > 0)
+              const losses = allItems.filter(i => i.pct < 0)
+              const winRate = allItems.length > 0 ? (wins.length / allItems.length) * 100 : 0
+              const avgWinPct = wins.length > 0 ? wins.reduce((s, i) => s + i.pct, 0) / wins.length : 0
+              const avgLossPct = losses.length > 0 ? Math.abs(losses.reduce((s, i) => s + i.pct, 0) / losses.length) : 0
+              const riskReward = avgLossPct > 0 ? avgWinPct / avgLossPct : avgWinPct > 0 ? Infinity : 0
+              return (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-4">
+                  <div className="bg-dark-700/50 rounded-lg p-3">
+                    <div className="text-xs text-gray-500 mb-1">Win Rate</div>
+                    <div className={`text-base font-bold ${winRate >= 50 ? 'text-green-400' : 'text-red-400'}`}>{winRate.toFixed(1)}%</div>
+                    <div className="text-xs text-gray-500 mt-1">{wins.length}W / {losses.length}L von {allItems.length}</div>
+                  </div>
+                  <div className="bg-dark-700/50 rounded-lg p-3">
+                    <div className="text-xs text-gray-500 mb-1">Risiko-Rendite</div>
+                    <div className={`text-base font-bold ${riskReward >= 1 ? 'text-green-400' : 'text-red-400'}`}>
+                      {riskReward === Infinity ? '∞' : riskReward.toFixed(2)}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">Ø Gewinn / Ø Verlust</div>
+                  </div>
+                  <div className="bg-dark-700/50 rounded-lg p-3">
+                    <div className="text-xs text-gray-500 mb-1">Ø Gewinn-Trade</div>
+                    <div className="text-base font-bold text-green-400">+{avgWinPct.toFixed(2)}%</div>
+                    <div className="text-xs text-gray-500 mt-1">{wins.length} Trades</div>
+                  </div>
+                  <div className="bg-dark-700/50 rounded-lg p-3">
+                    <div className="text-xs text-gray-500 mb-1">Ø Verlust-Trade</div>
+                    <div className="text-base font-bold text-red-400">-{avgLossPct.toFixed(2)}%</div>
+                    <div className="text-xs text-gray-500 mt-1">{losses.length} Trades</div>
+                  </div>
+                </div>
+              )
+            })()}
+
             {!performance.has_quantities && performance.positions_count > 0 && (
               <p className="text-xs text-gray-500 mt-3">
                 * Ohne Stückzahlen wird eine Gleichverteilung angenommen

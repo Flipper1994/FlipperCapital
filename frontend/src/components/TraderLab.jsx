@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useCurrency } from '../context/CurrencyContext'
 import PortfolioChart from './PortfolioChart'
 
-function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
+function TraderLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
   const [portfolio, setPortfolio] = useState(null)
   const [actions, setActions] = useState([])
   const [performance, setPerformance] = useState(null)
@@ -52,13 +52,13 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
     setLoading(true)
     try {
       const [portfolioRes, actionsRes, perfRes] = await Promise.all([
-        fetch('/api/flipperbot/portfolio', {
+        fetch('/api/trader/portfolio', {
           headers: { 'Authorization': `Bearer ${token}` }
         }),
-        fetch('/api/flipperbot/actions', {
+        fetch('/api/trader/actions', {
           headers: { 'Authorization': `Bearer ${token}` }
         }),
-        fetch('/api/flipperbot/performance', {
+        fetch('/api/trader/performance', {
           headers: { 'Authorization': `Bearer ${token}` }
         })
       ])
@@ -75,7 +75,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
       setHasLivePositions(liveCount > 0)
       if (liveCount === 0) setIsLive(false)
     } catch (err) {
-      console.error('Failed to fetch FlipperBot data:', err)
+      console.error('Failed to fetch Trader data:', err)
     } finally {
       setLoading(false)
     }
@@ -84,7 +84,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
   const fetchCompletedTrades = async () => {
     setLoadingCompletedTrades(true)
     try {
-      const res = await fetch('/api/flipperbot/completed-trades', {
+      const res = await fetch('/api/trader/completed-trades', {
         headers: { 'Authorization': `Bearer ${token}` }
       })
       const data = await res.json()
@@ -114,7 +114,6 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
     const unrealized = currentVal - invested
     const unrealizedPct = invested > 0 ? (unrealized / invested) * 100 : 0
     const realized = trades.reduce((sum, t) => sum + (t.profit_loss || 0), 0)
-    // Win Rate & Risk-Reward: include open positions (current price = theoretical sell)
     const allItems = [
       ...trades.map(t => ({ pct: t.profit_loss_pct || 0 })),
       ...positions.map(p => ({ pct: p.total_return_pct || 0 }))
@@ -167,8 +166,8 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
     return (
       <div className="flex-1 p-4 md:p-6 flex items-center justify-center">
         <div className="text-center">
-          <div className="w-12 h-12 border-2 border-purple-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-gray-400">Lade FlipperBot Daten...</p>
+          <div className="w-12 h-12 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-gray-400">Lade Trader Daten...</p>
         </div>
       </div>
     )
@@ -178,18 +177,18 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
     return (
       <div className="flex-1 p-4 md:p-6 flex items-center justify-center">
         <div className="max-w-md text-center">
-          <div className="w-24 h-24 mx-auto mb-6 bg-gradient-to-br from-purple-500/20 to-pink-500/20 rounded-2xl flex items-center justify-center border border-purple-500/30">
-            <svg className="w-12 h-12 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="w-24 h-24 mx-auto mb-6 bg-gradient-to-br from-emerald-500/20 to-teal-500/20 rounded-2xl flex items-center justify-center border border-emerald-500/30">
+            <svg className="w-12 h-12 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
             </svg>
           </div>
           <h1 className="text-2xl font-bold text-white mb-2 flex items-center justify-center gap-2">
-            FlipperBot Lab
-            <span className="px-2 py-0.5 bg-gradient-to-r from-purple-500 to-pink-500 text-white text-xs font-bold rounded">BETA</span>
+            Trader Lab
+            <span className="px-2 py-0.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-xs font-bold rounded">BETA</span>
           </h1>
           {!isLoggedIn ? (
             <>
-              <p className="text-gray-400 mb-6">Melde dich an, um den FlipperBot Lab zu nutzen und die automatisierte Trading-Strategie zu verfolgen.</p>
+              <p className="text-gray-400 mb-6">Melde dich an, um den Trader Lab zu nutzen und die automatisierte Trading-Strategie zu verfolgen.</p>
               <div className="flex flex-col sm:flex-row gap-3 justify-center">
                 <Link to="/login" className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-accent-500 text-white rounded-lg hover:bg-accent-400 transition-colors font-medium">
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" /></svg>
@@ -203,7 +202,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
             </>
           ) : (
             <>
-              <p className="text-gray-400 mb-6">Um den FlipperBot Lab zu nutzen, musst du mindestens eine Aktie in deinem Portfolio haben.</p>
+              <p className="text-gray-400 mb-6">Um den Trader Lab zu nutzen, musst du mindestens eine Aktie in deinem Portfolio haben.</p>
               <Link to="/portfolio" className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-accent-500 text-white rounded-lg hover:bg-accent-400 transition-colors font-medium">
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
                 Portfolio aufbauen
@@ -239,17 +238,17 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
           <div>
             <div className="flex items-center gap-3">
-              <div className="w-12 h-12 bg-gradient-to-br from-purple-500 to-pink-600 rounded-xl flex items-center justify-center">
+              <div className="w-12 h-12 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-xl flex items-center justify-center">
                 <svg className="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                 </svg>
               </div>
               <div>
                 <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-                  FlipperBot Lab
-                  <span className="px-2 py-0.5 bg-gradient-to-r from-purple-500 to-pink-500 text-white text-xs font-bold rounded">BETA</span>
+                  Trader Lab
+                  <span className="px-2 py-0.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-xs font-bold rounded">BETA</span>
                 </h1>
-                <p className="text-gray-500 text-sm">Automatisiertes Trading seit 01.01.2026</p>
+                <p className="text-gray-500 text-sm">Maximum Exposure Trading seit 01.01.2026</p>
               </div>
             </div>
           </div>
@@ -277,11 +276,11 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
               onClick={() => setIsLive(false)}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
                 !isLive
-                  ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
+                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                   : 'text-gray-400 hover:text-white'
               }`}
             >
-              <svg className={`w-4 h-4 ${!isLive ? 'text-purple-400' : 'text-gray-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className={`w-4 h-4 ${!isLive ? 'text-emerald-400' : 'text-gray-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
               </svg>
               Simulation
@@ -300,10 +299,10 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
         <div className="mb-6">
           <PortfolioChart
             token={token}
-            botType="flipperbot"
+            botType="trader"
             extraParams={isLive ? "live=true" : "live=false"}
             height={250}
-            title="FlipperBot Performance"
+            title="Trader Performance"
           />
         </div>
 
@@ -312,7 +311,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
           <div className="bg-dark-800 rounded-xl border border-dark-600 p-4 md:p-6 mb-6">
             <h2 className="text-lg font-semibold text-white mb-4">Performance Uebersicht</h2>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-4">
-              <div className="bg-gradient-to-r from-purple-500/20 to-pink-500/20 rounded-lg p-3 md:p-4 border border-purple-500/30">
+              <div className="bg-gradient-to-r from-emerald-500/20 to-teal-500/20 rounded-lg p-3 md:p-4 border border-emerald-500/30">
                 <div className="text-xs text-gray-400 mb-1">Gesamt Rendite</div>
                 <div className={`text-xl md:text-2xl font-bold ${displayedPerformance.overall_return_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                   {formatPercent(displayedPerformance.overall_return_pct)}
@@ -387,7 +386,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                     {displayedPositions.filter(p => p.is_live).length} Live
                   </span>
                 )}
-                <span className="px-2 py-1 bg-purple-500/20 text-purple-400 text-sm font-medium rounded">
+                <span className="px-2 py-1 bg-emerald-500/20 text-emerald-400 text-sm font-medium rounded">
                   {displayedPositions.length} offen
                 </span>
               </div>
@@ -536,7 +535,7 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
             <div className="border-t border-dark-600">
               {loadingCompletedTrades ? (
                 <div className="p-8 text-center">
-                  <div className="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                  <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
                 </div>
               ) : displayedCompletedTrades.length === 0 ? (
                 <div className="p-8 text-center text-gray-500">Noch keine abgeschlossenen Trades</div>
@@ -621,15 +620,15 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
         )}
 
         {/* Info Box */}
-        <div className="bg-purple-500/10 border border-purple-500/30 rounded-xl p-4 mb-6">
+        <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-4 mb-6">
           <div className="flex items-start gap-3">
-            <svg className="w-5 h-5 text-purple-400 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+            <svg className="w-5 h-5 text-emerald-400 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
             </svg>
             <div>
-              <h3 className="font-medium text-purple-400">Strategie: BX Trender Defensiv-Momentum</h3>
+              <h3 className="font-medium text-emerald-400">Strategie: Signal-Line Crossover ohne Filter (Maximum Exposure)</h3>
               <p className="text-sm text-gray-400 mt-2">
-                Konservativer Momentum-Trader auf Basis des BX Trender Short-term Oszillators. Entry-Signale bei bestaetigtem Regime-Wechsel (Rot-zu-Gruen-Transition des Histogramms) oder nach akkumulierter Abwaertsdynamik (4 konsekutive hellrote Bars als Mean-Reversion-Setup). Exit beim ersten Auftreten eines dunkelroten Bars (starkes baerisches Momentum). Priorisiert Kapitalerhalt gegenueber maximaler Partizipation.
+                Identisch zum Ditz-Modell (T3 Signal-Line), jedoch ohne MA-200-Trendfilter. Jeder Farbwechsel wird konsequent gehandelt: Gruen = Long-Entry, Rot = Exit. Einzige Risikobegrenzung: Dynamischer Trailing Stop Loss (TSL). Maximale Marktexposition und Trade-Frequenz, Partizipation an allen identifizierten Trendphasen.
               </p>
             </div>
           </div>
@@ -639,4 +638,4 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
   )
 }
 
-export default FlipperBotLab
+export default TraderLab

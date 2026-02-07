@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { formatPrice, formatChange } from '../utils/currency'
 import BXtrenderChart from './BXtrenderChart'
 
-function ChartArea({ stock, stocks, onBacktestUpdate, onSelectStock, backtestData }) {
+function ChartArea({ stock, stocks, recentStocks, onBacktestUpdate, onSelectStock, backtestData }) {
   const chartContainerRef = useRef(null)
   const [timeframe, setTimeframe] = useState('M')
   const [, forceUpdate] = useState(0)
@@ -148,12 +148,12 @@ function ChartArea({ stock, stocks, onBacktestUpdate, onSelectStock, backtestDat
 
         {/* Main Content Area */}
         <div className="flex-1 overflow-auto">
-          {/* Quick Stock Selection */}
-          {stocks && stocks.length > 0 && (
+          {/* Quick Stock Selection - shows recently opened stocks */}
+          {((recentStocks && recentStocks.length > 0) || (stocks && stocks.length > 0)) && (
             <div className="mb-6">
               <h3 className="text-sm font-medium text-gray-400 mb-3">Schnellauswahl</h3>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                {stocks.slice(0, 4).map((s) => {
+                {(recentStocks && recentStocks.length > 0 ? recentStocks : stocks.slice(0, 4)).map((s) => {
                   const change = formatChange(s.change, s.change_percent, s.symbol)
                   return (
                     <div

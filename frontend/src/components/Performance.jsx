@@ -1,554 +1,718 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
+import { createChart } from 'lightweight-charts'
 import { useNavigate } from 'react-router-dom'
 import { useCurrency } from '../context/CurrencyContext'
-import { useTradingMode } from '../context/TradingModeContext'
+
+const MODES = [
+  { key: 'defensive', title: 'Defensiv' },
+  { key: 'aggressive', title: 'Aggressiv' },
+  { key: 'quant', title: 'Quant' },
+  { key: 'ditz', title: 'Ditz' },
+  { key: 'trader', title: 'Trader' },
+]
+
+const S = {
+  defensive: { dot: 'bg-blue-500', headerBg: 'bg-gradient-to-r from-blue-500/15 to-transparent' },
+  aggressive: { dot: 'bg-orange-500', headerBg: 'bg-gradient-to-r from-orange-500/15 to-transparent' },
+  quant: { dot: 'bg-violet-500', headerBg: 'bg-gradient-to-r from-violet-500/15 to-transparent' },
+  ditz: { dot: 'bg-cyan-500', headerBg: 'bg-gradient-to-r from-cyan-500/15 to-transparent' },
+  trader: { dot: 'bg-emerald-500', headerBg: 'bg-gradient-to-r from-emerald-500/15 to-transparent' },
+}
+
+// Self-contained equity curve chart
+function EquityCurveChart({ data, eigenkapital, gewinn }) {
+  const cRef = useRef(null)
+  const chRef = useRef(null)
+
+  useEffect(() => {
+    if (!data?.length || !cRef.current) return
+    if (chRef.current) { chRef.current.remove(); chRef.current = null }
+
+    const chart = createChart(cRef.current, {
+      layout: { background: { color: '#12121a' }, textColor: '#9ca3af' },
+      grid: { vertLines: { visible: false }, horzLines: { visible: false } },
+      width: cRef.current.clientWidth,
+      height: 180,
+      timeScale: { borderColor: '#2a2a34', timeVisible: false },
+      rightPriceScale: { borderColor: '#2a2a34', scaleMargins: { top: 0.1, bottom: 0.1 } },
+      crosshair: { mode: 1, vertLine: { color: '#6366f1', width: 1, style: 2 }, horzLine: { color: '#6366f1', width: 1, style: 2 } },
+    })
+    chRef.current = chart
+
+    const deduped = new Map()
+    for (const p of data) deduped.set(p.time, p.value)
+    const sorted = Array.from(deduped, ([time, value]) => ({ time, value })).sort((a, b) => a.time - b.time)
+
+    const pos = gewinn >= 0
+    chart.addAreaSeries({
+      lineColor: pos ? '#22c55e' : '#ef4444',
+      topColor: pos ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)',
+      bottomColor: pos ? 'rgba(34,197,94,0.02)' : 'rgba(239,68,68,0.02)',
+      lineWidth: 2,
+      priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+      lastValueVisible: true, priceLineVisible: false,
+    }).setData(sorted)
+
+    chart.addLineSeries({
+      color: '#4b5563', lineWidth: 1, lineStyle: 2,
+      lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false,
+    }).setData(sorted.map(d => ({ time: d.time, value: eigenkapital })))
+
+    chart.timeScale().fitContent()
+
+    const onResize = () => {
+      if (cRef.current && chRef.current) chRef.current.applyOptions({ width: cRef.current.clientWidth })
+    }
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      if (chRef.current) { chRef.current.remove(); chRef.current = null }
+    }
+  }, [data, eigenkapital, gewinn])
+
+  return <div ref={cRef} className="h-[180px] rounded-lg border border-dark-600 overflow-hidden" />
+}
+
+// Sortable table header
+function SortTH({ field, sort, onSort, children, right }) {
+  const active = sort.field === field
+  return (
+    <th className={`px-2 py-2 font-medium whitespace-nowrap ${right ? 'text-right' : 'text-left'}`}>
+      <button
+        onClick={() => onSort(active ? { field, dir: sort.dir === 'asc' ? 'desc' : 'asc' } : { field, dir: 'desc' })}
+        className="inline-flex items-center gap-1 hover:text-white transition-colors"
+        style={right ? { marginLeft: 'auto' } : undefined}
+      >
+        {children}
+        {active && <span className="text-accent-400">{sort.dir === 'asc' ? '↑' : '↓'}</span>}
+      </button>
+    </th>
+  )
+}
 
 function Performance({ token }) {
   const navigate = useNavigate()
-  const { mode, isDefensive, isAggressive, isQuant, isDitz } = useTradingMode()
+  const { formatPrice, currencySymbol } = useCurrency()
+
   const [trades, setTrades] = useState([])
   const [loading, setLoading] = useState(true)
-  const [itemsPerPage, setItemsPerPage] = useState(10)
-  const [currentPage, setCurrentPage] = useState(1)
-  const [currentSort, setCurrentSort] = useState({ field: 'entry_date', dir: 'desc' })
-  const [timeRange, setTimeRange] = useState('1y') // 1m, 1y, 2y, all
-  const { formatPrice } = useCurrency()
+  const [timeRange, setTimeRange] = useState('1y')
 
-  // Filter state
+  // Filters
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [filters, setFilters] = useState({
-    minWinrate: '',
-    maxWinrate: '',
-    minRR: '',
-    maxRR: '',
-    minAvgReturn: '',
-    maxAvgReturn: '',
-    minMarketCap: ''
+    minWinrate: '', maxWinrate: '', minRR: '', maxRR: '',
+    minAvgReturn: '', maxAvgReturn: '', minMarketCap: ''
   })
 
-  // Redirect to home if not logged in
-  useEffect(() => {
-    if (!token) {
-      navigate('/')
-    }
-  }, [token, navigate])
+  // Section & trade table collapse
+  const [openSections, setOpenSections] = useState({})
+  const [openTradeTables, setOpenTradeTables] = useState({})
 
-  // Calculate items per page based on screen height
-  useEffect(() => {
-    const calculateItemsPerPage = () => {
-      const headerHeight = 220
-      const rowHeight = 56
-      const paginatorHeight = 60
-      const availableHeight = window.innerHeight - headerHeight - paginatorHeight
-      const items = Math.floor(availableHeight / rowHeight)
-      setItemsPerPage(Math.max(5, items))
-    }
+  // Simulation
+  const [simAmount, setSimAmount] = useState('100')
+  const [simResults, setSimResults] = useState({})
+  const [simSorts, setSimSorts] = useState({})
+  const [tradeSorts, setTradeSorts] = useState({})
 
-    calculateItemsPerPage()
-    window.addEventListener('resize', calculateItemsPerPage)
-    return () => window.removeEventListener('resize', calculateItemsPerPage)
-  }, [])
+  useEffect(() => { if (!token) navigate('/') }, [token, navigate])
 
   useEffect(() => {
-    fetchTrades()
+    if (!token) return
+    setLoading(true)
+    fetch('/api/performance/history', { headers: { 'Authorization': `Bearer ${token}` } })
+      .then(r => r.json())
+      .then(d => setTrades(Array.isArray(d) ? d : []))
+      .catch(() => {})
+      .finally(() => setLoading(false))
   }, [token])
 
-  const fetchTrades = async () => {
-    setLoading(true)
-    try {
-      const res = await fetch('/api/performance/history', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
-      const data = await res.json()
-      setTrades(Array.isArray(data) ? data : [])
-    } catch (err) {
-      console.error('Failed to fetch performance data:', err)
-    } finally {
-      setLoading(false)
-    }
-  }
+  const cutoffDate = useMemo(() => {
+    const now = Math.floor(Date.now() / 1000)
+    const y = 365 * 24 * 60 * 60
+    const map = { '1m': 30 * 86400, '3m': 90 * 86400, '6m': 180 * 86400, '1y': y, '2y': 2 * y, '3y': 3 * y, '4y': 4 * y, '5y': 5 * y, '10y': 10 * y }
+    return map[timeRange] ? now - map[timeRange] : 0
+  }, [timeRange])
 
-  // Calculate cutoff date based on time range
-  const getCutoffDate = () => {
-    const now = Math.floor(Date.now() / 1000) // Current time in seconds
-    switch (timeRange) {
-      case '1m': return now - (30 * 24 * 60 * 60)
-      case '1y': return now - (365 * 24 * 60 * 60)
-      case '2y': return now - (2 * 365 * 24 * 60 * 60)
-      case 'all': return 0
-      default: return now - (365 * 24 * 60 * 60)
-    }
-  }
-  const cutoffDate = getCutoffDate()
-
-  // Get current mode string
-  const currentMode = isDitz ? 'ditz' : isQuant ? 'quant' : isAggressive ? 'aggressive' : 'defensive'
-
-  // Filter trades by current mode, time range, and custom filters
-  const applyFilters = (tradeList) => {
-    return tradeList.filter(t => {
-      // Filter by stock-level metrics (from backend)
-      if (filters.minWinrate && t.win_rate < parseFloat(filters.minWinrate)) return false
-      if (filters.maxWinrate && t.win_rate > parseFloat(filters.maxWinrate)) return false
-      if (filters.minRR && t.risk_reward < parseFloat(filters.minRR)) return false
-      if (filters.maxRR && t.risk_reward > parseFloat(filters.maxRR)) return false
-      if (filters.minAvgReturn && t.avg_return < parseFloat(filters.minAvgReturn)) return false
-      if (filters.maxAvgReturn && t.avg_return > parseFloat(filters.maxAvgReturn)) return false
-      if (filters.minMarketCap && t.market_cap < parseFloat(filters.minMarketCap) * 1e9) return false
-      return true
-    })
-  }
-
-  // Filter trades by mode and time range first
-  const modeFilteredTrades = trades.filter(t => t.mode === currentMode && t.entry_date >= cutoffDate)
-  // Then apply custom filters
-  const filteredTrades = applyFilters(modeFilteredTrades)
-
-  // Calculate statistics
-  const calcStats = (tradeList) => {
-    const closed = tradeList.filter(t => t.status === 'CLOSED')
-    const wins = closed.filter(t => t.return_pct > 0)
-    const losses = closed.filter(t => t.return_pct <= 0)
-    const winRate = closed.length > 0 ? (wins.length / closed.length) * 100 : 0
-
-    const avgWin = wins.length > 0 ? wins.reduce((sum, t) => sum + t.return_pct, 0) / wins.length : 0
-    const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((sum, t) => sum + t.return_pct, 0) / losses.length) : 1
-    const riskReward = avgLoss > 0 ? avgWin / avgLoss : 0
-
-    const totalReturn = tradeList.reduce((sum, t) => sum + (t.return_pct || 0), 0)
-    const avgReturn = tradeList.length > 0 ? totalReturn / tradeList.length : 0
-
-    return { winRate, riskReward, totalReturn, avgReturn, tradeCount: tradeList.length, wins: wins.length, losses: losses.length }
-  }
-
-  const stats = calcStats(filteredTrades)
-
-  // Sort function
-  const sortTrades = (tradeList, sort) => {
-    return [...tradeList].sort((a, b) => {
-      let aVal = a[sort.field]
-      let bVal = b[sort.field]
-      if (sort.dir === 'asc') {
-        return aVal - bVal
+  // Per-mode data
+  const modeData = useMemo(() => {
+    const result = {}
+    for (const m of MODES) {
+      const filtered = trades
+        .filter(t => t.mode === m.key && t.entry_date >= cutoffDate)
+        .filter(t => {
+          if (filters.minWinrate && t.win_rate < parseFloat(filters.minWinrate)) return false
+          if (filters.maxWinrate && t.win_rate > parseFloat(filters.maxWinrate)) return false
+          if (filters.minRR && t.risk_reward < parseFloat(filters.minRR)) return false
+          if (filters.maxRR && t.risk_reward > parseFloat(filters.maxRR)) return false
+          if (filters.minAvgReturn && t.avg_return < parseFloat(filters.minAvgReturn)) return false
+          if (filters.maxAvgReturn && t.avg_return > parseFloat(filters.maxAvgReturn)) return false
+          if (filters.minMarketCap && t.market_cap < parseFloat(filters.minMarketCap) * 1e9) return false
+          return true
+        })
+      const wins = filtered.filter(t => (t.return_pct || 0) > 0)
+      const losses = filtered.filter(t => (t.return_pct || 0) < 0)
+      const totalReturn = filtered.reduce((s, t) => s + (t.return_pct || 0), 0)
+      const aw = wins.length > 0 ? wins.reduce((s, t) => s + t.return_pct, 0) / wins.length : 0
+      const al = losses.length > 0 ? Math.abs(losses.reduce((s, t) => s + t.return_pct, 0) / losses.length) : 0
+      result[m.key] = {
+        trades: filtered,
+        stats: {
+          tradeCount: filtered.length,
+          winRate: filtered.length > 0 ? (wins.length / filtered.length) * 100 : 0,
+          riskReward: al > 0 ? aw / al : aw > 0 ? Infinity : 0,
+          totalReturn,
+          avgReturn: filtered.length > 0 ? totalReturn / filtered.length : 0,
+          wins: wins.length,
+          losses: losses.length,
+        }
       }
-      return bVal - aVal
-    })
+    }
+    return result
+  }, [trades, cutoffDate, filters])
+
+  // Helpers
+  const fmtSim = (val) => {
+    if (val == null) return '--'
+    const prefix = currencySymbol === 'CHF' ? 'CHF ' : currencySymbol
+    const f = Math.abs(val).toLocaleString(currencySymbol === 'CHF' ? 'de-CH' : 'en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    return val < 0 ? `-${prefix}${f}` : `${prefix}${f}`
   }
 
-  const sortedTrades = sortTrades(filteredTrades, currentSort)
+  const fmtDate = (ts) => !ts ? '-' : new Date(ts * 1000).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' })
 
-  // Pagination
-  const totalPages = Math.ceil(sortedTrades.length / itemsPerPage) || 1
+  // Simulation for one mode
+  const runSimForMode = (filteredTrades) => {
+    const amount = parseFloat(simAmount)
+    if (!amount || amount <= 0 || !filteredTrades.length) return null
 
-  const paginatedTrades = sortedTrades.slice(
-    (currentPage - 1) * itemsPerPage,
-    currentPage * itemsPerPage
-  )
+    const simTrades = []
+    let totalProfit = 0, openCount = 0
+    for (const t of filteredTrades) {
+      const pct = t.return_pct || 0
+      const isOpen = t.status === 'OPEN' || !t.exit_date
+      const profit = Math.round(amount * (pct / 100) * 100) / 100
+      if (isOpen) openCount++
+      totalProfit += profit
+      simTrades.push({
+        symbol: t.symbol, name: t.name,
+        entryDate: t.entry_date, exitDate: isOpen ? null : t.exit_date,
+        entryPrice: t.entry_price, exitPrice: isOpen ? t.current_price : t.exit_price,
+        profit, received: Math.round((amount + profit) * 100) / 100,
+        returnPct: pct, status: t.status,
+      })
+    }
+    simTrades.sort((a, b) => a.entryDate - b.entryDate)
 
-  // Reset page when mode or filters change
+    // Max concurrent
+    const events = []
+    for (const t of simTrades) {
+      events.push({ time: t.entryDate, type: 1 })
+      events.push({ time: t.exitDate || Math.floor(Date.now() / 1000), type: -1 })
+    }
+    events.sort((a, b) => a.time - b.time || a.type - b.type)
+    let conc = 0, maxConc = 0
+    for (const e of events) { conc += e.type; if (conc > maxConc) maxConc = conc }
+
+    const ek = maxConc * amount
+    const gew = Math.round(totalProfit * 100) / 100
+    const endk = Math.round((ek + gew) * 100) / 100
+    const rendite = ek > 0 ? (gew / ek) * 100 : 0
+
+    // CAGR
+    const first = simTrades[0]?.entryDate || 0
+    const last = simTrades.reduce((m, t) => Math.max(m, t.exitDate || Math.floor(Date.now() / 1000)), 0)
+    const years = first > 0 ? (last - first) / (365 * 86400) : 0
+    let cagr = 0
+    if (ek > 0 && endk > 0 && years >= 0.1) cagr = (Math.pow(endk / ek, 1 / years) - 1) * 100
+    else if (ek > 0) cagr = rendite
+
+    const allW = simTrades.filter(t => t.profit > 0)
+    const allL = simTrades.filter(t => t.profit < 0)
+    const wr = simTrades.length > 0 ? (allW.length / simTrades.length) * 100 : 0
+    const avgW = allW.length > 0 ? allW.reduce((s, t) => s + t.profit, 0) / allW.length : 0
+    const avgL = allL.length > 0 ? Math.abs(allL.reduce((s, t) => s + t.profit, 0) / allL.length) : 0
+    const avgWP = allW.length > 0 ? allW.reduce((s, t) => s + t.returnPct, 0) / allW.length : 0
+    const avgLP = allL.length > 0 ? Math.abs(allL.reduce((s, t) => s + t.returnPct, 0) / allL.length) : 0
+    const rr = avgL > 0 ? avgW / avgL : avgW > 0 ? Infinity : 0
+
+    // Equity curve
+    const curve = []
+    if (simTrades.length) {
+      const now = Math.floor(Date.now() / 1000)
+      const start = simTrades[0].entryDate
+      const end = simTrades.reduce((m, t) => Math.max(m, t.exitDate || now), 0)
+      const DAY = 86400
+      const days = Math.ceil((end - start) / DAY)
+      const step = days > 1000 ? Math.ceil(days / 1000) * DAY : DAY
+      const calc = (ts) => {
+        let real = 0, unreal = 0
+        for (const t of simTrades) {
+          const exit = t.exitDate || now
+          if (ts >= exit) real += t.profit
+          else if (ts >= t.entryDate) {
+            const dur = exit - t.entryDate
+            unreal += amount * (t.returnPct / 100) * (dur > 0 ? (ts - t.entryDate) / dur : 0)
+          }
+        }
+        return Math.round((ek + real + unreal) * 100) / 100
+      }
+      for (let ts = start; ts <= end; ts += step) curve.push({ time: ts, value: calc(ts) })
+      if (!curve.length || curve[curve.length - 1].time < end) curve.push({ time: end, value: calc(end) })
+    }
+
+    return {
+      trades: simTrades, eigenkapital: ek, endkapital: endk, gewinn: gew, rendite, cagr, years,
+      maxConcurrent: maxConc, amount, tradeCount: simTrades.length, openCount,
+      winRate: wr, riskReward: rr, wins: allW.length, losses: allL.length,
+      avgWin: avgW, avgLoss: avgL, avgWinPct: avgWP, avgLossPct: avgLP, equityCurve: curve,
+    }
+  }
+
+  const runAllSimulations = () => {
+    const results = {}
+    for (const m of MODES) results[m.key] = runSimForMode(modeData[m.key].trades)
+    setSimResults(results)
+  }
+
+  // Auto-run simulation when data changes (initial load, filter/time change)
   useEffect(() => {
-    setCurrentPage(1)
-  }, [mode, filters, timeRange])
+    const amount = parseFloat(simAmount)
+    if (!amount || amount <= 0 || !trades.length) { setSimResults({}); return }
+    const results = {}
+    for (const m of MODES) results[m.key] = runSimForMode(modeData[m.key].trades)
+    setSimResults(results)
+  }, [modeData, simAmount])
 
-  // Get mode display info
-  const getModeInfo = () => {
-    if (isDitz) return { title: 'Ditz', color: 'from-cyan-500/20 to-transparent' }
-    if (isQuant) return { title: 'Quant', color: 'from-violet-500/20 to-transparent' }
-    if (isAggressive) return { title: 'Aggressiv', color: 'from-orange-500/20 to-transparent' }
-    return { title: 'Defensiv', color: 'from-blue-500/20 to-transparent' }
-  }
-  const modeInfo = getModeInfo()
-
-  const handleFilterChange = (field, value) => {
-    setFilters(prev => ({ ...prev, [field]: value }))
-  }
-
-  const clearFilters = () => {
-    setFilters({
-      minWinrate: '',
-      maxWinrate: '',
-      minRR: '',
-      maxRR: '',
-      minAvgReturn: '',
-      maxAvgReturn: '',
-      minMarketCap: ''
-    })
-  }
-
+  // Filter UI
+  const handleFilterChange = (f, v) => setFilters(p => ({ ...p, [f]: v }))
+  const clearFilters = () => setFilters({ minWinrate: '', maxWinrate: '', minRR: '', maxRR: '', minAvgReturn: '', maxAvgReturn: '', minMarketCap: '' })
   const hasActiveFilters = Object.values(filters).some(v => v !== '')
 
-  const formatDate = (timestamp) => {
-    if (!timestamp) return '-'
-    // Timestamp is in seconds, convert to milliseconds for JavaScript Date
-    return new Date(timestamp * 1000).toLocaleDateString('de-DE', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric'
-    })
-  }
+  const toggleSection = (k) => setOpenSections(p => ({ ...p, [k]: !p[k] }))
+  const toggleTradeTable = (k) => setOpenTradeTables(p => ({ ...p, [k]: !p[k] }))
 
-  const formatPercent = (value) => {
-    if (value === undefined || value === null) return '-'
-    return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
-  }
+  // Sort helpers
+  const getSimSort = (k) => simSorts[k] || { field: 'entryDate', dir: 'asc' }
+  const doSetSimSort = (k, s) => setSimSorts(p => ({ ...p, [k]: s }))
+  const getTradeSort = (k) => tradeSorts[k] || { field: 'entry_date', dir: 'desc' }
+  const doSetTradeSort = (k, s) => setTradeSorts(p => ({ ...p, [k]: s }))
 
-  const SortButton = ({ field, children }) => {
-    const isActive = currentSort.field === field
-    const handleClick = () => {
-      if (isActive) {
-        setCurrentSort({ field, dir: currentSort.dir === 'asc' ? 'desc' : 'asc' })
-      } else {
-        setCurrentSort({ field, dir: 'desc' })
-      }
-    }
-    return (
-      <button onClick={handleClick} className="flex items-center gap-1 hover:text-white transition-colors">
-        {children}
-        {isActive && (
-          <span className="text-accent-400">{currentSort.dir === 'asc' ? '↑' : '↓'}</span>
-        )}
-      </button>
-    )
-  }
+  const sortSimTrades = (list, sort) => [...list].sort((a, b) => {
+    if (sort.field === 'symbol') return sort.dir === 'asc' ? a.symbol.localeCompare(b.symbol) : b.symbol.localeCompare(a.symbol)
+    const av = a[sort.field] ?? (sort.field === 'exitDate' ? Infinity : 0)
+    const bv = b[sort.field] ?? (sort.field === 'exitDate' ? Infinity : 0)
+    return sort.dir === 'asc' ? av - bv : bv - av
+  })
 
-  const TradeTable = ({ data, page, setPage, totalPages, title, color, stats, paginatedData }) => (
-    <div className="flex-1 min-w-0">
-      <div className="bg-dark-800 rounded-xl border border-dark-600 overflow-hidden h-full flex flex-col">
-        <div className={`p-4 border-b border-dark-600 bg-gradient-to-r ${color}`}>
-          <h2 className="text-lg font-semibold text-white">{title}</h2>
-          <div className="flex flex-wrap gap-4 mt-2 text-sm">
-            <div>
-              <span className="text-gray-400">Trades: </span>
-              <span className="text-white font-medium">{data.length}</span>
-            </div>
-            <div>
-              <span className="text-gray-400">Winrate: </span>
-              <span className={`font-medium ${stats.winRate >= 50 ? 'text-green-400' : 'text-red-400'}`}>
-                {stats.winRate.toFixed(1)}%
-              </span>
-              <span className="text-gray-500 text-xs ml-1">({stats.wins}W/{stats.losses}L)</span>
-            </div>
-            <div>
-              <span className="text-gray-400">R/R: </span>
-              <span className={`font-medium ${stats.riskReward >= 1 ? 'text-green-400' : 'text-orange-400'}`}>
-                {stats.riskReward.toFixed(2)}
-              </span>
-            </div>
-            <div>
-              <span className="text-gray-400">Kumuliert: </span>
-              <span className={`font-medium ${stats.totalReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {stats.totalReturn >= 0 ? '+' : ''}{stats.totalReturn.toFixed(1)}%
-              </span>
-            </div>
-            <div>
-              <span className="text-gray-400">Ø/Trade: </span>
-              <span className={`font-medium ${stats.avgReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {stats.avgReturn >= 0 ? '+' : ''}{stats.avgReturn.toFixed(2)}%
-              </span>
-            </div>
-          </div>
-        </div>
+  const sortBasicTrades = (list, sort) => [...list].sort((a, b) => {
+    if (sort.field === 'symbol') return sort.dir === 'asc' ? (a.symbol || '').localeCompare(b.symbol || '') : (b.symbol || '').localeCompare(a.symbol || '')
+    const av = a[sort.field] ?? 0
+    const bv = b[sort.field] ?? 0
+    return sort.dir === 'asc' ? av - bv : bv - av
+  })
 
-        {loading ? (
-          <div className="flex-1 flex items-center justify-center p-8">
-            <div className="animate-spin w-8 h-8 border-2 border-accent-500 border-t-transparent rounded-full"></div>
-          </div>
-        ) : data.length === 0 ? (
-          <div className="flex-1 flex items-center justify-center p-8 text-gray-500">
-            Keine Trades vorhanden
-          </div>
-        ) : (
-          <>
-            {/* Desktop Table */}
-            <div className="hidden md:block flex-1 overflow-auto">
-              <table className="w-full">
-                <thead className="bg-dark-700 sticky top-0">
-                  <tr>
-                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-400 uppercase">Symbol</th>
-                    <th className="px-3 py-3 text-center text-xs font-medium text-gray-400 uppercase">
-                      <SortButton field="entry_date">BUY</SortButton>
-                    </th>
-                    <th className="px-3 py-3 text-right text-xs font-medium text-gray-400 uppercase">Einstieg</th>
-                    <th className="px-3 py-3 text-center text-xs font-medium text-gray-400 uppercase">SELL / OPEN</th>
-                    <th className="px-3 py-3 text-right text-xs font-medium text-gray-400 uppercase">Ausstieg</th>
-                    <th className="px-3 py-3 text-right text-xs font-medium text-gray-400 uppercase">
-                      <SortButton field="return_pct">Rendite</SortButton>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-dark-700">
-                  {paginatedData.map((trade) => (
-                    <tr key={`${trade.mode}-${trade.id}`} className="hover:bg-dark-700/50 transition-colors">
-                      <td className="px-3 py-3">
-                        <div className="font-medium text-white">{trade.symbol}</div>
-                        <div className="text-xs text-gray-500 truncate max-w-[100px]">{trade.name}</div>
-                      </td>
-                      <td className="px-3 py-3 text-center">
-                        <span className="px-2 py-1 text-xs rounded bg-green-500/20 text-green-400 font-medium">BUY</span>
-                        <div className="text-xs text-gray-400 mt-1">{formatDate(trade.entry_date)}</div>
-                      </td>
-                      <td className="px-3 py-3 text-right text-sm text-gray-300">{formatPrice(trade.entry_price)}</td>
-                      <td className="px-3 py-3 text-center">
-                        {trade.status === 'OPEN' ? (
-                          <span className="px-2 py-1 text-xs rounded bg-blue-500/20 text-blue-400 font-medium">OPEN</span>
-                        ) : (
-                          <>
-                            <span className="px-2 py-1 text-xs rounded bg-red-500/20 text-red-400 font-medium">SELL</span>
-                            <div className="text-xs text-gray-400 mt-1">{formatDate(trade.exit_date)}</div>
-                          </>
-                        )}
-                      </td>
-                      <td className="px-3 py-3 text-right text-sm text-gray-300">
-                        {trade.status === 'OPEN' ? formatPrice(trade.current_price) : formatPrice(trade.exit_price)}
-                      </td>
-                      <td className={`px-3 py-3 text-right text-sm font-bold ${
-                        trade.return_pct >= 0 ? 'text-green-400' : 'text-red-400'
-                      }`}>
-                        {formatPercent(trade.return_pct)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Mobile Cards */}
-            <div className="md:hidden flex-1 overflow-auto p-3 space-y-2">
-              {paginatedData.map((trade) => (
-                <div
-                  key={`${trade.mode}-${trade.id}`}
-                  className={`p-3 rounded-lg border ${
-                    trade.return_pct >= 0
-                      ? 'bg-green-500/5 border-green-500/20'
-                      : 'bg-red-500/5 border-red-500/20'
-                  }`}
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold text-white">{trade.symbol}</span>
-                      <span className={`text-sm font-bold ${
-                        trade.return_pct >= 0 ? 'text-green-400' : 'text-red-400'
-                      }`}>
-                        {formatPercent(trade.return_pct)}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3 text-xs mb-1">
-                    <span className="px-1.5 py-0.5 rounded bg-green-500/20 text-green-400 font-medium">BUY</span>
-                    <span className="text-gray-400">{formatDate(trade.entry_date)}</span>
-                    <span className="text-gray-300">{formatPrice(trade.entry_price)}</span>
-                  </div>
-                  <div className="flex items-center gap-3 text-xs">
-                    {trade.status === 'OPEN' ? (
-                      <>
-                        <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 font-medium">OPEN</span>
-                        <span className="text-gray-400">aktuell</span>
-                        <span className="text-gray-300">{formatPrice(trade.current_price)}</span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 font-medium">SELL</span>
-                        <span className="text-gray-400">{formatDate(trade.exit_date)}</span>
-                        <span className="text-gray-300">{formatPrice(trade.exit_price)}</span>
-                      </>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Pagination */}
-            {totalPages > 1 && (
-              <div className="p-3 border-t border-dark-600 flex items-center justify-between bg-dark-800">
-                <button
-                  onClick={() => setPage(p => Math.max(1, p - 1))}
-                  disabled={page === 1}
-                  className="px-3 py-1.5 text-sm bg-dark-700 text-gray-300 rounded-lg hover:bg-dark-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  Zurück
-                </button>
-                <span className="text-sm text-gray-400">
-                  Seite {page} von {totalPages}
-                </span>
-                <button
-                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-                  disabled={page === totalPages}
-                  className="px-3 py-1.5 text-sm bg-dark-700 text-gray-300 rounded-lg hover:bg-dark-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  Weiter
-                </button>
-              </div>
-            )}
-          </>
-        )}
-      </div>
-    </div>
-  )
+  const totalTradesAll = MODES.reduce((s, m) => s + (modeData[m.key]?.trades.length || 0), 0)
 
   const timeRangeOptions = [
-    { value: '1m', label: '1 Monat' },
-    { value: '1y', label: '1 Jahr' },
-    { value: '2y', label: '2 Jahre' },
-    { value: 'all', label: 'Alle' },
+    { value: '1m', label: '1M' }, { value: '3m', label: '3M' }, { value: '6m', label: '6M' },
+    { value: '1y', label: '1J' }, { value: '2y', label: '2J' }, { value: '3y', label: '3J' },
+    { value: '4y', label: '4J' }, { value: '5y', label: '5J' }, { value: '10y', label: '10J' },
+    { value: 'all', label: 'Max' },
   ]
 
   return (
-    <div className="p-4 md:p-6 h-full flex flex-col max-w-4xl mx-auto w-full">
+    <div className="p-4 md:p-6 h-full overflow-y-auto max-w-5xl mx-auto w-full">
+      {/* Title */}
       <div className="mb-4 text-center">
         <h1 className="text-2xl font-bold text-white">Performance</h1>
-        <p className="text-gray-400 mt-1">Trade-Historie der Watchlist - {modeInfo.title} Modus</p>
+        <p className="text-gray-400 mt-1">Trade-Historie der Watchlist — Alle Modi</p>
       </div>
 
-      {/* Time Range Selection */}
+      {/* Time Range */}
       <div className="flex justify-center mb-4">
-        <div className="inline-flex bg-dark-800 rounded-lg p-1 border border-dark-600">
-          {timeRangeOptions.map((option) => (
-            <button
-              key={option.value}
-              onClick={() => setTimeRange(option.value)}
-              className={`px-4 py-2 text-sm font-medium rounded-md transition-all ${
-                timeRange === option.value
-                  ? 'bg-accent-500 text-white'
-                  : 'text-gray-400 hover:text-white hover:bg-dark-700'
-              }`}
-            >
-              {option.label}
+        <div className="inline-flex bg-dark-800 rounded-lg p-1 border border-dark-600 flex-wrap justify-center">
+          {timeRangeOptions.map(o => (
+            <button key={o.value} onClick={() => setTimeRange(o.value)}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${timeRange === o.value ? 'bg-accent-500 text-white' : 'text-gray-400 hover:text-white hover:bg-dark-700'}`}>
+              {o.label}
             </button>
           ))}
         </div>
       </div>
 
-      {/* Collapsible Filter Panel */}
-      <div className="mb-4 bg-dark-800 rounded-xl border border-dark-600 overflow-hidden">
-        <button
-          onClick={() => setFiltersOpen(!filtersOpen)}
-          className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-dark-700/50 transition-colors"
-        >
+      {/* Filters */}
+      <div className="mb-3 bg-dark-800 rounded-xl border border-dark-600 overflow-hidden">
+        <button onClick={() => setFiltersOpen(!filtersOpen)}
+          className="w-full px-4 py-2.5 flex items-center justify-between text-left hover:bg-dark-700/50 transition-colors">
           <div className="flex items-center gap-2">
-            <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
             </svg>
-            <span className="text-white font-medium">Filter</span>
-            {hasActiveFilters && (
-              <span className="px-2 py-0.5 text-xs bg-accent-500 text-white rounded-full">Aktiv</span>
-            )}
+            <span className="text-white font-medium text-sm">Filter</span>
+            {hasActiveFilters && <span className="px-1.5 py-0.5 text-xs bg-accent-500 text-white rounded-full">Aktiv</span>}
           </div>
-          <svg className={`w-5 h-5 text-gray-400 transition-transform ${filtersOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className={`w-4 h-4 text-gray-400 transition-transform ${filtersOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
           </svg>
         </button>
-
         {filtersOpen && (
-          <div className="px-4 pb-4 border-t border-dark-600">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
-              {/* Winrate Filter */}
+          <div className="px-4 pb-3 border-t border-dark-600">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Winrate (%)</label>
                 <div className="flex gap-2">
-                  <input
-                    type="number"
-                    placeholder="Min"
-                    value={filters.minWinrate}
-                    onChange={(e) => handleFilterChange('minWinrate', e.target.value)}
-                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500"
-                  />
-                  <input
-                    type="number"
-                    placeholder="Max"
-                    value={filters.maxWinrate}
-                    onChange={(e) => handleFilterChange('maxWinrate', e.target.value)}
-                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500"
-                  />
+                  <input type="number" placeholder="Min" value={filters.minWinrate} onChange={e => handleFilterChange('minWinrate', e.target.value)}
+                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500" />
+                  <input type="number" placeholder="Max" value={filters.maxWinrate} onChange={e => handleFilterChange('maxWinrate', e.target.value)}
+                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500" />
                 </div>
               </div>
-
-              {/* Risk/Reward Filter */}
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Risk/Reward</label>
                 <div className="flex gap-2">
-                  <input
-                    type="number"
-                    step="0.1"
-                    placeholder="Min"
-                    value={filters.minRR}
-                    onChange={(e) => handleFilterChange('minRR', e.target.value)}
-                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500"
-                  />
-                  <input
-                    type="number"
-                    step="0.1"
-                    placeholder="Max"
-                    value={filters.maxRR}
-                    onChange={(e) => handleFilterChange('maxRR', e.target.value)}
-                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500"
-                  />
+                  <input type="number" step="0.1" placeholder="Min" value={filters.minRR} onChange={e => handleFilterChange('minRR', e.target.value)}
+                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500" />
+                  <input type="number" step="0.1" placeholder="Max" value={filters.maxRR} onChange={e => handleFilterChange('maxRR', e.target.value)}
+                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500" />
                 </div>
               </div>
-
-              {/* Avg Return Filter */}
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Ø Rendite (%)</label>
                 <div className="flex gap-2">
-                  <input
-                    type="number"
-                    step="0.1"
-                    placeholder="Min"
-                    value={filters.minAvgReturn}
-                    onChange={(e) => handleFilterChange('minAvgReturn', e.target.value)}
-                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500"
-                  />
-                  <input
-                    type="number"
-                    step="0.1"
-                    placeholder="Max"
-                    value={filters.maxAvgReturn}
-                    onChange={(e) => handleFilterChange('maxAvgReturn', e.target.value)}
-                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500"
-                  />
+                  <input type="number" step="0.1" placeholder="Min" value={filters.minAvgReturn} onChange={e => handleFilterChange('minAvgReturn', e.target.value)}
+                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500" />
+                  <input type="number" step="0.1" placeholder="Max" value={filters.maxAvgReturn} onChange={e => handleFilterChange('maxAvgReturn', e.target.value)}
+                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500" />
                 </div>
               </div>
-
-              {/* Market Cap Filter */}
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Min Market Cap (Mrd)</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  placeholder="z.B. 10"
-                  value={filters.minMarketCap}
-                  onChange={(e) => handleFilterChange('minMarketCap', e.target.value)}
-                  className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500"
-                />
+                <input type="number" step="0.1" placeholder="z.B. 10" value={filters.minMarketCap} onChange={e => handleFilterChange('minMarketCap', e.target.value)}
+                  className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500" />
               </div>
             </div>
-
             {hasActiveFilters && (
-              <div className="mt-3 flex justify-end">
-                <button
-                  onClick={clearFilters}
-                  className="px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
-                >
-                  Filter zurücksetzen
-                </button>
+              <div className="mt-2 flex justify-end">
+                <button onClick={clearFilters} className="px-3 py-1 text-xs text-gray-400 hover:text-white transition-colors">Filter zurücksetzen</button>
               </div>
             )}
           </div>
         )}
       </div>
 
-      {/* Single Mode Table */}
-      <div className="flex-1 min-h-0">
-        <TradeTable
-          data={sortedTrades}
-          paginatedData={paginatedTrades}
-          page={currentPage}
-          setPage={setCurrentPage}
-          totalPages={totalPages}
-          title={modeInfo.title}
-          color={modeInfo.color}
-          stats={stats}
-        />
+      {/* Simulation Config Bar */}
+      <div className="mb-4 bg-dark-800 rounded-xl border border-dark-600 px-4 py-3 flex items-center gap-3 flex-wrap">
+        <svg className="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+        </svg>
+        <span className="text-sm text-gray-400">Simulation:</span>
+        <div className="relative">
+          <input type="number" min="1" step="10" value={simAmount} onChange={e => setSimAmount(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && runAllSimulations()}
+            className="w-28 px-3 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded-lg text-white pr-8" />
+          <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-500">{currencySymbol}</span>
+        </div>
+        <span className="text-xs text-gray-500">pro Trade</span>
+        <button onClick={runAllSimulations}
+          disabled={!simAmount || parseFloat(simAmount) <= 0 || totalTradesAll === 0}
+          className="px-4 py-1.5 text-sm bg-accent-500 text-white rounded-lg hover:bg-accent-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium">
+          Berechnen
+        </button>
+        {Object.keys(simResults).length > 0 && (
+          <span className="text-xs text-gray-500 ml-auto">
+            {MODES.filter(m => simResults[m.key]).length} Modi berechnet
+          </span>
+        )}
       </div>
+
+      {/* Loading */}
+      {loading && (
+        <div className="flex justify-center py-12">
+          <div className="animate-spin w-8 h-8 border-2 border-accent-500 border-t-transparent rounded-full" />
+        </div>
+      )}
+
+      {/* Mode Sections */}
+      {!loading && (
+        <div className="space-y-3">
+          {MODES.map(mc => {
+            const data = modeData[mc.key]
+            const sim = simResults[mc.key]
+            const isOpen = openSections[mc.key]
+            const tradesOpen = openTradeTables[mc.key]
+            const st = data.stats
+            const style = S[mc.key]
+            const hasTrades = st.tradeCount > 0
+
+            return (
+              <div key={mc.key} className={`bg-dark-800 rounded-xl border border-dark-600 overflow-hidden ${!hasTrades ? 'opacity-60' : ''}`}>
+                {/* Section Header */}
+                <button onClick={() => hasTrades && toggleSection(mc.key)}
+                  className={`w-full px-4 py-3 text-left transition-colors ${hasTrades ? 'hover:bg-dark-700/30 cursor-pointer' : 'cursor-default'} ${isOpen ? style.headerBg : ''}`}>
+                  {/* Row 1: Mode name + sim summary + chevron */}
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className={`w-3 h-3 rounded-full flex-shrink-0 ${style.dot}`} />
+                      <span className="font-semibold text-white text-base">{mc.title}</span>
+                      {hasTrades ? (
+                        <span className="text-sm text-gray-400 flex-shrink-0">{st.tradeCount} Trades</span>
+                      ) : (
+                        <span className="text-sm text-gray-500">Keine Trades</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3 flex-shrink-0">
+                      {sim && hasTrades && (
+                        <div className="hidden sm:flex items-center gap-2">
+                          <span className={`text-sm font-medium ${sim.gewinn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {sim.gewinn >= 0 ? '+' : ''}{fmtSim(sim.gewinn)}
+                          </span>
+                          <span className={`text-xs ${sim.cagr >= 0 ? 'text-green-400/70' : 'text-red-400/70'}`}>
+                            ({sim.cagr >= 0 ? '+' : ''}{sim.cagr.toFixed(1)}% p.a.)
+                          </span>
+                        </div>
+                      )}
+                      {hasTrades && (
+                        <svg className={`w-5 h-5 text-gray-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      )}
+                    </div>
+                  </div>
+                  {/* Row 2: Stats bar - consistent across all sections */}
+                  {hasTrades && (
+                    <div className="flex items-center gap-3 md:gap-5 mt-1.5 pl-[22px] overflow-x-auto scrollbar-none">
+                      <span className={`text-sm font-medium whitespace-nowrap ${st.winRate >= 50 ? 'text-green-400' : 'text-red-400'}`}>
+                        Win {st.winRate.toFixed(1)}%
+                      </span>
+                      <span className={`text-sm font-medium whitespace-nowrap ${st.riskReward >= 1 ? 'text-green-400' : 'text-orange-400'}`}>
+                        R/R {st.riskReward === Infinity ? '∞' : st.riskReward.toFixed(2)}
+                      </span>
+                      <span className={`text-sm font-medium whitespace-nowrap ${st.totalReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        Σ {st.totalReturn >= 0 ? '+' : ''}{st.totalReturn.toFixed(1)}%
+                      </span>
+                      <span className={`text-sm whitespace-nowrap ${st.avgReturn >= 0 ? 'text-green-400/70' : 'text-red-400/70'}`}>
+                        Ø {st.avgReturn >= 0 ? '+' : ''}{st.avgReturn.toFixed(2)}%
+                      </span>
+                      {sim && (
+                        <span className={`text-sm font-medium whitespace-nowrap sm:hidden ${sim.gewinn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          Sim: {sim.gewinn >= 0 ? '+' : ''}{fmtSim(sim.gewinn)}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </button>
+
+                {/* Section Body */}
+                {isOpen && hasTrades && (
+                  <div className="border-t border-dark-600 px-4 py-3 space-y-3">
+
+                    {/* Sim Stats */}
+                    {sim && (
+                      <>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                          <div className="bg-dark-700 rounded-lg p-3">
+                            <div className="text-xs text-gray-400">Startkapital</div>
+                            <div className="text-lg font-bold text-amber-400">{fmtSim(sim.eigenkapital)}</div>
+                            <div className="text-xs text-gray-500">{sim.maxConcurrent} x {fmtSim(sim.amount)}</div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3">
+                            <div className="text-xs text-gray-400">Endkapital</div>
+                            <div className="text-lg font-bold text-white">{fmtSim(sim.endkapital)}</div>
+                            <div className="text-xs text-gray-500">{sim.openCount > 0 ? `inkl. ${sim.openCount} offene` : `${sim.tradeCount} Trades`}</div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3">
+                            <div className="text-xs text-gray-400">Gewinn / Verlust</div>
+                            <div className={`text-lg font-bold ${sim.gewinn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {sim.gewinn >= 0 ? '+' : ''}{fmtSim(sim.gewinn)}
+                            </div>
+                            <div className={`text-xs ${sim.rendite >= 0 ? 'text-green-400/70' : 'text-red-400/70'}`}>
+                              {sim.rendite >= 0 ? '+' : ''}{sim.rendite.toFixed(1)}%
+                            </div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3">
+                            <div className="text-xs text-gray-400">Rendite p.a.</div>
+                            <div className={`text-lg font-bold ${sim.cagr >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {sim.cagr >= 0 ? '+' : ''}{sim.cagr.toFixed(1)}%
+                            </div>
+                            <div className="text-xs text-gray-500">
+                              {sim.years >= 1 ? `${sim.years.toFixed(1)} Jahre` : `${Math.round(sim.years * 12)} Mon.`}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                          <div className="bg-dark-700 rounded-lg p-3">
+                            <div className="text-xs text-gray-400">Win Rate</div>
+                            <div className={`text-lg font-bold ${sim.winRate >= 50 ? 'text-green-400' : 'text-red-400'}`}>
+                              {sim.winRate.toFixed(1)}%
+                            </div>
+                            <div className="text-xs text-gray-500">{sim.wins}W / {sim.losses}L</div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3">
+                            <div className="text-xs text-gray-400">Risiko-Rendite</div>
+                            <div className={`text-lg font-bold ${sim.riskReward >= 1 ? 'text-green-400' : 'text-red-400'}`}>
+                              {sim.riskReward === Infinity ? '∞' : sim.riskReward.toFixed(2)}
+                            </div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3">
+                            <div className="text-xs text-gray-400">Ø Gewinn</div>
+                            <div className="text-lg font-bold text-green-400">
+                              {fmtSim(sim.avgWin)}
+                              <span className="text-sm ml-1 text-green-400/70">({sim.avgWinPct.toFixed(1)}%)</span>
+                            </div>
+                          </div>
+                          <div className="bg-dark-700 rounded-lg p-3">
+                            <div className="text-xs text-gray-400">Ø Verlust</div>
+                            <div className="text-lg font-bold text-red-400">
+                              {fmtSim(-sim.avgLoss)}
+                              <span className="text-sm ml-1 text-red-400/70">({sim.avgLossPct.toFixed(1)}%)</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {sim.equityCurve.length > 1 && (
+                          <div>
+                            <div className="text-xs text-gray-400 uppercase tracking-wider mb-1">Kapitalverlauf</div>
+                            <EquityCurveChart data={sim.equityCurve} eigenkapital={sim.eigenkapital} gewinn={sim.gewinn} />
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    {/* Trade Table - collapsible */}
+                    <div>
+                      <button onClick={() => toggleTradeTable(mc.key)}
+                        className="w-full flex items-center justify-between py-2 text-left hover:text-white transition-colors group">
+                        <span className="text-sm text-gray-400 uppercase tracking-wider group-hover:text-gray-300">
+                          {sim ? 'Einzelne Trades' : 'Trades'} ({st.tradeCount})
+                          <span className="text-gray-600 ml-2 normal-case tracking-normal">{st.wins}W / {st.losses}L</span>
+                        </span>
+                        <svg className={`w-4 h-4 text-gray-500 transition-transform ${tradesOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+
+                      {tradesOpen && (
+                        <div className="overflow-x-auto max-h-[400px] overflow-y-auto rounded-lg border border-dark-600">
+                          {sim ? (
+                            /* Sim Trades Table */
+                            <table className="w-full text-sm">
+                              <thead className="bg-dark-700 sticky top-0 text-gray-400 z-10">
+                                <tr>
+                                  <SortTH field="symbol" sort={getSimSort(mc.key)} onSort={s => doSetSimSort(mc.key, s)}>Aktie</SortTH>
+                                  <SortTH field="entryDate" sort={getSimSort(mc.key)} onSort={s => doSetSimSort(mc.key, s)}>Kauf</SortTH>
+                                  <SortTH field="entryPrice" sort={getSimSort(mc.key)} onSort={s => doSetSimSort(mc.key, s)} right>Kaufkurs</SortTH>
+                                  <SortTH field="exitDate" sort={getSimSort(mc.key)} onSort={s => doSetSimSort(mc.key, s)}>Verkauf</SortTH>
+                                  <SortTH field="exitPrice" sort={getSimSort(mc.key)} onSort={s => doSetSimSort(mc.key, s)} right>Verkaufskurs</SortTH>
+                                  <SortTH field="returnPct" sort={getSimSort(mc.key)} onSort={s => doSetSimSort(mc.key, s)} right>Rendite</SortTH>
+                                  <SortTH field="profit" sort={getSimSort(mc.key)} onSort={s => doSetSimSort(mc.key, s)} right>Gewinn</SortTH>
+                                  <SortTH field="received" sort={getSimSort(mc.key)} onSort={s => doSetSimSort(mc.key, s)} right>Erhalten</SortTH>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-dark-600/50">
+                                {sortSimTrades(sim.trades, getSimSort(mc.key)).map((t, i) => (
+                                  <tr key={i} className="hover:bg-dark-700/30 transition-colors">
+                                    <td className="px-2 py-1.5">
+                                      <span className="font-medium text-white">{t.symbol}</span>
+                                    </td>
+                                    <td className="px-2 py-1.5 text-gray-300">{fmtDate(t.entryDate)}</td>
+                                    <td className="px-2 py-1.5 text-right text-gray-300">{formatPrice(t.entryPrice, t.symbol)}</td>
+                                    <td className="px-2 py-1.5">
+                                      {t.exitDate ? (
+                                        <span className="text-gray-300">{fmtDate(t.exitDate)}</span>
+                                      ) : (
+                                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 font-medium text-xs">
+                                          <span className="w-1 h-1 rounded-full bg-blue-400 animate-pulse" />
+                                          OPEN
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td className="px-2 py-1.5 text-right text-gray-300">{formatPrice(t.exitPrice, t.symbol)}</td>
+                                    <td className={`px-2 py-1.5 text-right font-medium ${t.returnPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                      {t.returnPct >= 0 ? '+' : ''}{t.returnPct.toFixed(1)}%
+                                    </td>
+                                    <td className={`px-2 py-1.5 text-right font-medium ${t.profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                      {t.profit >= 0 ? '+' : ''}{fmtSim(t.profit)}
+                                    </td>
+                                    <td className="px-2 py-1.5 text-right text-white font-medium">{fmtSim(t.received)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                              <tfoot>
+                                <tr className="bg-dark-700/50 font-medium border-t border-dark-500 text-sm">
+                                  <td className="px-2 py-2 text-gray-400" colSpan={5}>Gesamt</td>
+                                  <td className={`px-2 py-2 text-right ${sim.rendite >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                    {sim.rendite >= 0 ? '+' : ''}{sim.rendite.toFixed(1)}%
+                                  </td>
+                                  <td className={`px-2 py-2 text-right ${sim.gewinn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                    {sim.gewinn >= 0 ? '+' : ''}{fmtSim(sim.gewinn)}
+                                  </td>
+                                  <td className="px-2 py-2 text-right text-white">
+                                    {fmtSim(sim.trades.reduce((s, t) => s + t.received, 0))}
+                                  </td>
+                                </tr>
+                              </tfoot>
+                            </table>
+                          ) : (
+                            /* Basic Trades Table */
+                            <table className="w-full text-sm">
+                              <thead className="bg-dark-700 sticky top-0 text-gray-400 z-10">
+                                <tr>
+                                  <SortTH field="symbol" sort={getTradeSort(mc.key)} onSort={s => doSetTradeSort(mc.key, s)}>Symbol</SortTH>
+                                  <SortTH field="entry_date" sort={getTradeSort(mc.key)} onSort={s => doSetTradeSort(mc.key, s)}>BUY</SortTH>
+                                  <th className="px-2 py-2 text-right font-medium">Einstieg</th>
+                                  <th className="px-2 py-2 font-medium">SELL / OPEN</th>
+                                  <th className="px-2 py-2 text-right font-medium">Ausstieg</th>
+                                  <SortTH field="return_pct" sort={getTradeSort(mc.key)} onSort={s => doSetTradeSort(mc.key, s)} right>Rendite</SortTH>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-dark-600/50">
+                                {sortBasicTrades(data.trades, getTradeSort(mc.key)).map((t, i) => (
+                                  <tr key={i} className="hover:bg-dark-700/30 transition-colors">
+                                    <td className="px-2 py-1.5">
+                                      <div className="font-medium text-white">{t.symbol}</div>
+                                      <div className="text-xs text-gray-500 truncate max-w-[80px]">{t.name}</div>
+                                    </td>
+                                    <td className="px-2 py-1.5">
+                                      <span className="px-1.5 py-0.5 text-xs rounded bg-green-500/20 text-green-400 font-medium">BUY</span>
+                                      <div className="text-xs text-gray-400 mt-0.5">{fmtDate(t.entry_date)}</div>
+                                    </td>
+                                    <td className="px-2 py-1.5 text-right text-gray-300">{formatPrice(t.entry_price, t.symbol)}</td>
+                                    <td className="px-2 py-1.5">
+                                      {t.status === 'OPEN' ? (
+                                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 font-medium text-xs">
+                                          <span className="w-1 h-1 rounded-full bg-blue-400 animate-pulse" />
+                                          OPEN
+                                        </span>
+                                      ) : (
+                                        <>
+                                          <span className="px-1.5 py-0.5 text-xs rounded bg-red-500/20 text-red-400 font-medium">SELL</span>
+                                          <div className="text-xs text-gray-400 mt-0.5">{fmtDate(t.exit_date)}</div>
+                                        </>
+                                      )}
+                                    </td>
+                                    <td className="px-2 py-1.5 text-right text-gray-300">
+                                      {formatPrice(t.status === 'OPEN' ? t.current_price : t.exit_price, t.symbol)}
+                                    </td>
+                                    <td className={`px-2 py-1.5 text-right font-medium ${(t.return_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                      {(t.return_pct || 0) >= 0 ? '+' : ''}{(t.return_pct || 0).toFixed(2)}%
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

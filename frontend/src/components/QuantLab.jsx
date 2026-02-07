@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useCurrency } from '../context/CurrencyContext'
 import PortfolioChart from './PortfolioChart'
@@ -8,26 +8,21 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
   const [actions, setActions] = useState([])
   const [performance, setPerformance] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [logs, setLogs] = useState([])
   const [hasUserPortfolio, setHasUserPortfolio] = useState(false)
-  const [pendingActions, setPendingActions] = useState([])
-  const [loadingPending, setLoadingPending] = useState(false)
-  const [debugTab, setDebugTab] = useState('todo')
   const [checkingAccess, setCheckingAccess] = useState(true)
   const [showTradeHistory, setShowTradeHistory] = useState(false)
   const [completedTrades, setCompletedTrades] = useState([])
   const [loadingCompletedTrades, setLoadingCompletedTrades] = useState(false)
-  const logEndRef = useRef(null)
+  const [isLive, setIsLive] = useState(true)
+  const [hasLivePositions, setHasLivePositions] = useState(false)
   const { formatPrice } = useCurrency()
 
-  // Check if user has portfolio positions
   useEffect(() => {
     const checkUserPortfolio = async () => {
       if (!isLoggedIn || !token) {
         setCheckingAccess(false)
         return
       }
-
       try {
         const res = await fetch('/api/portfolio', {
           headers: { 'Authorization': `Bearer ${token}` }
@@ -41,27 +36,17 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
         setCheckingAccess(false)
       }
     }
-
     checkUserPortfolio()
   }, [isLoggedIn, token])
 
   useEffect(() => {
     if (isLoggedIn && hasUserPortfolio) {
       fetchData()
-      fetchPendingActions()
-      fetchLogs()
       fetchCompletedTrades()
     } else {
       setLoading(false)
     }
   }, [isLoggedIn, hasUserPortfolio])
-
-  useEffect(() => {
-    // Auto-scroll to bottom of log
-    if (logEndRef.current) {
-      logEndRef.current.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [logs])
 
   const fetchData = async () => {
     setLoading(true)
@@ -85,48 +70,14 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
       setPortfolio(portfolioData)
       setActions(actionsData)
       setPerformance(perfData)
+
+      const liveCount = portfolioData?.positions?.filter(p => p.is_live)?.length || 0
+      setHasLivePositions(liveCount > 0)
+      if (liveCount === 0) setIsLive(false)
     } catch (err) {
       console.error('Failed to fetch Quant data:', err)
     } finally {
       setLoading(false)
-    }
-  }
-
-  const fetchPendingActions = async () => {
-    if (!isAdmin) return
-    setLoadingPending(true)
-    try {
-      const res = await fetch('/api/quant/todos', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
-      const data = await res.json()
-      setPendingActions(data || [])
-      // Trigger pending check to create new todos
-      await fetch('/api/quant/pending', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
-    } catch (err) {
-      console.error('Failed to fetch pending actions:', err)
-    } finally {
-      setLoadingPending(false)
-    }
-  }
-
-  const fetchLogs = async () => {
-    if (!isAdmin) return
-    try {
-      const res = await fetch('/api/quant/logs', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
-      const data = await res.json()
-      const formattedLogs = (data || []).map(log => ({
-        level: log.level,
-        message: log.message,
-        time: new Date(log.created_at).toLocaleTimeString('de-DE')
-      })).reverse()
-      setLogs(formattedLogs)
-    } catch (err) {
-      console.error('Failed to fetch logs:', err)
     }
   }
 
@@ -145,69 +96,6 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
     }
   }
 
-  const handleMarkDone = async (todoId) => {
-    try {
-      await fetch(`/api/quant/todos/${todoId}/done`, {
-        method: 'PUT',
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
-      fetchPendingActions()
-    } catch (err) {
-      console.error('Failed to mark todo done:', err)
-    }
-  }
-
-  const handleExecuteTodo = async (todoId, type, symbol) => {
-    if (!confirm(`${type} für ${symbol} wirklich ausführen? Der Trade wird zum aktuellen Kurs durchgeführt.`)) {
-      return
-    }
-    try {
-      const res = await fetch(`/api/quant/todos/${todoId}/execute`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
-      const data = await res.json()
-      if (res.ok) {
-        fetchPendingActions()
-        fetchData()
-        setLogs(prev => [...prev, {
-          level: 'ACTION',
-          message: `${type} ${symbol} ausgeführt @ $${data.price?.toFixed(2)}`,
-          time: new Date().toLocaleTimeString('de-DE')
-        }])
-      } else {
-        alert(data.error || 'Fehler beim Ausführen')
-      }
-    } catch (err) {
-      console.error('Failed to execute todo:', err)
-      alert('Fehler beim Ausführen des Trades')
-    }
-  }
-
-  const handleReopenTodo = async (todoId) => {
-    try {
-      await fetch(`/api/quant/todos/${todoId}/reopen`, {
-        method: 'PUT',
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
-      fetchPendingActions()
-    } catch (err) {
-      console.error('Failed to reopen todo:', err)
-    }
-  }
-
-  const handleDeleteTodo = async (todoId) => {
-    try {
-      await fetch(`/api/quant/todos/${todoId}`, {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
-      fetchPendingActions()
-    } catch (err) {
-      console.error('Failed to delete todo:', err)
-    }
-  }
-
   const formatPercent = (value) => {
     if (value === undefined || value === null || isNaN(value)) return '--'
     const sign = value >= 0 ? '+' : ''
@@ -220,29 +108,60 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
     return date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' })
   }
 
-  const getLogColor = (level) => {
-    switch (level) {
-      case 'ERROR': return 'text-red-400'
-      case 'WARN': return 'text-yellow-400'
-      case 'ACTION': return 'text-green-400'
-      case 'SKIP': return 'text-gray-500'
-      case 'DEBUG': return 'text-blue-400'
-      default: return 'text-gray-300'
+  const calcLivePerformance = (positions, trades) => {
+    const invested = positions.reduce((sum, p) => sum + (p.avg_price || 0) * (p.quantity || 1), 0)
+    const currentVal = positions.reduce((sum, p) => sum + (p.current_price || 0) * (p.quantity || 1), 0)
+    const unrealized = currentVal - invested
+    const unrealizedPct = invested > 0 ? (unrealized / invested) * 100 : 0
+    const realized = trades.reduce((sum, t) => sum + (t.profit_loss || 0), 0)
+    const allItems = [
+      ...trades.map(t => ({ pct: t.profit_loss_pct || 0 })),
+      ...positions.map(p => ({ pct: p.total_return_pct || 0 }))
+    ]
+    const allWins = allItems.filter(i => i.pct > 0)
+    const allLosses = allItems.filter(i => i.pct < 0)
+    const wins = allWins.length
+    const losses = allLosses.length
+    const winRate = allItems.length > 0 ? (wins / allItems.length) * 100 : 0
+    const avgReturn = allItems.length > 0 ? allItems.reduce((sum, i) => sum + i.pct, 0) / allItems.length : 0
+    const avgWinPct = allWins.length > 0 ? allWins.reduce((s, i) => s + i.pct, 0) / allWins.length : 0
+    const avgLossPct = allLosses.length > 0 ? Math.abs(allLosses.reduce((s, i) => s + i.pct, 0) / allLosses.length) : 0
+    const riskReward = avgLossPct > 0 ? avgWinPct / avgLossPct : avgWinPct > 0 ? Infinity : 0
+    const totalGain = unrealized + realized
+    const tradeCosts = trades.reduce((sum, t) => sum + (t.buy_price || 0) * (t.quantity || 1), 0)
+    const totalInvested = invested + tradeCosts
+    const overallPct = totalInvested > 0 ? (totalGain / totalInvested) * 100 : 0
+    return {
+      open_positions: positions.length, invested_in_positions: invested, current_value: currentVal,
+      unrealized_gain: unrealized, total_return_pct: unrealizedPct, realized_profit: realized,
+      total_trades: allItems.length, wins, losses, win_rate: winRate, avg_return_per_trade: avgReturn,
+      avg_win_pct: avgWinPct, avg_loss_pct: avgLossPct, risk_reward: riskReward,
+      total_gain: totalGain, overall_return_pct: overallPct, total_buys: positions.length + trades.length
     }
   }
 
-  const getLogBadge = (level) => {
-    switch (level) {
-      case 'ERROR': return 'bg-red-500/20 text-red-400'
-      case 'WARN': return 'bg-yellow-500/20 text-yellow-400'
-      case 'ACTION': return 'bg-green-500/20 text-green-400'
-      case 'SKIP': return 'bg-gray-500/20 text-gray-500'
-      case 'DEBUG': return 'bg-blue-500/20 text-blue-400'
-      default: return 'bg-gray-500/20 text-gray-400'
-    }
-  }
+  const displayedPositions = useMemo(() => {
+    if (!portfolio?.positions) return []
+    return isLive ? portfolio.positions.filter(p => p.is_live) : portfolio.positions
+  }, [portfolio, isLive])
 
-  // Show loading while checking access
+  const displayedActions = useMemo(() => {
+    if (!actions?.length) return []
+    return isLive ? actions.filter(a => a.is_live) : actions
+  }, [actions, isLive])
+
+  const displayedCompletedTrades = useMemo(() => {
+    if (!completedTrades?.length) return []
+    return isLive ? completedTrades.filter(t => t.is_live) : completedTrades
+  }, [completedTrades, isLive])
+
+  const displayedPerformance = useMemo(() => {
+    if (!portfolio?.positions) return null
+    const positions = isLive ? portfolio.positions.filter(p => p.is_live) : portfolio.positions
+    const trades = isLive ? (completedTrades?.filter(t => t.is_live) || []) : (completedTrades || [])
+    return calcLivePerformance(positions, trades)
+  }, [portfolio, completedTrades, isLive])
+
   if (checkingAccess || loading) {
     return (
       <div className="flex-1 p-4 md:p-6 flex items-center justify-center">
@@ -254,91 +173,55 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
     )
   }
 
-  // Access denied screen for non-logged-in users or users without portfolio
   if (!isLoggedIn || !hasUserPortfolio) {
     return (
       <div className="flex-1 p-4 md:p-6 flex items-center justify-center">
         <div className="max-w-md text-center">
-          {/* Icon */}
           <div className="w-24 h-24 mx-auto mb-6 bg-gradient-to-br from-violet-500/20 to-purple-500/20 rounded-2xl flex items-center justify-center border border-violet-500/30">
             <svg className="w-12 h-12 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
             </svg>
           </div>
-
-          {/* Title */}
           <h1 className="text-2xl font-bold text-white mb-2 flex items-center justify-center gap-2">
             Quant Lab
-            <span className="px-2 py-0.5 bg-gradient-to-r from-violet-500 to-purple-500 text-white text-xs font-bold rounded">
-              BETA
-            </span>
+            <span className="px-2 py-0.5 bg-gradient-to-r from-violet-500 to-purple-500 text-white text-xs font-bold rounded">BETA</span>
           </h1>
-
-          {/* Message based on state */}
           {!isLoggedIn ? (
             <>
-              <p className="text-gray-400 mb-6">
-                Melde dich an, um den Quant Lab zu nutzen und die quantitative Trading-Strategie zu verfolgen.
-              </p>
+              <p className="text-gray-400 mb-6">Melde dich an, um den Quant Lab zu nutzen und die quantitative Trading-Strategie zu verfolgen.</p>
               <div className="flex flex-col sm:flex-row gap-3 justify-center">
-                <Link
-                  to="/login"
-                  className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-accent-500 text-white rounded-lg hover:bg-accent-400 transition-colors font-medium"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
-                  </svg>
+                <Link to="/login" className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-accent-500 text-white rounded-lg hover:bg-accent-400 transition-colors font-medium">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" /></svg>
                   Anmelden
                 </Link>
-                <Link
-                  to="/register"
-                  className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-dark-700 text-white rounded-lg hover:bg-dark-600 transition-colors font-medium border border-dark-600"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
-                  </svg>
+                <Link to="/register" className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-dark-700 text-white rounded-lg hover:bg-dark-600 transition-colors font-medium border border-dark-600">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" /></svg>
                   Registrieren
                 </Link>
               </div>
             </>
           ) : (
             <>
-              <p className="text-gray-400 mb-6">
-                Um den Quant Lab zu nutzen, musst du mindestens eine Aktie in deinem Portfolio haben.
-                Füge zuerst eine Position hinzu, um die quantitative Trading-Strategie zu verfolgen.
-              </p>
-              <Link
-                to="/portfolio"
-                className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-accent-500 text-white rounded-lg hover:bg-accent-400 transition-colors font-medium"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                </svg>
+              <p className="text-gray-400 mb-6">Um den Quant Lab zu nutzen, musst du mindestens eine Aktie in deinem Portfolio haben.</p>
+              <Link to="/portfolio" className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-accent-500 text-white rounded-lg hover:bg-accent-400 transition-colors font-medium">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
                 Portfolio aufbauen
               </Link>
             </>
           )}
-
-          {/* Feature preview */}
           <div className="mt-10 p-4 bg-dark-800 rounded-xl border border-dark-600 text-left">
             <h3 className="text-sm font-medium text-gray-300 mb-3">Was dich erwartet:</h3>
             <ul className="space-y-2 text-sm text-gray-500">
               <li className="flex items-center gap-2">
-                <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                </svg>
+                <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
                 Quantitatives Trading nach B-Xtrender Algorithmus
               </li>
               <li className="flex items-center gap-2">
-                <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                </svg>
+                <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
                 Beide Indikatoren positiv = Entry Signal
               </li>
               <li className="flex items-center gap-2">
-                <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                </svg>
+                <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
                 Vergleich mit anderen Nutzern
               </li>
             </ul>
@@ -363,9 +246,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
               <div>
                 <h1 className="text-2xl font-bold text-white flex items-center gap-2">
                   Quant Lab
-                  <span className="px-2 py-0.5 bg-gradient-to-r from-violet-500 to-purple-500 text-white text-xs font-bold rounded">
-                    BETA
-                  </span>
+                  <span className="px-2 py-0.5 bg-gradient-to-r from-violet-500 to-purple-500 text-white text-xs font-bold rounded">BETA</span>
                 </h1>
                 <p className="text-gray-500 text-sm">Quantitatives Trading seit 01.01.2026</p>
               </div>
@@ -373,111 +254,121 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
           </div>
         </div>
 
-        {/* Performance Chart */}
-        {portfolio?.positions?.length > 0 && (
-          <div className="mb-6">
-            <PortfolioChart
-              token={token}
-              botType="quant"
-              extraParams="live=true"
-              height={250}
-              title="Quant Performance"
-            />
+        {/* Live/Simulation Toggle */}
+        <div className="mb-6">
+          <div className="inline-flex items-center bg-dark-800 rounded-xl border border-dark-600 p-1">
+            <button
+              onClick={() => hasLivePositions && setIsLive(true)}
+              disabled={!hasLivePositions}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                !hasLivePositions
+                  ? 'opacity-50 cursor-not-allowed text-gray-600'
+                  : isLive
+                    ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                    : 'text-gray-400 hover:text-white'
+              }`}
+              title={!hasLivePositions ? 'Keine Live-Positionen vorhanden' : ''}
+            >
+              <span className={`w-2 h-2 rounded-full ${isLive && hasLivePositions ? 'bg-green-400 animate-pulse' : 'bg-gray-600'}`}></span>
+              Live
+            </button>
+            <button
+              onClick={() => setIsLive(false)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                !isLive
+                  ? 'bg-violet-500/20 text-violet-400 border border-violet-500/30'
+                  : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              <svg className={`w-4 h-4 ${!isLive ? 'text-violet-400' : 'text-gray-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+              </svg>
+              Simulation
+            </button>
           </div>
-        )}
+          <p className="text-xs text-gray-500 mt-2">
+            {!hasLivePositions
+              ? 'Keine Live-Positionen vorhanden'
+              : isLive
+                ? 'Echte Trades mit realem Kapital'
+                : 'Simulierte Trades auf Basis historischer Signale'}
+          </p>
+        </div>
 
-        {/* Performance Übersicht */}
-        {performance && (
+        {/* Performance Chart */}
+        <div className="mb-6">
+          <PortfolioChart
+            token={token}
+            botType="quant"
+            extraParams={isLive ? "live=true" : "live=false"}
+            height={250}
+            title="Quant Performance"
+          />
+        </div>
+
+        {/* Performance Uebersicht */}
+        {displayedPerformance && (
           <div className="bg-dark-800 rounded-xl border border-dark-600 p-4 md:p-6 mb-6">
-            <h2 className="text-lg font-semibold text-white mb-4">Performance Übersicht</h2>
-
-            {/* Main Stats */}
+            <h2 className="text-lg font-semibold text-white mb-4">Performance Uebersicht</h2>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-4">
               <div className="bg-gradient-to-r from-violet-500/20 to-purple-500/20 rounded-lg p-3 md:p-4 border border-violet-500/30">
                 <div className="text-xs text-gray-400 mb-1">Gesamt Rendite</div>
-                <div className={`text-xl md:text-2xl font-bold ${
-                  performance.overall_return_pct >= 0 ? 'text-green-400' : 'text-red-400'
-                }`}>
-                  {formatPercent(performance.overall_return_pct)}
+                <div className={`text-xl md:text-2xl font-bold ${displayedPerformance.overall_return_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {formatPercent(displayedPerformance.overall_return_pct)}
                 </div>
-                <div className={`text-xs mt-1 ${performance.total_gain >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {formatPrice(performance.total_gain)} Gewinn
+                <div className={`text-xs mt-1 ${displayedPerformance.total_gain >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {formatPrice(displayedPerformance.total_gain)} Gewinn
                 </div>
               </div>
               <div className="bg-dark-700 rounded-lg p-3 md:p-4">
                 <div className="text-xs text-gray-500 mb-1">Investiert</div>
-                <div className="text-lg md:text-xl font-bold text-white">
-                  {formatPrice(performance.invested_in_positions || 0)}
-                </div>
-                <div className="text-xs text-gray-500 mt-1">
-                  Aktuell: {formatPrice(performance.current_value || 0)}
-                </div>
+                <div className="text-lg md:text-xl font-bold text-white">{formatPrice(displayedPerformance.invested_in_positions || 0)}</div>
+                <div className="text-xs text-gray-500 mt-1">Aktuell: {formatPrice(displayedPerformance.current_value || 0)}</div>
               </div>
               <div className="bg-dark-700 rounded-lg p-3 md:p-4">
                 <div className="text-xs text-gray-500 mb-1">Unrealisiert</div>
-                <div className={`text-lg md:text-xl font-bold ${
-                  performance.unrealized_gain >= 0 ? 'text-green-400' : 'text-red-400'
-                }`}>
-                  {formatPrice(performance.unrealized_gain)}
+                <div className={`text-lg md:text-xl font-bold ${displayedPerformance.unrealized_gain >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {formatPrice(displayedPerformance.unrealized_gain)}
                 </div>
-                <div className={`text-xs mt-1 ${
-                  performance.total_return_pct >= 0 ? 'text-green-400' : 'text-red-400'
-                }`}>
-                  {formatPercent(performance.total_return_pct)}
+                <div className={`text-xs mt-1 ${displayedPerformance.total_return_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {formatPercent(displayedPerformance.total_return_pct)}
                 </div>
               </div>
               <div className="bg-dark-700 rounded-lg p-3 md:p-4">
                 <div className="text-xs text-gray-500 mb-1">Realisiert</div>
-                <div className={`text-lg md:text-xl font-bold ${
-                  performance.realized_profit >= 0 ? 'text-green-400' : 'text-red-400'
-                }`}>
-                  {formatPrice(performance.realized_profit)}
+                <div className={`text-lg md:text-xl font-bold ${displayedPerformance.realized_profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {formatPrice(displayedPerformance.realized_profit)}
                 </div>
-                <div className="text-xs text-gray-500 mt-1">
-                  {performance.total_trades || 0} Trades
-                </div>
+                <div className="text-xs text-gray-500 mt-1">{displayedPerformance.total_trades || 0} Trades</div>
               </div>
             </div>
-
-            {/* Secondary Stats */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 md:gap-4">
               <div className="bg-dark-700/50 rounded-lg p-3">
                 <div className="text-xs text-gray-500 mb-1">Win Rate</div>
-                <div className="text-base font-bold text-white">
-                  {performance.win_rate?.toFixed(1) || 0}%
-                </div>
-                <div className="text-xs text-gray-500 mt-1">
-                  {performance.wins || 0}W / {performance.losses || 0}L
-                </div>
+                <div className={`text-base font-bold ${(displayedPerformance.win_rate || 0) >= 50 ? 'text-green-400' : 'text-red-400'}`}>{displayedPerformance.win_rate?.toFixed(1) || 0}%</div>
+                <div className="text-xs text-gray-500 mt-1">{displayedPerformance.wins || 0}W / {displayedPerformance.losses || 0}L</div>
               </div>
               <div className="bg-dark-700/50 rounded-lg p-3">
-                <div className="text-xs text-gray-500 mb-1">Ø Rendite/Trade</div>
-                <div className={`text-base font-bold ${
-                  (performance.avg_return_per_trade || 0) >= 0 ? 'text-green-400' : 'text-red-400'
-                }`}>
-                  {(performance.avg_return_per_trade || 0) >= 0 ? '+' : ''}{(performance.avg_return_per_trade || 0).toFixed(2)}%
+                <div className="text-xs text-gray-500 mb-1">Risiko-Rendite</div>
+                <div className={`text-base font-bold ${(displayedPerformance.risk_reward || 0) >= 1 ? 'text-green-400' : 'text-red-400'}`}>
+                  {displayedPerformance.risk_reward === Infinity ? '∞' : (displayedPerformance.risk_reward || 0).toFixed(2)}
                 </div>
-                <div className="text-xs text-gray-500 mt-1">
-                  gleichgewichtet
-                </div>
+                <div className="text-xs text-gray-500 mt-1">Ø Gewinn / Ø Verlust</div>
+              </div>
+              <div className="bg-dark-700/50 rounded-lg p-3">
+                <div className="text-xs text-gray-500 mb-1">Ø Gewinn-Trade</div>
+                <div className="text-base font-bold text-green-400">+{(displayedPerformance.avg_win_pct || 0).toFixed(2)}%</div>
+                <div className="text-xs text-gray-500 mt-1">{displayedPerformance.wins || 0} Trades</div>
+              </div>
+              <div className="bg-dark-700/50 rounded-lg p-3">
+                <div className="text-xs text-gray-500 mb-1">Ø Verlust-Trade</div>
+                <div className="text-base font-bold text-red-400">-{(displayedPerformance.avg_loss_pct || 0).toFixed(2)}%</div>
+                <div className="text-xs text-gray-500 mt-1">{displayedPerformance.losses || 0} Trades</div>
               </div>
               <div className="bg-dark-700/50 rounded-lg p-3">
                 <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
-                <div className="text-base font-bold text-white">
-                  {performance.open_positions || 0}
-                </div>
-                <div className="text-xs text-gray-500 mt-1">
-                  von {performance.total_buys || 0} Käufen
-                </div>
-              </div>
-              <div className="bg-dark-700/50 rounded-lg p-3">
-                <div className="text-xs text-gray-500 mb-1">Live Positionen</div>
-                <div className="text-base font-bold text-green-400">
-                  {portfolio?.positions?.filter(p => p.is_live)?.length || 0}
-                </div>
-                <div className="text-xs text-gray-500 mt-1">
-                  mit echtem Geld
-                </div>
+                <div className="text-base font-bold text-white">{displayedPerformance.open_positions || 0}</div>
+                <div className="text-xs text-gray-500 mt-1">von {displayedPerformance.total_buys || 0} Kaeufen</div>
               </div>
             </div>
           </div>
@@ -489,22 +380,20 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-white">Aktuelle Positionen</h2>
               <div className="flex items-center gap-2">
-                {portfolio?.positions?.filter(p => p.is_live)?.length > 0 && (
+                {!isLive && displayedPositions.filter(p => p.is_live).length > 0 && (
                   <span className="px-2 py-1 bg-green-500/20 text-green-400 text-sm font-medium rounded flex items-center gap-1">
                     <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></span>
-                    {portfolio.positions.filter(p => p.is_live).length} Live
+                    {displayedPositions.filter(p => p.is_live).length} Live
                   </span>
                 )}
-                {portfolio?.positions && (
-                  <span className="px-2 py-1 bg-violet-500/20 text-violet-400 text-sm font-medium rounded">
-                    {portfolio.positions.length} offen
-                  </span>
-                )}
+                <span className="px-2 py-1 bg-violet-500/20 text-violet-400 text-sm font-medium rounded">
+                  {displayedPositions.length} offen
+                </span>
               </div>
             </div>
           </div>
 
-          {portfolio?.positions?.length === 0 ? (
+          {displayedPositions.length === 0 ? (
             <div className="p-8 text-center">
               <div className="w-16 h-16 mx-auto mb-4 bg-dark-700 rounded-full flex items-center justify-center">
                 <svg className="w-8 h-8 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -518,7 +407,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
             <>
               {/* Mobile Card View */}
               <div className="md:hidden space-y-3 p-4">
-                {portfolio?.positions?.slice().sort((a, b) => (b.is_live ? 1 : 0) - (a.is_live ? 1 : 0) || (b.total_return_pct || 0) - (a.total_return_pct || 0)).map((pos) => {
+                {displayedPositions.slice().sort((a, b) => (b.is_live ? 1 : 0) - (a.is_live ? 1 : 0) || (b.total_return_pct || 0) - (a.total_return_pct || 0)).map((pos) => {
                   const totalValue = (pos.current_price || 0) * (pos.quantity || 1)
                   const totalCost = (pos.avg_price || 0) * (pos.quantity || 1)
                   const gain = totalValue - totalCost
@@ -584,7 +473,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {portfolio?.positions?.slice().sort((a, b) => (b.is_live ? 1 : 0) - (a.is_live ? 1 : 0) || (b.total_return_pct || 0) - (a.total_return_pct || 0)).map((pos) => {
+                    {displayedPositions.slice().sort((a, b) => (b.is_live ? 1 : 0) - (a.is_live ? 1 : 0) || (b.total_return_pct || 0) - (a.total_return_pct || 0)).map((pos) => {
                       const totalValue = (pos.current_price || 0) * (pos.quantity || 1)
                       const totalCost = (pos.avg_price || 0) * (pos.quantity || 1)
                       const gain = totalValue - totalCost
@@ -606,17 +495,11 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                               </div>
                             </div>
                           </td>
-                          <td className="py-3 px-4">
-                            <div className="text-white">{formatPrice(pos.avg_price)}</div>
-                          </td>
-                          <td className="py-3 px-4">
-                            <div className="text-gray-400">{(pos.quantity || 1).toFixed(4)}</div>
-                          </td>
+                          <td className="py-3 px-4"><div className="text-white">{formatPrice(pos.avg_price)}</div></td>
+                          <td className="py-3 px-4"><div className="text-gray-400">{(pos.quantity || 1).toFixed(4)}</div></td>
                           <td className="py-3 px-4">
                             <div className="text-white">{formatPrice(totalValue)}</div>
-                            <div className="text-xs text-gray-500">
-                              @ {formatPrice(pos.current_price)}
-                            </div>
+                            <div className="text-xs text-gray-500">@ {formatPrice(pos.current_price)}</div>
                           </td>
                           <td className="py-3 px-4">
                             <div className={`font-medium ${pos.total_return_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
@@ -626,9 +509,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                               {gain >= 0 ? '+' : ''}{formatPrice(gain)}
                             </div>
                           </td>
-                          <td className="py-3 px-4">
-                            <div className="text-gray-400 text-sm">{formatDate(pos.buy_date)}</div>
-                          </td>
+                          <td className="py-3 px-4"><div className="text-gray-400 text-sm">{formatDate(pos.buy_date)}</div></td>
                         </tr>
                       )
                     })}
@@ -645,22 +526,19 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
             onClick={() => setShowTradeHistory(!showTradeHistory)}
             className="w-full p-4 flex items-center justify-between hover:bg-dark-700/50 transition-colors"
           >
-            <h2 className="text-lg font-semibold text-white">Trade History ({completedTrades.length})</h2>
+            <h2 className="text-lg font-semibold text-white">Trade History ({displayedCompletedTrades.length})</h2>
             <svg className={`w-5 h-5 text-gray-400 transition-transform ${showTradeHistory ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
             </svg>
           </button>
-
           {showTradeHistory && (
             <div className="border-t border-dark-600">
               {loadingCompletedTrades ? (
                 <div className="p-8 text-center">
                   <div className="w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
                 </div>
-              ) : completedTrades.length === 0 ? (
-                <div className="p-8 text-center text-gray-500">
-                  Noch keine abgeschlossenen Trades
-                </div>
+              ) : displayedCompletedTrades.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">Noch keine abgeschlossenen Trades</div>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
@@ -673,14 +551,12 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {completedTrades.map((trade) => (
+                      {displayedCompletedTrades.map((trade) => (
                         <tr key={trade.id} className={`border-b border-dark-700/50 last:border-0 ${trade.is_live ? 'bg-green-500/5' : ''}`}>
                           <td className="py-3 px-4">
                             <div className="flex items-center gap-2">
                               <div className="font-medium text-white">{trade.symbol}</div>
-                              {trade.is_live && (
-                                <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>
-                              )}
+                              {trade.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
                             </div>
                           </td>
                           <td className="py-3 px-4">
@@ -693,9 +569,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                           </td>
                           <td className={`py-3 px-4 text-right font-medium ${trade.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                             <div>{formatPercent(trade.profit_loss_pct)}</div>
-                            <div className="text-xs">
-                              {trade.profit_loss >= 0 ? '+' : ''}{formatPrice(trade.profit_loss)}
-                            </div>
+                            <div className="text-xs">{trade.profit_loss >= 0 ? '+' : ''}{formatPrice(trade.profit_loss)}</div>
                           </td>
                         </tr>
                       ))}
@@ -708,21 +582,17 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
         </div>
 
         {/* Letzte Aktionen */}
-        {actions.length > 0 && (
+        {displayedActions.length > 0 && (
           <div className="bg-dark-800 rounded-xl border border-dark-600 overflow-hidden mb-6">
             <div className="p-4 border-b border-dark-600">
-              <h2 className="text-lg font-semibold text-white">Letzte Aktionen ({actions.length})</h2>
+              <h2 className="text-lg font-semibold text-white">Letzte Aktionen ({displayedActions.length})</h2>
             </div>
             <div className="divide-y divide-dark-700 max-h-[300px] overflow-auto">
-              {actions.slice().sort((a, b) => new Date(b.signal_date) - new Date(a.signal_date)).map((action) => (
+              {displayedActions.slice().sort((a, b) => new Date(b.signal_date) - new Date(a.signal_date)).map((action) => (
                 <div key={action.id} className={`p-4 hover:bg-dark-700/50 transition-colors ${action.is_live ? 'border-l-4 border-green-500 bg-green-500/5' : ''}`}>
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
-                      <span className={`px-2 py-1 rounded text-xs font-bold ${
-                        action.action === 'BUY'
-                          ? 'bg-green-500/20 text-green-400'
-                          : 'bg-red-500/20 text-red-400'
-                      }`}>
+                      <span className={`px-2 py-1 rounded text-xs font-bold ${action.action === 'BUY' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
                         {action.action}
                       </span>
                       <span className="font-semibold text-white">{action.symbol}</span>
@@ -736,9 +606,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                     <span className="text-gray-400 text-sm">{formatDate(action.signal_date)}</span>
                   </div>
                   <div className="flex items-center justify-between text-sm">
-                    <div className="text-gray-400">
-                      {action.quantity?.toFixed(4)}x @ {formatPrice(action.price)}
-                    </div>
+                    <div className="text-gray-400">{action.quantity?.toFixed(4)}x @ {formatPrice(action.price)}</div>
                     {action.action === 'SELL' && action.profit_loss_pct !== null && (
                       <span className={`font-medium ${action.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                         {formatPercent(action.profit_loss_pct)} ({formatPrice(action.profit_loss)})
@@ -758,213 +626,13 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
             </svg>
             <div>
-              <h3 className="font-medium text-violet-400">So funktioniert der Quant Bot</h3>
-              <ul className="text-sm text-gray-400 mt-2 space-y-1">
-                <li><span className="text-violet-400">Kauft wenn BEIDE Indikatoren positiv</span> - Short-term UND Long-term über 0</li>
-                <li><span className="text-violet-400">Verkauft wenn EIN Indikator negativ wird</span> - Schneller Exit bei Trendwende</li>
-                <li>Optional: MA-Filter (Preis über 200 EMA für Long-Entries)</li>
-                <li>Startdatum: 01.01.2026 (keine Trades davor)</li>
-                <li>Sichtbar im Portfolio-Vergleich als "Quant"</li>
-              </ul>
+              <h3 className="font-medium text-violet-400">Strategie: Dual-Indikator Momentum mit Trendfilter</h3>
+              <p className="text-sm text-gray-400 mt-2">
+                Multi-Timeframe-Momentum-Modell auf Basis beider BX Trender Oszillatoren (Short-term + Long-term). Entry bei simultaner Dual-Momentum-Alignment (beide Indikatoren positiv), ergaenzt durch MA-200-Trendfilter. Exit sobald ein Indikator negativ dreht. Dynamischer Trailing Stop Loss (TSL) zur Gewinnabsicherung. Momentum-Konfluenz reduziert Fehlsignale signifikant.
+              </p>
             </div>
           </div>
         </div>
-
-        {/* Admin-Only Section: Debug Panel */}
-        {isAdmin && (
-          <div className="bg-dark-800 rounded-xl border border-dark-600 overflow-hidden">
-            {/* Tab Header */}
-            <div className="flex border-b border-dark-600">
-              <button
-                onClick={() => { setDebugTab('todo'); fetchPendingActions() }}
-                className={`flex-1 px-4 py-3 text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
-                  debugTab === 'todo'
-                    ? 'bg-dark-700 text-white border-b-2 border-violet-500'
-                    : 'text-gray-400 hover:text-white hover:bg-dark-700/50'
-                }`}
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-                </svg>
-                TODO: Offene Aktionen
-                {pendingActions.filter(a => !a.done).length > 0 && (
-                  <span className="px-1.5 py-0.5 bg-yellow-500/20 text-yellow-400 text-xs rounded-full">
-                    {pendingActions.filter(a => !a.done).length}
-                  </span>
-                )}
-              </button>
-              <button
-                onClick={() => setDebugTab('log')}
-                className={`flex-1 px-4 py-3 text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
-                  debugTab === 'log'
-                    ? 'bg-dark-700 text-white border-b-2 border-violet-500'
-                    : 'text-gray-400 hover:text-white hover:bg-dark-700/50'
-                }`}
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                Debug Log
-                {logs.length > 0 && (
-                  <span className="text-xs text-gray-500">({logs.length})</span>
-                )}
-              </button>
-            </div>
-
-            {/* TODO Tab Content */}
-            {debugTab === 'todo' && (
-              <div className="p-4">
-                {loadingPending ? (
-                  <div className="text-center py-8">
-                    <div className="w-6 h-6 border-2 border-violet-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
-                  </div>
-                ) : pendingActions.length === 0 ? (
-                  <div className="text-center py-8 text-gray-500">
-                    <svg className="w-12 h-12 mx-auto mb-3 text-green-500/50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <p className="text-green-400 font-medium">Keine Aktionen</p>
-                    <p className="text-gray-600 text-sm mt-1">Keine Todo-Einträge vorhanden</p>
-                  </div>
-                ) : (
-                  <div className="space-y-2 max-h-[400px] overflow-auto">
-                    {pendingActions.map((action) => (
-                      <div
-                        key={action.id}
-                        className={`p-3 rounded-lg border ${
-                          action.done
-                            ? 'bg-dark-700/50 border-dark-600 opacity-60'
-                            : action.type === 'SELL'
-                              ? 'bg-red-500/10 border-red-500/30'
-                              : 'bg-green-500/10 border-green-500/30'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-2">
-                            {action.done && (
-                              <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                              </svg>
-                            )}
-                            <span className={`px-2 py-1 rounded text-xs font-bold ${
-                              action.done
-                                ? 'bg-gray-500/20 text-gray-400'
-                                : action.type === 'SELL'
-                                  ? 'bg-red-500/20 text-red-400'
-                                  : 'bg-green-500/20 text-green-400'
-                            }`}>
-                              {action.type}
-                            </span>
-                            <span className={`font-semibold ${action.done ? 'text-gray-400 line-through' : 'text-white'}`}>
-                              {action.symbol}
-                            </span>
-                            <span className="text-gray-500 text-sm">{action.name}</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs text-gray-500">
-                              {action.done
-                                ? action.decision === 'executed'
-                                  ? '✓ Ausgeführt'
-                                  : '✗ Verworfen'
-                                : `Signal seit ${action.signal_since}`}
-                            </span>
-                            {action.done && (
-                              <>
-                                <button
-                                  onClick={() => handleReopenTodo(action.id)}
-                                  className="px-2 py-1 text-xs bg-dark-600 text-gray-300 rounded hover:bg-dark-500 transition-colors"
-                                  title="Wiedereröffnen"
-                                >
-                                  ↩
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteTodo(action.id)}
-                                  className="px-2 py-1 text-xs bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors"
-                                  title="Löschen"
-                                >
-                                  ✕
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                        {!action.done && (
-                          <>
-                            <div className="text-sm text-gray-400 mb-2">
-                              {action.reason}
-                              {action.quantity > 0 && (
-                                <span className="ml-2 text-gray-500">
-                                  ({action.quantity.toFixed(4)} Anteile @ {formatPrice(action.price || action.avg_price)})
-                                </span>
-                              )}
-                            </div>
-                            <div className="text-xs text-gray-600 mb-3">
-                              Signal: {action.signal} ({action.signal_bars} Bars)
-                            </div>
-                            <div className="flex gap-2">
-                              <button
-                                onClick={() => handleExecuteTodo(action.id, action.type, action.symbol)}
-                                className={`flex-1 px-3 py-1.5 text-xs font-medium rounded transition-colors ${
-                                  action.type === 'BUY'
-                                    ? 'bg-green-500 text-white hover:bg-green-400'
-                                    : 'bg-red-500 text-white hover:bg-red-400'
-                                }`}
-                              >
-                                {action.type === 'BUY' ? '✓ Kaufen' : '✓ Verkaufen'}
-                              </button>
-                              <button
-                                onClick={() => handleMarkDone(action.id)}
-                                className="flex-1 px-3 py-1.5 text-xs font-medium bg-dark-600 text-gray-300 rounded hover:bg-dark-500 transition-colors"
-                              >
-                                ✗ Verwerfen
-                              </button>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Debug Log Tab Content */}
-            {debugTab === 'log' && (
-              <div className="border-t border-dark-600">
-                <div className="bg-dark-900 p-4 max-h-[300px] overflow-auto font-mono text-xs">
-                  {logs.length === 0 ? (
-                    <div className="text-gray-500 text-center py-4">
-                      Keine Logs vorhanden
-                    </div>
-                  ) : (
-                    <div className="space-y-1">
-                      {logs.map((log, idx) => (
-                        <div key={idx} className="flex items-start gap-2">
-                          <span className="text-gray-600 shrink-0">[{log.time}]</span>
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${getLogBadge(log.level)}`}>
-                            {log.level}
-                          </span>
-                          <span className={getLogColor(log.level)}>{log.message}</span>
-                        </div>
-                      ))}
-                      <div ref={logEndRef} />
-                    </div>
-                  )}
-                </div>
-                {logs.length > 0 && (
-                  <div className="p-2 border-t border-dark-700 flex justify-end">
-                    <button
-                      onClick={() => setLogs([])}
-                      className="text-xs text-gray-500 hover:text-gray-400 px-2 py-1"
-                    >
-                      Log leeren
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
       </div>
     </div>
   )
