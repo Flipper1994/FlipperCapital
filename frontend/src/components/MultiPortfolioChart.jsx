@@ -19,17 +19,25 @@ export function getPortfolioColor(index) {
   return PORTFOLIO_COLORS[index % PORTFOLIO_COLORS.length]
 }
 
-function MultiPortfolioChart({ token, height = 300, portfolios = [], onColorMap }) {
+function MultiPortfolioChart({ token, height = 300, portfolios = [], onColorMap, period: externalPeriod, onPeriodChange, onDataLoaded }) {
   const chartContainerRef = useRef(null)
   const chartRef = useRef(null)
   const seriesRef = useRef([])
-  const [period, setPeriod] = useState('1m')
+  const [internalPeriod, setInternalPeriod] = useState('1m')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [legendItems, setLegendItems] = useState([])
+
+  const period = externalPeriod !== undefined ? externalPeriod : internalPeriod
+  const handlePeriodChange = (newPeriod) => {
+    if (onPeriodChange) onPeriodChange(newPeriod)
+    else setInternalPeriod(newPeriod)
+  }
 
   const periodLabels = {
-    '1w': 'Woche',
-    '1m': 'Monat',
+    '1d': '1D',
+    '1w': '1W',
+    '1m': '1M',
     '3m': '3M',
     '6m': '6M',
     'ytd': 'YTD',
@@ -47,8 +55,8 @@ function MultiPortfolioChart({ token, height = 300, portfolios = [], onColorMap 
         textColor: '#9ca3af',
       },
       grid: {
-        vertLines: { color: '#2a2a34', style: 1 },
-        horzLines: { color: '#2a2a34', style: 1 },
+        vertLines: { visible: false },
+        horzLines: { visible: false },
       },
       width: chartContainerRef.current.clientWidth,
       height: height,
@@ -120,6 +128,7 @@ function MultiPortfolioChart({ token, height = 300, portfolios = [], onColorMap 
         const colorMap = {}
 
         // Add a line series for each portfolio
+        const legend = []
         data.forEach((portfolio, index) => {
           const color = getPortfolioColor(index)
           colorMap[portfolio.user_id] = color
@@ -127,10 +136,13 @@ function MultiPortfolioChart({ token, height = 300, portfolios = [], onColorMap 
           const series = chartRef.current.addLineSeries({
             color: color,
             lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
             priceFormat: {
-              type: 'percent',
+              type: 'custom',
+              formatter: (price) => price.toFixed(2) + '%',
+              minMove: 0.01,
             },
-            title: portfolio.username,
           })
 
           // Format data for chart
@@ -139,13 +151,22 @@ function MultiPortfolioChart({ token, height = 300, portfolios = [], onColorMap 
             value: point.pct
           }))
 
+          const lastPct = chartData.length > 0 ? chartData[chartData.length - 1].value : 0
+          legend.push({ name: portfolio.username, color, pct: lastPct })
+
           series.setData(chartData)
           seriesRef.current.push(series)
         })
+        setLegendItems(legend)
 
         // Notify parent about color mapping
         if (onColorMap) {
           onColorMap(colorMap)
+        }
+
+        // Notify parent about loaded data
+        if (onDataLoaded) {
+          onDataLoaded(data)
         }
 
         // Add baseline at 0%
@@ -170,7 +191,7 @@ function MultiPortfolioChart({ token, height = 300, portfolios = [], onColorMap 
     }
 
     fetchData()
-  }, [period, token, onColorMap])
+  }, [period, token, onColorMap, onDataLoaded])
 
   return (
     <div className="bg-dark-800 rounded-xl border border-dark-600 overflow-hidden">
@@ -181,7 +202,7 @@ function MultiPortfolioChart({ token, height = 300, portfolios = [], onColorMap 
           {Object.entries(periodLabels).map(([key, label]) => (
             <button
               key={key}
-              onClick={() => setPeriod(key)}
+              onClick={() => handlePeriodChange(key)}
               className={`px-2 md:px-3 py-1 text-xs md:text-sm font-medium rounded-md transition-colors ${
                 period === key
                   ? 'bg-accent-500 text-white'
@@ -210,9 +231,19 @@ function MultiPortfolioChart({ token, height = 300, portfolios = [], onColorMap 
       </div>
 
       {/* Legend */}
-      <div className="p-3 border-t border-dark-600 text-xs text-gray-500 text-center">
-        Performance in % seit Kauf
-      </div>
+      {legendItems.length > 0 && (
+        <div className="px-4 py-2 border-t border-dark-600 flex flex-wrap gap-x-4 gap-y-1">
+          {legendItems.map((item, i) => (
+            <div key={i} className="flex items-center gap-1.5 text-xs">
+              <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
+              <span className="text-gray-400">{item.name}</span>
+              <span className={`font-medium ${item.pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {item.pct >= 0 ? '+' : ''}{item.pct.toFixed(2)}%
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

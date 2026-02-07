@@ -9,7 +9,7 @@ function Header({ isLoggedIn, isAdmin, user, onLogout, sidebarOpen, setSidebarOp
   const allCurrencies = Object.keys(EXCHANGE_RATES)
   const primaryCurrencies = ['USD', 'EUR']
   const otherCurrencies = allCurrencies.filter(c => !primaryCurrencies.includes(c))
-  const { mode, cycleMode, isAggressive, isQuant, isDefensive } = useTradingMode()
+  const { mode, cycleMode, isAggressive, isQuant, isDitz, isDefensive } = useTradingMode()
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -62,15 +62,25 @@ function Header({ isLoggedIn, isAdmin, user, onLogout, sidebarOpen, setSidebarOp
           <button
             onClick={cycleMode}
             className={`flex items-center gap-1.5 md:gap-2 px-2 md:px-3 py-1.5 md:py-2 rounded-lg backdrop-blur-sm transition-all ${
-              isQuant
-                ? 'bg-violet-500/20 border border-violet-500/50 text-violet-400 hover:bg-violet-500/30'
-                : isAggressive
-                  ? 'bg-orange-500/20 border border-orange-500/50 text-orange-400 hover:bg-orange-500/30'
-                  : 'bg-blue-500/20 border border-blue-500/50 text-blue-400 hover:bg-blue-500/30'
+              isDitz
+                ? 'bg-cyan-500/20 border border-cyan-500/50 text-cyan-400 hover:bg-cyan-500/30'
+                : isQuant
+                  ? 'bg-violet-500/20 border border-violet-500/50 text-violet-400 hover:bg-violet-500/30'
+                  : isAggressive
+                    ? 'bg-orange-500/20 border border-orange-500/50 text-orange-400 hover:bg-orange-500/30'
+                    : 'bg-blue-500/20 border border-blue-500/50 text-blue-400 hover:bg-blue-500/30'
             }`}
-            title={isQuant ? 'Quant Modus aktiv' : isAggressive ? 'Aggressiver Modus aktiv' : 'Defensiver Modus aktiv'}
+            title={isDitz ? 'Ditz Modus aktiv' : isQuant ? 'Quant Modus aktiv' : isAggressive ? 'Aggressiver Modus aktiv' : 'Defensiver Modus aktiv'}
           >
-            {isQuant ? (
+            {isDitz ? (
+              <>
+                {/* Chart icon for ditz */}
+                <svg className="w-4 h-4 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                </svg>
+                <span className="hidden sm:inline text-xs md:text-sm font-medium">Ditz</span>
+              </>
+            ) : isQuant ? (
               <>
                 {/* Chart icon for quant */}
                 <svg className="w-4 h-4 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -8,8 +8,10 @@ import {
   calculateSignal,
   savePerformanceToBackend,
   saveQuantPerformanceToBackend,
+  saveDitzPerformanceToBackend,
   fetchBXtrenderConfig,
-  fetchBXtrenderQuantConfig
+  fetchBXtrenderQuantConfig,
+  fetchBXtrenderDitzConfig
 } from '../utils/bxtrender'
 
 const timeframeLabels = { 'M': 'Monthly', 'W': 'Weekly', 'D': 'Daily' }
@@ -26,7 +28,7 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [intervalWarning, setIntervalWarning] = useState(null) // Warning if Yahoo returns different interval
-  const { isAggressive, isQuant, mode } = useTradingMode()
+  const { isAggressive, isQuant, isDitz, mode } = useTradingMode()
 
   useEffect(() => {
     if (!symbol || !chartContainerRef.current) return
@@ -59,7 +61,7 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
 
       try {
         // Fetch appropriate config based on mode
-        const configPromise = isQuant ? fetchBXtrenderQuantConfig() : fetchBXtrenderConfig()
+        const configPromise = isDitz ? fetchBXtrenderDitzConfig() : isQuant ? fetchBXtrenderQuantConfig() : fetchBXtrenderConfig()
 
         const [configData, res] = await Promise.all([
           configPromise,
@@ -87,12 +89,22 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
           setIntervalWarning(`${requestedLabel} nicht verfügbar, zeige ${actualLabel}`)
         }
 
+        // Nur abgeschlossene Monatskerzen für Signalberechnung (aktuellen Monat entfernen)
+        let calcData = json.data
+        if (timeframe === 'M' && calcData.length > 0) {
+          const now = new Date()
+          const lastTime = new Date(calcData[calcData.length - 1].time * 1000)
+          if (lastTime.getUTCFullYear() === now.getUTCFullYear() && lastTime.getUTCMonth() === now.getUTCMonth()) {
+            calcData = calcData.slice(0, -1)
+          }
+        }
+
         // Get config and calculate B-Xtrender based on mode
         let short, long, signal, trades, markers
 
-        if (isQuant) {
-          // Quant mode - use QuantTherapy algorithm
-          const result = calculateBXtrenderQuant(json.data, configData)
+        if (isQuant || isDitz) {
+          // Quant/Ditz mode - use QuantTherapy algorithm
+          const result = calculateBXtrenderQuant(calcData, configData)
           short = result.short
           long = result.long
           signal = result.signal
@@ -101,7 +113,7 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
         } else {
           // Defensive or Aggressive mode
           const config = isAggressive ? configData.aggressive : configData.defensive
-          const result = calculateBXtrender(json.data, isAggressive, config)
+          const result = calculateBXtrender(calcData, isAggressive, config)
           short = result.short
           long = result.long
           signal = result.signal
@@ -118,8 +130,8 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
         // Calculate current signal and report metrics
         const metrics = calculateMetrics(trades)
         let currentSignal = 'WAIT'
-        if (isQuant) {
-          // Quant signal: check both indicators at second-to-last bar
+        if (isQuant || isDitz) {
+          // Quant/Ditz signal: check both indicators at second-to-last bar
           if (short.length >= 2 && long.length >= 2) {
             const idx = short.length - 2
             const sv = short[idx].value
@@ -141,7 +153,10 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
         if (timeframe === 'M' && json.data.length > 0) {
           const currentPrice = json.data[json.data.length - 1].close
 
-          if (isQuant) {
+          if (isDitz) {
+            // Save Ditz mode data
+            saveDitzPerformanceToBackend(symbol, stockName || symbol, metrics, trades, short, long, currentPrice)
+          } else if (isQuant) {
             // Save Quant mode data
             saveQuantPerformanceToBackend(symbol, stockName || symbol, metrics, trades, short, long, currentPrice)
           } else {
@@ -150,7 +165,7 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
 
             // Also save the other mode's data for completeness
             const otherConfig = isAggressive ? configData.defensive : configData.aggressive
-            const otherModeResult = calculateBXtrender(json.data, !isAggressive, otherConfig)
+            const otherModeResult = calculateBXtrender(calcData, !isAggressive, otherConfig)
             const otherMetrics = calculateMetrics(otherModeResult.trades)
             savePerformanceToBackend(symbol, stockName || symbol, otherMetrics, otherModeResult.trades, otherModeResult.short, currentPrice, !isAggressive)
           }
@@ -271,10 +286,10 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
         chartRef.current = null
       }
     }
-  }, [symbol, timeframe, onTradesUpdate, isAggressive, isQuant, mode])
+  }, [symbol, timeframe, onTradesUpdate, isAggressive, isQuant, isDitz, mode])
 
   return (
-    <div className={`bg-dark-800 rounded-xl border overflow-hidden ${isQuant ? 'border-violet-500/50' : isAggressive ? 'border-orange-500/50' : 'border-dark-600'}`}>
+    <div className={`bg-dark-800 rounded-xl border overflow-hidden ${isDitz ? 'border-cyan-500/50' : isQuant ? 'border-violet-500/50' : isAggressive ? 'border-orange-500/50' : 'border-dark-600'}`}>
       <div className="px-4 py-2 border-b border-dark-600 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-white">B-Xtrender</span>
@@ -286,7 +301,14 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
           }`}>
             {timeframeLabels[timeframe] || timeframe}
           </span>
-          {isQuant ? (
+          {isDitz ? (
+            <span className="px-1.5 py-0.5 bg-cyan-500/20 text-cyan-400 text-[10px] font-bold rounded flex items-center gap-1">
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+              </svg>
+              DITZ
+            </span>
+          ) : isQuant ? (
             <span className="px-1.5 py-0.5 bg-violet-500/20 text-violet-400 text-[10px] font-bold rounded flex items-center gap-1">
               <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
@@ -318,7 +340,7 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
           )}
         </div>
         <div className="hidden md:flex items-center gap-3 text-xs">
-          {isQuant ? (
+          {(isQuant || isDitz) ? (
             <>
               <div className="flex items-center gap-1">
                 <div className="w-2 h-2 bg-lime-400 rounded-sm"></div>

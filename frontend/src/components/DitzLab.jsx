@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useCurrency } from '../context/CurrencyContext'
 import PortfolioChart from './PortfolioChart'
 
-function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
+function DitzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
   const [portfolio, setPortfolio] = useState(null)
   const [actions, setActions] = useState([])
   const [performance, setPerformance] = useState(null)
@@ -67,13 +67,13 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
     setLoading(true)
     try {
       const [portfolioRes, actionsRes, perfRes] = await Promise.all([
-        fetch('/api/quant/portfolio', {
+        fetch('/api/ditz/portfolio', {
           headers: { 'Authorization': `Bearer ${token}` }
         }),
-        fetch('/api/quant/actions', {
+        fetch('/api/ditz/actions', {
           headers: { 'Authorization': `Bearer ${token}` }
         }),
-        fetch('/api/quant/performance', {
+        fetch('/api/ditz/performance', {
           headers: { 'Authorization': `Bearer ${token}` }
         })
       ])
@@ -86,7 +86,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
       setActions(actionsData)
       setPerformance(perfData)
     } catch (err) {
-      console.error('Failed to fetch Quant data:', err)
+      console.error('Failed to fetch Ditz data:', err)
     } finally {
       setLoading(false)
     }
@@ -96,13 +96,13 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
     if (!isAdmin) return
     setLoadingPending(true)
     try {
-      const res = await fetch('/api/quant/todos', {
+      const res = await fetch('/api/ditz/todos', {
         headers: { 'Authorization': `Bearer ${token}` }
       })
       const data = await res.json()
       setPendingActions(data || [])
       // Trigger pending check to create new todos
-      await fetch('/api/quant/pending', {
+      await fetch('/api/ditz/pending', {
         headers: { 'Authorization': `Bearer ${token}` }
       })
     } catch (err) {
@@ -115,7 +115,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
   const fetchLogs = async () => {
     if (!isAdmin) return
     try {
-      const res = await fetch('/api/quant/logs', {
+      const res = await fetch('/api/ditz/logs', {
         headers: { 'Authorization': `Bearer ${token}` }
       })
       const data = await res.json()
@@ -133,7 +133,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
   const fetchCompletedTrades = async () => {
     setLoadingCompletedTrades(true)
     try {
-      const res = await fetch('/api/quant/completed-trades', {
+      const res = await fetch('/api/ditz/completed-trades', {
         headers: { 'Authorization': `Bearer ${token}` }
       })
       const data = await res.json()
@@ -147,7 +147,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
 
   const handleMarkDone = async (todoId) => {
     try {
-      await fetch(`/api/quant/todos/${todoId}/done`, {
+      await fetch(`/api/ditz/todos/${todoId}/done`, {
         method: 'PUT',
         headers: { 'Authorization': `Bearer ${token}` }
       })
@@ -162,7 +162,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
       return
     }
     try {
-      const res = await fetch(`/api/quant/todos/${todoId}/execute`, {
+      const res = await fetch(`/api/ditz/todos/${todoId}/execute`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` }
       })
@@ -186,7 +186,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
 
   const handleReopenTodo = async (todoId) => {
     try {
-      await fetch(`/api/quant/todos/${todoId}/reopen`, {
+      await fetch(`/api/ditz/todos/${todoId}/reopen`, {
         method: 'PUT',
         headers: { 'Authorization': `Bearer ${token}` }
       })
@@ -198,7 +198,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
 
   const handleDeleteTodo = async (todoId) => {
     try {
-      await fetch(`/api/quant/todos/${todoId}`, {
+      await fetch(`/api/ditz/todos/${todoId}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       })
@@ -247,8 +247,8 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
     return (
       <div className="flex-1 p-4 md:p-6 flex items-center justify-center">
         <div className="text-center">
-          <div className="w-12 h-12 border-2 border-violet-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-gray-400">Lade Quant Daten...</p>
+          <div className="w-12 h-12 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-gray-400">Lade Ditz Daten...</p>
         </div>
       </div>
     )
@@ -260,16 +260,16 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
       <div className="flex-1 p-4 md:p-6 flex items-center justify-center">
         <div className="max-w-md text-center">
           {/* Icon */}
-          <div className="w-24 h-24 mx-auto mb-6 bg-gradient-to-br from-violet-500/20 to-purple-500/20 rounded-2xl flex items-center justify-center border border-violet-500/30">
-            <svg className="w-12 h-12 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="w-24 h-24 mx-auto mb-6 bg-gradient-to-br from-cyan-500/20 to-teal-500/20 rounded-2xl flex items-center justify-center border border-cyan-500/30">
+            <svg className="w-12 h-12 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
             </svg>
           </div>
 
           {/* Title */}
           <h1 className="text-2xl font-bold text-white mb-2 flex items-center justify-center gap-2">
-            Quant Lab
-            <span className="px-2 py-0.5 bg-gradient-to-r from-violet-500 to-purple-500 text-white text-xs font-bold rounded">
+            Ditz Lab
+            <span className="px-2 py-0.5 bg-gradient-to-r from-cyan-500 to-teal-500 text-white text-xs font-bold rounded">
               BETA
             </span>
           </h1>
@@ -278,7 +278,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
           {!isLoggedIn ? (
             <>
               <p className="text-gray-400 mb-6">
-                Melde dich an, um den Quant Lab zu nutzen und die quantitative Trading-Strategie zu verfolgen.
+                Melde dich an, um den Ditz Lab zu nutzen und die Trading-Strategie zu verfolgen.
               </p>
               <div className="flex flex-col sm:flex-row gap-3 justify-center">
                 <Link
@@ -304,8 +304,8 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
           ) : (
             <>
               <p className="text-gray-400 mb-6">
-                Um den Quant Lab zu nutzen, musst du mindestens eine Aktie in deinem Portfolio haben.
-                Füge zuerst eine Position hinzu, um die quantitative Trading-Strategie zu verfolgen.
+                Um den Ditz Lab zu nutzen, musst du mindestens eine Aktie in deinem Portfolio haben.
+                Füge zuerst eine Position hinzu, um die Trading-Strategie zu verfolgen.
               </p>
               <Link
                 to="/portfolio"
@@ -327,13 +327,13 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                 <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
-                Quantitatives Trading nach B-Xtrender Algorithmus
+                Trading nach Ditz Algorithmus
               </li>
               <li className="flex items-center gap-2">
                 <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
-                Beide Indikatoren positiv = Entry Signal
+                Eigene Trade-Regeln (in Entwicklung)
               </li>
               <li className="flex items-center gap-2">
                 <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -355,19 +355,19 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
           <div>
             <div className="flex items-center gap-3">
-              <div className="w-12 h-12 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl flex items-center justify-center">
+              <div className="w-12 h-12 bg-gradient-to-br from-cyan-500 to-teal-600 rounded-xl flex items-center justify-center">
                 <svg className="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                 </svg>
               </div>
               <div>
                 <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-                  Quant Lab
-                  <span className="px-2 py-0.5 bg-gradient-to-r from-violet-500 to-purple-500 text-white text-xs font-bold rounded">
+                  Ditz Lab
+                  <span className="px-2 py-0.5 bg-gradient-to-r from-cyan-500 to-teal-500 text-white text-xs font-bold rounded">
                     BETA
                   </span>
                 </h1>
-                <p className="text-gray-500 text-sm">Quantitatives Trading seit 01.01.2026</p>
+                <p className="text-gray-500 text-sm">Ditz Trading seit 01.01.2026</p>
               </div>
             </div>
           </div>
@@ -378,10 +378,10 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
           <div className="mb-6">
             <PortfolioChart
               token={token}
-              botType="quant"
+              botType="ditz"
               extraParams="live=true"
               height={250}
-              title="Quant Performance"
+              title="Ditz Performance"
             />
           </div>
         )}
@@ -393,7 +393,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
 
             {/* Main Stats */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-4">
-              <div className="bg-gradient-to-r from-violet-500/20 to-purple-500/20 rounded-lg p-3 md:p-4 border border-violet-500/30">
+              <div className="bg-gradient-to-r from-cyan-500/20 to-teal-500/20 rounded-lg p-3 md:p-4 border border-cyan-500/30">
                 <div className="text-xs text-gray-400 mb-1">Gesamt Rendite</div>
                 <div className={`text-xl md:text-2xl font-bold ${
                   performance.overall_return_pct >= 0 ? 'text-green-400' : 'text-red-400'
@@ -496,7 +496,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                   </span>
                 )}
                 {portfolio?.positions && (
-                  <span className="px-2 py-1 bg-violet-500/20 text-violet-400 text-sm font-medium rounded">
+                  <span className="px-2 py-1 bg-cyan-500/20 text-cyan-400 text-sm font-medium rounded">
                     {portfolio.positions.length} offen
                   </span>
                 )}
@@ -655,7 +655,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
             <div className="border-t border-dark-600">
               {loadingCompletedTrades ? (
                 <div className="p-8 text-center">
-                  <div className="w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                  <div className="w-8 h-8 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
                 </div>
               ) : completedTrades.length === 0 ? (
                 <div className="p-8 text-center text-gray-500">
@@ -752,19 +752,19 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
         )}
 
         {/* Info Box */}
-        <div className="bg-violet-500/10 border border-violet-500/30 rounded-xl p-4 mb-6">
+        <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-xl p-4 mb-6">
           <div className="flex items-start gap-3">
-            <svg className="w-5 h-5 text-violet-400 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-5 h-5 text-cyan-400 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
             </svg>
             <div>
-              <h3 className="font-medium text-violet-400">So funktioniert der Quant Bot</h3>
+              <h3 className="font-medium text-cyan-400">So funktioniert der Ditz Bot</h3>
               <ul className="text-sm text-gray-400 mt-2 space-y-1">
-                <li><span className="text-violet-400">Kauft wenn BEIDE Indikatoren positiv</span> - Short-term UND Long-term über 0</li>
-                <li><span className="text-violet-400">Verkauft wenn EIN Indikator negativ wird</span> - Schneller Exit bei Trendwende</li>
+                <li><span className="text-cyan-400">Kauft wenn BEIDE Indikatoren positiv</span> - Short-term UND Long-term über 0</li>
+                <li><span className="text-cyan-400">Verkauft wenn EIN Indikator negativ wird</span> - Schneller Exit bei Trendwende</li>
                 <li>Optional: MA-Filter (Preis über 200 EMA für Long-Entries)</li>
                 <li>Startdatum: 01.01.2026 (keine Trades davor)</li>
-                <li>Sichtbar im Portfolio-Vergleich als "Quant"</li>
+                <li>Sichtbar im Portfolio-Vergleich als "Ditz"</li>
               </ul>
             </div>
           </div>
@@ -779,7 +779,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                 onClick={() => { setDebugTab('todo'); fetchPendingActions() }}
                 className={`flex-1 px-4 py-3 text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
                   debugTab === 'todo'
-                    ? 'bg-dark-700 text-white border-b-2 border-violet-500'
+                    ? 'bg-dark-700 text-white border-b-2 border-cyan-500'
                     : 'text-gray-400 hover:text-white hover:bg-dark-700/50'
                 }`}
               >
@@ -797,7 +797,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                 onClick={() => setDebugTab('log')}
                 className={`flex-1 px-4 py-3 text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
                   debugTab === 'log'
-                    ? 'bg-dark-700 text-white border-b-2 border-violet-500'
+                    ? 'bg-dark-700 text-white border-b-2 border-cyan-500'
                     : 'text-gray-400 hover:text-white hover:bg-dark-700/50'
                 }`}
               >
@@ -816,7 +816,7 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
               <div className="p-4">
                 {loadingPending ? (
                   <div className="text-center py-8">
-                    <div className="w-6 h-6 border-2 border-violet-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                    <div className="w-6 h-6 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
                   </div>
                 ) : pendingActions.length === 0 ? (
                   <div className="text-center py-8 text-gray-500">
@@ -970,4 +970,4 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
   )
 }
 
-export default QuantLab
+export default DitzLab

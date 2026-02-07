@@ -134,6 +134,10 @@ let configPromise = null
 let quantConfigCache = null
 let quantConfigPromise = null
 
+// Cache for Ditz config
+let ditzConfigCache = null
+let ditzConfigPromise = null
+
 // Fetch BXtrender config from backend
 export async function fetchBXtrenderConfig() {
   if (configCache) return configCache
@@ -184,6 +188,30 @@ export function clearConfigCache() {
 export function clearQuantConfigCache() {
   quantConfigCache = null
   quantConfigPromise = null
+}
+
+// Fetch Ditz config from backend
+export async function fetchBXtrenderDitzConfig() {
+  if (ditzConfigCache) return ditzConfigCache
+  if (ditzConfigPromise) return ditzConfigPromise
+
+  ditzConfigPromise = fetch('/api/bxtrender-ditz-config')
+    .then(res => res.json())
+    .then(data => {
+      ditzConfigCache = data
+      return data
+    })
+    .catch(() => {
+      return DEFAULT_QUANT_CONFIG
+    })
+
+  return ditzConfigPromise
+}
+
+// Clear ditz config cache
+export function clearDitzConfigCache() {
+  ditzConfigCache = null
+  ditzConfigPromise = null
 }
 
 export function calculateBXtrender(ohlcv, isAggressive = false, config = null) {
@@ -910,6 +938,40 @@ export async function saveQuantPerformanceToBackend(symbol, name, metrics, trade
   }
 }
 
+// Save Ditz mode performance data to backend
+export async function saveDitzPerformanceToBackend(symbol, name, metrics, trades, shortData, longData, currentPrice, marketCap = 0) {
+  try {
+    const { signal, bars } = calculateQuantSignal(shortData, longData, trades)
+
+    const res = await fetch('/api/performance/ditz', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol,
+        name,
+        win_rate: metrics.winRate,
+        risk_reward: metrics.riskReward,
+        total_return: metrics.totalReturn,
+        avg_return: metrics.avgReturn,
+        total_trades: metrics.totalTrades,
+        wins: metrics.wins,
+        losses: metrics.losses,
+        signal,
+        signal_bars: bars,
+        trades,
+        current_price: currentPrice,
+        market_cap: marketCap
+      })
+    })
+
+    if (!res.ok) {
+      console.warn(`Failed to save ditz performance for ${symbol}: ${res.status}`)
+    }
+  } catch (err) {
+    console.warn('Failed to save ditz performance data:', err)
+  }
+}
+
 // Calculate signal for Quant mode (based on both indicators alignment)
 function calculateQuantSignal(shortData, longData, trades) {
   if (!shortData || shortData.length < 2 || !longData || longData.length < 2) {
@@ -998,9 +1060,10 @@ export async function fetchMarketCap(symbol) {
 export async function processStock(symbol, name) {
   try {
     // Fetch config and data in parallel
-    const [configData, quantConfig, historyData, marketCap] = await Promise.all([
+    const [configData, quantConfig, ditzConfig, historyData, marketCap] = await Promise.all([
       fetchBXtrenderConfig(),
       fetchBXtrenderQuantConfig(),
+      fetchBXtrenderDitzConfig(),
       fetchHistoricalData(symbol),
       fetchMarketCap(symbol)
     ])
@@ -1012,20 +1075,35 @@ export async function processStock(symbol, name) {
 
     const currentPrice = data[data.length - 1].close
 
+    // Nur abgeschlossene Monatskerzen verwenden (aktuellen unvollständigen Monat entfernen)
+    let monthlyData = data
+    const now = new Date()
+    if (monthlyData.length > 0) {
+      const lastTime = new Date(monthlyData[monthlyData.length - 1].time * 1000)
+      if (lastTime.getUTCFullYear() === now.getUTCFullYear() && lastTime.getUTCMonth() === now.getUTCMonth()) {
+        monthlyData = monthlyData.slice(0, -1)
+      }
+    }
+
     // Calculate and save defensive mode
-    const defensiveResult = calculateBXtrender(data, false, configData.defensive)
+    const defensiveResult = calculateBXtrender(monthlyData, false, configData.defensive)
     const defensiveMetrics = calculateMetrics(defensiveResult.trades)
     await savePerformanceToBackend(symbol, name, defensiveMetrics, defensiveResult.trades, defensiveResult.short, currentPrice, false, marketCap)
 
     // Calculate and save aggressive mode
-    const aggressiveResult = calculateBXtrender(data, true, configData.aggressive)
+    const aggressiveResult = calculateBXtrender(monthlyData, true, configData.aggressive)
     const aggressiveMetrics = calculateMetrics(aggressiveResult.trades)
     await savePerformanceToBackend(symbol, name, aggressiveMetrics, aggressiveResult.trades, aggressiveResult.short, currentPrice, true, marketCap)
 
     // Calculate and save quant mode
-    const quantResult = calculateBXtrenderQuant(data, quantConfig)
+    const quantResult = calculateBXtrenderQuant(monthlyData, quantConfig)
     const quantMetrics = calculateMetrics(quantResult.trades)
     await saveQuantPerformanceToBackend(symbol, name, quantMetrics, quantResult.trades, quantResult.short, quantResult.long, currentPrice, marketCap)
+
+    // Calculate and save ditz mode
+    const ditzResult = calculateBXtrenderQuant(monthlyData, ditzConfig)
+    const ditzMetrics = calculateMetrics(ditzResult.trades)
+    await saveDitzPerformanceToBackend(symbol, name, ditzMetrics, ditzResult.trades, ditzResult.short, ditzResult.long, currentPrice, marketCap)
 
     return { success: true }
   } catch (err) {

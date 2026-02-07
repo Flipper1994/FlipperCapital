@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import { CurrencyProvider } from './context/CurrencyContext'
 import { TradingModeProvider } from './context/TradingModeContext'
 import Header from './components/Header'
@@ -15,8 +15,28 @@ import FlipperBot from './components/FlipperBot'
 import FlipperBotLab from './components/FlipperBotLab'
 import LutzLab from './components/LutzLab'
 import QuantLab from './components/QuantLab'
+import DitzLab from './components/DitzLab'
 import Performance from './components/Performance'
 import Help from './components/Help'
+
+function UnderConstruction() {
+  return (
+    <div className="flex-1 flex items-center justify-center p-8">
+      <div className="text-center max-w-md">
+        <div className="text-6xl mb-6">
+          🚧🏗️🚧
+        </div>
+        <h1 className="text-2xl font-bold text-white mb-3">Im Aufbau</h1>
+        <p className="text-gray-400 mb-6">
+          Dieser Bereich ist derzeit noch in der Entwicklung und nur für Administratoren zugänglich.
+        </p>
+        <div className="flex justify-center gap-2 text-4xl">
+          🦺⚠️🔧
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function App() {
   const [isAdmin, setIsAdmin] = useState(false)
@@ -145,15 +165,19 @@ function App() {
               />
               <Route
                 path="/flipperbot-lab"
-                element={<FlipperBotLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} />}
+                element={isAdmin ? <FlipperBotLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} /> : <UnderConstruction />}
               />
               <Route
                 path="/lutz-lab"
-                element={<LutzLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} />}
+                element={isAdmin ? <LutzLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} /> : <UnderConstruction />}
               />
               <Route
                 path="/quant-lab"
                 element={<QuantLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} />}
+              />
+              <Route
+                path="/ditz-lab"
+                element={isAdmin ? <DitzLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} /> : <UnderConstruction />}
               />
             </Routes>
           </div>

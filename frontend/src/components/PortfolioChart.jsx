@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createChart } from 'lightweight-charts'
 
-function PortfolioChart({ userId, token, height = 300, botType = null, title = "Portfolio Performance" }) {
+function PortfolioChart({ userId, token, height = 300, botType = null, title = "Portfolio Performance", extraParams = '' }) {
   const chartContainerRef = useRef(null)
   const chartRef = useRef(null)
   const [period, setPeriod] = useState('1m')
@@ -79,7 +79,9 @@ function PortfolioChart({ userId, token, height = 300, botType = null, title = "
         } else if (botType === 'lutz') {
           endpoint = `/api/lutz/history?period=${period}`
         } else if (botType === 'quant') {
-          endpoint = `/api/quant/history?period=${period}`
+          endpoint = `/api/quant/history?period=${period}${extraParams ? '&' + extraParams : ''}`
+        } else if (botType === 'ditz') {
+          endpoint = `/api/ditz/history?period=${period}${extraParams ? '&' + extraParams : ''}`
         } else if (userId) {
           endpoint = `/api/portfolios/history/${userId}?period=${period}`
         } else {
@@ -110,7 +112,9 @@ function PortfolioChart({ userId, token, height = 300, botType = null, title = "
           bottomColor: 'rgba(99, 102, 241, 0.0)',
           lineWidth: 2,
           priceFormat: {
-            type: 'percent',
+            type: 'custom',
+            formatter: (price) => price.toFixed(2) + '%',
+            minMove: 0.01,
           },
         })
 
@@ -142,7 +146,7 @@ function PortfolioChart({ userId, token, height = 300, botType = null, title = "
     }
 
     fetchData()
-  }, [period, userId, token, botType])
+  }, [period, userId, token, botType, extraParams])
 
   return (
     <div className="bg-dark-800 rounded-xl border border-dark-600 overflow-hidden">

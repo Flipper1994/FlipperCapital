@@ -5,7 +5,7 @@ import { useTradingMode } from '../context/TradingModeContext'
 
 function Performance({ token }) {
   const navigate = useNavigate()
-  const { mode, isDefensive, isAggressive, isQuant } = useTradingMode()
+  const { mode, isDefensive, isAggressive, isQuant, isDitz } = useTradingMode()
   const [trades, setTrades] = useState([])
   const [loading, setLoading] = useState(true)
   const [itemsPerPage, setItemsPerPage] = useState(10)
@@ -82,7 +82,7 @@ function Performance({ token }) {
   const cutoffDate = getCutoffDate()
 
   // Get current mode string
-  const currentMode = isQuant ? 'quant' : isAggressive ? 'aggressive' : 'defensive'
+  const currentMode = isDitz ? 'ditz' : isQuant ? 'quant' : isAggressive ? 'aggressive' : 'defensive'
 
   // Filter trades by current mode, time range, and custom filters
   const applyFilters = (tradeList) => {
@@ -152,6 +152,7 @@ function Performance({ token }) {
 
   // Get mode display info
   const getModeInfo = () => {
+    if (isDitz) return { title: 'Ditz', color: 'from-cyan-500/20 to-transparent' }
     if (isQuant) return { title: 'Quant', color: 'from-violet-500/20 to-transparent' }
     if (isAggressive) return { title: 'Aggressiv', color: 'from-orange-500/20 to-transparent' }
     return { title: 'Defensiv', color: 'from-blue-500/20 to-transparent' }

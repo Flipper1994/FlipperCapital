@@ -74,7 +74,7 @@ function StockTracker() {
   const [signalFilter, setSignalFilter] = useState(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [, forceUpdate] = useState(0)
-  const { mode, isAggressive, isQuant, isDefensive } = useTradingMode()
+  const { mode, isAggressive, isQuant, isDitz, isDefensive } = useTradingMode()
   const { formatPrice } = useCurrency()
 
   // Selected month - default to PREVIOUS month (signal is based on last completed month)
@@ -102,7 +102,9 @@ function StockTracker() {
     setLoading(true)
     try {
       let endpoint = '/api/performance'
-      if (isQuant) {
+      if (isDitz) {
+        endpoint = '/api/performance/ditz'
+      } else if (isQuant) {
         endpoint = '/api/performance/quant'
       } else if (isAggressive) {
         endpoint = '/api/performance/aggressive'
@@ -127,15 +129,15 @@ function StockTracker() {
     return stocks.map(stock => {
       const trades = stock.trades || []
 
-      // In Quant mode: use the real-time indicator signal from backend
+      // In Quant/Ditz mode: use the real-time indicator signal from backend
       // In other modes: calculate signal based on historical trades for the month
-      if (isQuant) {
-        // Quant mode uses the current indicator signal (both indicators positive = BUY)
-        // This matches what the Quant Bot uses for trading decisions
+      if (isQuant || isDitz) {
+        // Quant/Ditz mode uses the current indicator signal (both indicators positive = BUY)
+        // This matches what the Bot uses for trading decisions
         return {
           ...stock,
           monthSignal: stock.signal || 'WAIT',
-          prevMonthSignal: stock.signal || 'WAIT', // No historical comparison in Quant
+          prevMonthSignal: stock.signal || 'WAIT',
           signalChanged: false,
           currentTrade: null,
           displaySignal: stock.signal || 'WAIT'
@@ -159,7 +161,7 @@ function StockTracker() {
           : currentSignal.signal
       }
     })
-  }, [stocks, selectedMonth, isAggressive, isQuant])
+  }, [stocks, selectedMonth, isAggressive, isQuant, isDitz])
 
   // Signal priority for sorting
   const signalPriority = { 'BUY': 0, 'SELL': 1, 'HOLD': 2, 'WAIT': 3 }
@@ -315,13 +317,22 @@ function StockTracker() {
               <h1 className="text-xl md:text-2xl font-bold text-white">Aktien Tracker</h1>
               <span className="text-accent-400 font-medium">- {selectedMonthLabel}</span>
               <span className={`px-2 py-1 text-xs font-bold rounded flex items-center gap-1.5 ${
-                isQuant
-                  ? 'bg-violet-500/20 text-violet-400 border border-violet-500/30'
-                  : isAggressive
-                    ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
-                    : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                isDitz
+                  ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                  : isQuant
+                    ? 'bg-violet-500/20 text-violet-400 border border-violet-500/30'
+                    : isAggressive
+                      ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
+                      : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
               }`}>
-                {isQuant ? (
+                {isDitz ? (
+                  <>
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                    </svg>
+                    Ditz
+                  </>
+                ) : isQuant ? (
                   <>
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
@@ -359,8 +370,9 @@ function StockTracker() {
           </div>
           <p className="text-gray-500 text-sm mt-1">
             BX Trender Signale basierend auf abgeschlossenem Monat
-            {isQuant && <span className="text-violet-400"> (Quant Signale: Beide Indikatoren positiv = BUY)</span>}
-            {isAggressive && !isQuant && <span className="text-orange-400"> (Aggressive Signale)</span>}
+            {isDitz && <span className="text-cyan-400"> (Ditz Signale: Beide Indikatoren positiv = BUY)</span>}
+            {isQuant && !isDitz && <span className="text-violet-400"> (Quant Signale: Beide Indikatoren positiv = BUY)</span>}
+            {isAggressive && !isQuant && !isDitz && <span className="text-orange-400"> (Aggressive Signale)</span>}
           </p>
 
           {/* Search Input */}

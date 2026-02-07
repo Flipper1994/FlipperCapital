@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useCurrency } from '../context/CurrencyContext'
 import MultiPortfolioChart, { getPortfolioColor } from './MultiPortfolioChart'
@@ -49,12 +49,34 @@ function PortfolioCompareContent({ token }) {
   const [loading, setLoading] = useState(true)
   const [expandedPortfolio, setExpandedPortfolio] = useState(null)
   const [colorMap, setColorMap] = useState({})
+  const [period, setPeriod] = useState('1m')
+  const [historyData, setHistoryData] = useState([])
   const { formatPrice, currency } = useCurrency()
 
   // Callback to receive color mapping from chart
   const handleColorMap = useCallback((map) => {
     setColorMap(map)
   }, [])
+
+  // Callback to receive loaded data from chart
+  const handleDataLoaded = useCallback((data) => {
+    setHistoryData(data || [])
+  }, [])
+
+  // Get period-specific return for a user
+  const getPeriodReturn = useCallback((userId) => {
+    const entry = historyData.find(h => h.user_id === userId)
+    if (entry && entry.period_return_pct !== undefined) {
+      return entry.period_return_pct
+    }
+    const portfolio = portfolios.find(p => p.user_id === userId)
+    return portfolio ? portfolio.total_return_pct : 0
+  }, [historyData, portfolios])
+
+  // Sort portfolios by period return for ranking
+  const rankedPortfolios = useMemo(() => {
+    return [...portfolios].sort((a, b) => getPeriodReturn(b.user_id) - getPeriodReturn(a.user_id))
+  }, [portfolios, getPeriodReturn])
 
   useEffect(() => {
     fetchPortfolios()
@@ -83,7 +105,7 @@ function PortfolioCompareContent({ token }) {
   }
 
   // Get max absolute return for chart scaling
-  const maxReturn = Math.max(...portfolios.map(p => Math.abs(p.total_return_pct)), 10)
+  const maxReturn = Math.max(...portfolios.map(p => Math.abs(getPeriodReturn(p.user_id))), 10)
 
   // Calculate bar width percentage (for half of the container since 0 is in the middle)
   const getBarWidth = (returnPct) => {
@@ -122,9 +144,12 @@ function PortfolioCompareContent({ token }) {
             <div className="mb-4 md:mb-6">
               <MultiPortfolioChart
                 token={token}
-                height={300}
+                height={420}
                 portfolios={portfolios}
                 onColorMap={handleColorMap}
+                period={period}
+                onPeriodChange={setPeriod}
+                onDataLoaded={handleDataLoaded}
               />
             </div>
 
@@ -135,9 +160,9 @@ function PortfolioCompareContent({ token }) {
                 <p className="text-xs text-gray-500 hidden md:block">Farben entsprechen dem Chart oben</p>
               </div>
               <div className="space-y-3">
-                {portfolios.map((portfolio, index) => {
-                  // Get color from colorMap or fallback to index-based color
+                {rankedPortfolios.map((portfolio, index) => {
                   const lineColor = colorMap[portfolio.user_id] || getPortfolioColor(index)
+                  const periodReturn = getPeriodReturn(portfolio.user_id)
 
                   return (
                     <div
@@ -174,9 +199,9 @@ function PortfolioCompareContent({ token }) {
                         <div
                           className="absolute top-0 bottom-0 transition-all duration-500"
                           style={{
-                            width: `${getBarWidth(portfolio.total_return_pct)}%`,
+                            width: `${getBarWidth(periodReturn)}%`,
                             backgroundColor: `${lineColor}99`,
-                            ...(portfolio.total_return_pct >= 0
+                            ...(periodReturn >= 0
                               ? { left: '50%' }
                               : { right: '50%' }
                             )
@@ -185,9 +210,9 @@ function PortfolioCompareContent({ token }) {
                         {/* Label */}
                         <div className="absolute inset-0 flex items-center justify-center">
                           <span className={`text-sm font-bold ${
-                            portfolio.total_return_pct >= 0 ? 'text-green-400' : 'text-red-400'
+                            periodReturn >= 0 ? 'text-green-400' : 'text-red-400'
                           }`}>
-                            {formatPercent(portfolio.total_return_pct)}
+                            {formatPercent(periodReturn)}
                           </span>
                         </div>
                       </div>
