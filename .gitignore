@@ -54,3 +54,6 @@ temp/
 # Test/temp images
 vergleichsbilder/
 markos_cutout_fixed.png
+
+# Test import files
+europe150_import.json
