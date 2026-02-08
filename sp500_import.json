@@ -1,0 +1,3523 @@
+[
+  {
+    "symbol": "CHTR",
+    "name": "Charter Communications",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CMCSA",
+    "name": "Comcast",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DIS",
+    "name": "Walt Disney Company",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EA",
+    "name": "Electronic Arts",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "FOX",
+    "name": "Fox Corporation (Class B)",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "FOXA",
+    "name": "Fox Corporation (Class A)",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GOOG",
+    "name": "Alphabet Inc. (Class C)",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GOOGL",
+    "name": "Alphabet Inc. (Class A)",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "IPG",
+    "name": "Interpublic Group",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "LYV",
+    "name": "Live Nation Entertainment",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "META",
+    "name": "Meta Platforms",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MTCH",
+    "name": "Match Group",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NFLX",
+    "name": "Netflix",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NWS",
+    "name": "News Corp (Class B)",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NWSA",
+    "name": "News Corp (Class A)",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "OMC",
+    "name": "Omnicom Group",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PSKY",
+    "name": "Paramount Skydance Corporation",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "T",
+    "name": "AT&T",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TKO",
+    "name": "TKO Group Holdings",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TMUS",
+    "name": "T-Mobile US",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TTD",
+    "name": "Trade Desk",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TTWO",
+    "name": "Take-Two Interactive",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "VZ",
+    "name": "Verizon",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "WBD",
+    "name": "Warner Bros. Discovery",
+    "category": "Communication Services",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ABNB",
+    "name": "Airbnb",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AMZN",
+    "name": "Amazon",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "APTV",
+    "name": "Aptiv",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AZO",
+    "name": "AutoZone",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BBY",
+    "name": "Best Buy",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BKNG",
+    "name": "Booking Holdings",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CCL",
+    "name": "Carnival",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CMG",
+    "name": "Chipotle Mexican Grill",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CZR",
+    "name": "Caesars Entertainment",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DASH",
+    "name": "DoorDash",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DECK",
+    "name": "Deckers Brands",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DHI",
+    "name": "D. R. Horton",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DPZ",
+    "name": "Domino's",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DRI",
+    "name": "Darden Restaurants",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EBAY",
+    "name": "eBay Inc.",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EXPE",
+    "name": "Expedia Group",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "F",
+    "name": "Ford Motor Company",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GM",
+    "name": "General Motors",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GPC",
+    "name": "Genuine Parts Company",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GRMN",
+    "name": "Garmin",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HAS",
+    "name": "Hasbro",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HD",
+    "name": "Home Depot",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HLT",
+    "name": "Hilton Worldwide",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "KMX",
+    "name": "CarMax",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "LEN",
+    "name": "Lennar",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "LKQ",
+    "name": "LKQ Corporation",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "LOW",
+    "name": "Lowe's",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "LULU",
+    "name": "Lululemon Athletica",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "LVS",
+    "name": "Las Vegas Sands",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MAR",
+    "name": "Marriott International",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MCD",
+    "name": "McDonald's",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MGM",
+    "name": "MGM Resorts",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MHK",
+    "name": "Mohawk Industries",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NCLH",
+    "name": "Norwegian Cruise Line Holdings",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NKE",
+    "name": "Nike Inc.",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NVR",
+    "name": "NVR Inc.",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ORLY",
+    "name": "O'Reilly Automotive",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PHM",
+    "name": "PulteGroup",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "POOL",
+    "name": "Pool Corporation",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "RCL",
+    "name": "Royal Caribbean Group",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "RL",
+    "name": "Ralph Lauren Corporation",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ROST",
+    "name": "Ross Stores",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SBUX",
+    "name": "Starbucks",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TJX",
+    "name": "TJX Companies",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TPR",
+    "name": "Tapestry Inc.",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TSCO",
+    "name": "Tractor Supply",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TSLA",
+    "name": "Tesla Inc.",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ULTA",
+    "name": "Ulta Beauty",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "WSM",
+    "name": "Williams-Sonoma Inc.",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "WYNN",
+    "name": "Wynn Resorts",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "YUM",
+    "name": "Yum! Brands",
+    "category": "Consumer Discretionary",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ADM",
+    "name": "Archer Daniels Midland",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BF.B",
+    "name": "Brown-Forman",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BG",
+    "name": "Bunge Global",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CAG",
+    "name": "Conagra Brands",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CHD",
+    "name": "Church & Dwight",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CL",
+    "name": "Colgate-Palmolive",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CLX",
+    "name": "Clorox",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "COST",
+    "name": "Costco",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CPB",
+    "name": "Campbell's Company",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DG",
+    "name": "Dollar General",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DLTR",
+    "name": "Dollar Tree",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EL",
+    "name": "Estee Lauder Companies",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GIS",
+    "name": "General Mills",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HRL",
+    "name": "Hormel Foods",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HSY",
+    "name": "Hershey Company",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "K",
+    "name": "Kellanov",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "KDP",
+    "name": "Keurig Dr Pepper",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "KHC",
+    "name": "Kraft Heinz",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "KMB",
+    "name": "Kimberly-Clark",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "KO",
+    "name": "Coca-Cola Company",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "KR",
+    "name": "Kroger",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "KVUE",
+    "name": "Kenvue",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "LW",
+    "name": "Lamb Weston",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MDLZ",
+    "name": "Mondelez International",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MKC",
+    "name": "McCormick & Company",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MNST",
+    "name": "Monster Beverage",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MO",
+    "name": "Altria",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PEP",
+    "name": "PepsiCo",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PG",
+    "name": "Procter & Gamble",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PM",
+    "name": "Philip Morris International",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SJM",
+    "name": "J.M. Smucker Company",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "STZ",
+    "name": "Constellation Brands",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SYY",
+    "name": "Sysco",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TAP",
+    "name": "Molson Coors Beverage Company",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TGT",
+    "name": "Target Corporation",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TSN",
+    "name": "Tyson Foods",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "WBA",
+    "name": "Walgreens Boots Alliance",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "WMT",
+    "name": "Walmart",
+    "category": "Consumer Staples",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "APA",
+    "name": "APA Corporation",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BKR",
+    "name": "Baker Hughes",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "COP",
+    "name": "ConocoPhillips",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CTRA",
+    "name": "Coterra",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CVX",
+    "name": "Chevron Corporation",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DVN",
+    "name": "Devon Energy",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EOG",
+    "name": "EOG Resources",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EQT",
+    "name": "EQT Corporation",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EXE",
+    "name": "Expand Energy",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "FANG",
+    "name": "Diamondback Energy",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HAL",
+    "name": "Halliburton",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "KMI",
+    "name": "Kinder Morgan",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MPC",
+    "name": "Marathon Petroleum",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "OKE",
+    "name": "Oneok",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "OXY",
+    "name": "Occidental Petroleum",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PSX",
+    "name": "Phillips 66",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SLB",
+    "name": "Schlumberger",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TPL",
+    "name": "Texas Pacific Land Corporation",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TRGP",
+    "name": "Targa Resources",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "VLO",
+    "name": "Valero Energy",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "WMB",
+    "name": "Williams Companies",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "XOM",
+    "name": "ExxonMobil",
+    "category": "Energy",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ACGL",
+    "name": "Arch Capital Group",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AFL",
+    "name": "Aflac",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AIG",
+    "name": "American International Group",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AIZ",
+    "name": "Assurant",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AJG",
+    "name": "Arthur J. Gallagher & Co.",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ALL",
+    "name": "Allstate",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AMP",
+    "name": "Ameriprise Financial",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AON",
+    "name": "Aon plc",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "APO",
+    "name": "Apollo Global Management",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AXP",
+    "name": "American Express",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BAC",
+    "name": "Bank of America",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BEN",
+    "name": "Franklin Resources",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BK",
+    "name": "BNY Mellon",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BLK",
+    "name": "BlackRock",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BRK.B",
+    "name": "Berkshire Hathaway",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BRO",
+    "name": "Brown & Brown",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BX",
+    "name": "Blackstone Inc.",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "C",
+    "name": "Citigroup",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CB",
+    "name": "Chubb Limited",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CBOE",
+    "name": "Cboe Global Markets",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CFG",
+    "name": "Citizens Financial Group",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CINF",
+    "name": "Cincinnati Financial",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CME",
+    "name": "CME Group",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "COF",
+    "name": "Capital One",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "COIN",
+    "name": "Coinbase",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CPAY",
+    "name": "Corpay",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EG",
+    "name": "Everest Group",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ERIE",
+    "name": "Erie Indemnity",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "FDS",
+    "name": "FactSet",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "FI",
+    "name": "Fiserv",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "FIS",
+    "name": "Fidelity National Information Services",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "FITB",
+    "name": "Fifth Third Bancorp",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GL",
+    "name": "Globe Life",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GPN",
+    "name": "Global Payments",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GS",
+    "name": "Goldman Sachs",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HBAN",
+    "name": "Huntington Bancshares",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HIG",
+    "name": "Hartford (The)",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ICE",
+    "name": "Intercontinental Exchange",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "IVZ",
+    "name": "Invesco",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "JKHY",
+    "name": "Jack Henry & Associates",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "JPM",
+    "name": "JPMorgan Chase",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "KEY",
+    "name": "KeyCorp",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "KKR",
+    "name": "KKR & Co.",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "L",
+    "name": "Loews Corporation",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MA",
+    "name": "Mastercard",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MCO",
+    "name": "Moody's Corporation",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MET",
+    "name": "MetLife",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MKTX",
+    "name": "MarketAxess",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MMC",
+    "name": "Marsh McLennan",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MS",
+    "name": "Morgan Stanley",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MSCI",
+    "name": "MSCI Inc.",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MTB",
+    "name": "M&T Bank",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NDAQ",
+    "name": "Nasdaq Inc.",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NTRS",
+    "name": "Northern Trust",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PFG",
+    "name": "Principal Financial Group",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PGR",
+    "name": "Progressive Corporation",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PNC",
+    "name": "PNC Financial Services",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PRU",
+    "name": "Prudential Financial",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PYPL",
+    "name": "PayPal",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "RF",
+    "name": "Regions Financial Corporation",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "RJF",
+    "name": "Raymond James Financial",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SCHW",
+    "name": "Charles Schwab Corporation",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SPGI",
+    "name": "S&P Global",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "STT",
+    "name": "State Street Corporation",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SYF",
+    "name": "Synchrony Financial",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TFC",
+    "name": "Truist Financial",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TROW",
+    "name": "T. Rowe Price",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TRV",
+    "name": "Travelers Companies",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "USB",
+    "name": "U.S. Bancorp",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "V",
+    "name": "Visa Inc.",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "WFC",
+    "name": "Wells Fargo",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "WRB",
+    "name": "W. R. Berkley Corporation",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "WTW",
+    "name": "Willis Towers Watson",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "XYZ",
+    "name": "Block Inc.",
+    "category": "Financials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "A",
+    "name": "Agilent Technologies",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ABBV",
+    "name": "AbbVie",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ABT",
+    "name": "Abbott Laboratories",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ALGN",
+    "name": "Align Technology",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AMGN",
+    "name": "Amgen",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BAX",
+    "name": "Baxter International",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BDX",
+    "name": "Becton Dickinson",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BIIB",
+    "name": "Biogen",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BMY",
+    "name": "Bristol Myers Squibb",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BSX",
+    "name": "Boston Scientific",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CAH",
+    "name": "Cardinal Health",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CI",
+    "name": "Cigna",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CNC",
+    "name": "Centene Corporation",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "COO",
+    "name": "Cooper Companies",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "COR",
+    "name": "Cencora",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CRL",
+    "name": "Charles River Laboratories",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CVS",
+    "name": "CVS Health",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DGX",
+    "name": "Quest Diagnostics",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DHR",
+    "name": "Danaher Corporation",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DVA",
+    "name": "DaVita",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DXCM",
+    "name": "Dexcom",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ELV",
+    "name": "Elevance Health",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EW",
+    "name": "Edwards Lifesciences",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GEHC",
+    "name": "GE HealthCare",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GILD",
+    "name": "Gilead Sciences",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HCA",
+    "name": "HCA Healthcare",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HOLX",
+    "name": "Hologic",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HSIC",
+    "name": "Henry Schein",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HUM",
+    "name": "Humana",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "IDXX",
+    "name": "Idexx Laboratories",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "INCY",
+    "name": "Incyte",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "IQV",
+    "name": "IQVIA",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ISRG",
+    "name": "Intuitive Surgical",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "JNJ",
+    "name": "Johnson & Johnson",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "LH",
+    "name": "Labcorp",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "LLY",
+    "name": "Lilly (Eli)",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MCK",
+    "name": "McKesson Corporation",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MDT",
+    "name": "Medtronic",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MOH",
+    "name": "Molina Healthcare",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MRK",
+    "name": "Merck & Co.",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MRNA",
+    "name": "Moderna",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MTD",
+    "name": "Mettler Toledo",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PFE",
+    "name": "Pfizer",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PODD",
+    "name": "Insulet Corporation",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "REGN",
+    "name": "Regeneron Pharmaceuticals",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "RMD",
+    "name": "ResMed",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "RVTY",
+    "name": "Revvity",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SOLV",
+    "name": "Solventum",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "STE",
+    "name": "Steris",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SYK",
+    "name": "Stryker Corporation",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TECH",
+    "name": "Bio-Techne",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TMO",
+    "name": "Thermo Fisher Scientific",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "UHS",
+    "name": "Universal Health Services",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "UNH",
+    "name": "UnitedHealth Group",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "VRTX",
+    "name": "Vertex Pharmaceuticals",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "VTRS",
+    "name": "Viatris",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "WAT",
+    "name": "Waters Corporation",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "WST",
+    "name": "West Pharmaceutical Services",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ZBH",
+    "name": "Zimmer Biomet",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ZTS",
+    "name": "Zoetis",
+    "category": "Health Care",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ADP",
+    "name": "Automatic Data Processing",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ALLE",
+    "name": "Allegion",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AME",
+    "name": "Ametek",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AOS",
+    "name": "A. O. Smith",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AXON",
+    "name": "Axon Enterprise",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BA",
+    "name": "Boeing",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BLDR",
+    "name": "Builders FirstSource",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BR",
+    "name": "Broadridge Financial Solutions",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CARR",
+    "name": "Carrier Global",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CAT",
+    "name": "Caterpillar Inc.",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CHRW",
+    "name": "C.H. Robinson",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CMI",
+    "name": "Cummins",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CPRT",
+    "name": "Copart",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CSX",
+    "name": "CSX Corporation",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CTAS",
+    "name": "Cintas",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DAL",
+    "name": "Delta Air Lines",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DAY",
+    "name": "Dayforce",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DE",
+    "name": "Deere & Company",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DOV",
+    "name": "Dover Corporation",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EFX",
+    "name": "Equifax",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EMR",
+    "name": "Emerson Electric",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ETN",
+    "name": "Eaton Corporation",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EXPD",
+    "name": "Expeditors International",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "FAST",
+    "name": "Fastenal",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "FDX",
+    "name": "FedEx",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "FTV",
+    "name": "Fortive",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GD",
+    "name": "General Dynamics",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GE",
+    "name": "GE Aerospace",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GEV",
+    "name": "GE Vernova",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GNRC",
+    "name": "Generac",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GWW",
+    "name": "W. W. Grainger",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HII",
+    "name": "Huntington Ingalls Industries",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HON",
+    "name": "Honeywell",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HUBB",
+    "name": "Hubbell Incorporated",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HWM",
+    "name": "Howmet Aerospace",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "IEX",
+    "name": "IDEX Corporation",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "IR",
+    "name": "Ingersoll Rand",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ITW",
+    "name": "Illinois Tool Works",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "J",
+    "name": "Jacobs Solutions",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "JBHT",
+    "name": "J.B. Hunt",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "JCI",
+    "name": "Johnson Controls",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "LDOS",
+    "name": "Leidos",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "LHX",
+    "name": "L3Harris",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "LII",
+    "name": "Lennox International",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "LMT",
+    "name": "Lockheed Martin",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "LUV",
+    "name": "Southwest Airlines",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MAS",
+    "name": "Masco",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MMM",
+    "name": "3M",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NDSN",
+    "name": "Nordson Corporation",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NOC",
+    "name": "Northrop Grumman",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NSC",
+    "name": "Norfolk Southern",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ODFL",
+    "name": "Old Dominion",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "OTIS",
+    "name": "Otis Worldwide",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PAYC",
+    "name": "Paycom",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PAYX",
+    "name": "Paychex",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PCAR",
+    "name": "Paccar",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PH",
+    "name": "Parker Hannifin",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PNR",
+    "name": "Pentair",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PWR",
+    "name": "Quanta Services",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ROK",
+    "name": "Rockwell Automation",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ROL",
+    "name": "Rollins Inc.",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "RSG",
+    "name": "Republic Services",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "RTX",
+    "name": "RTX Corporation",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SNA",
+    "name": "Snap-on",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SWK",
+    "name": "Stanley Black & Decker",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TDG",
+    "name": "TransDigm Group",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TT",
+    "name": "Trane Technologies",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TXT",
+    "name": "Textron",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "UAL",
+    "name": "United Airlines Holdings",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "UBER",
+    "name": "Uber",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "UNP",
+    "name": "Union Pacific Corporation",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "UPS",
+    "name": "United Parcel Service",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "URI",
+    "name": "United Rentals",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "VLTO",
+    "name": "Veralto",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "VRSK",
+    "name": "Verisk Analytics",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "WAB",
+    "name": "Wabtec",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "WM",
+    "name": "Waste Management",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "XYL",
+    "name": "Xylem Inc.",
+    "category": "Industrials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AAPL",
+    "name": "Apple Inc.",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ACN",
+    "name": "Accenture",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ADBE",
+    "name": "Adobe Inc.",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ADI",
+    "name": "Analog Devices",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ADSK",
+    "name": "Autodesk",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AKAM",
+    "name": "Akamai Technologies",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AMAT",
+    "name": "Applied Materials",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AMD",
+    "name": "Advanced Micro Devices",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ANET",
+    "name": "Arista Networks",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "APH",
+    "name": "Amphenol",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AVGO",
+    "name": "Broadcom",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CDNS",
+    "name": "Cadence Design Systems",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CDW",
+    "name": "CDW Corporation",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CRM",
+    "name": "Salesforce",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CRWD",
+    "name": "CrowdStrike",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CSCO",
+    "name": "Cisco",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CTSH",
+    "name": "Cognizant",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DDOG",
+    "name": "Datadog",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DELL",
+    "name": "Dell Technologies",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ENPH",
+    "name": "Enphase Energy",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EPAM",
+    "name": "EPAM Systems",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "FFIV",
+    "name": "F5 Inc.",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "FICO",
+    "name": "Fair Isaac",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "FSLR",
+    "name": "First Solar",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "FTNT",
+    "name": "Fortinet",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GDDY",
+    "name": "GoDaddy",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GEN",
+    "name": "Gen Digital",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "GLW",
+    "name": "Corning Inc.",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HPE",
+    "name": "Hewlett Packard Enterprise",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HPQ",
+    "name": "HP Inc.",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "IBM",
+    "name": "IBM",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "INTC",
+    "name": "Intel",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "INTU",
+    "name": "Intuit",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "IT",
+    "name": "Gartner",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "JBL",
+    "name": "Jabil",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "KEYS",
+    "name": "Keysight Technologies",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "KLAC",
+    "name": "KLA Corporation",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "LRCX",
+    "name": "Lam Research",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MCHP",
+    "name": "Microchip Technology",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MPWR",
+    "name": "Monolithic Power Systems",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MSFT",
+    "name": "Microsoft",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MSI",
+    "name": "Motorola Solutions",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MU",
+    "name": "Micron Technology",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NOW",
+    "name": "ServiceNow",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NTAP",
+    "name": "NetApp",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NVDA",
+    "name": "Nvidia",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NXPI",
+    "name": "NXP Semiconductors",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ON",
+    "name": "ON Semiconductor",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ORCL",
+    "name": "Oracle Corporation",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PANW",
+    "name": "Palo Alto Networks",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PLTR",
+    "name": "Palantir Technologies",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PTC",
+    "name": "PTC Inc.",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "QCOM",
+    "name": "Qualcomm",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ROP",
+    "name": "Roper Technologies",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SMCI",
+    "name": "Supermicro",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SNPS",
+    "name": "Synopsys",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "STX",
+    "name": "Seagate Technology",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SWKS",
+    "name": "Skyworks Solutions",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TDY",
+    "name": "Teledyne Technologies",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TEL",
+    "name": "TE Connectivity",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TER",
+    "name": "Teradyne",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TRMB",
+    "name": "Trimble Inc.",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TXN",
+    "name": "Texas Instruments",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "TYL",
+    "name": "Tyler Technologies",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "VRSN",
+    "name": "Verisign",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "WDAY",
+    "name": "Workday Inc.",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "WDC",
+    "name": "Western Digital",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ZBRA",
+    "name": "Zebra Technologies",
+    "category": "Information Technology",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ALB",
+    "name": "Albemarle Corporation",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AMCR",
+    "name": "Amcor",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "APD",
+    "name": "Air Products",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AVY",
+    "name": "Avery Dennison",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BALL",
+    "name": "Ball Corporation",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CF",
+    "name": "CF Industries",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CTVA",
+    "name": "Corteva",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DD",
+    "name": "DuPont",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DOW",
+    "name": "Dow Inc.",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ECL",
+    "name": "Ecolab",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EMN",
+    "name": "Eastman Chemical Company",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "FCX",
+    "name": "Freeport-McMoRan",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "IFF",
+    "name": "International Flavors & Fragrances",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "IP",
+    "name": "International Paper",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "LIN",
+    "name": "Linde plc",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "LYB",
+    "name": "LyondellBasell",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MLM",
+    "name": "Martin Marietta Materials",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MOS",
+    "name": "Mosaic Company",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NEM",
+    "name": "Newmont",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NUE",
+    "name": "Nucor",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PKG",
+    "name": "Packaging Corporation of America",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PPG",
+    "name": "PPG Industries",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SHW",
+    "name": "Sherwin-Williams",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "STLD",
+    "name": "Steel Dynamics",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SW",
+    "name": "Smurfit Westrock",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "VMC",
+    "name": "Vulcan Materials Company",
+    "category": "Materials",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AMT",
+    "name": "American Tower",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ARE",
+    "name": "Alexandria Real Estate Equities",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AVB",
+    "name": "AvalonBay Communities",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "BXP",
+    "name": "BXP Inc.",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CBRE",
+    "name": "CBRE Group",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CCI",
+    "name": "Crown Castle",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CPT",
+    "name": "Camden Property Trust",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CSGP",
+    "name": "CoStar Group",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DLR",
+    "name": "Digital Realty",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DOC",
+    "name": "Healthpeak Properties",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EQIX",
+    "name": "Equinix",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EQR",
+    "name": "Equity Residential",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ESS",
+    "name": "Essex Property Trust",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EXR",
+    "name": "Extra Space Storage",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "FRT",
+    "name": "Federal Realty Investment Trust",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "HST",
+    "name": "Host Hotels & Resorts",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "INVH",
+    "name": "Invitation Homes",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "IRM",
+    "name": "Iron Mountain",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "KIM",
+    "name": "Kimco Realty",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "MAA",
+    "name": "Mid-America Apartment Communities",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "O",
+    "name": "Realty Income",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PLD",
+    "name": "Prologis",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PSA",
+    "name": "Public Storage",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "REG",
+    "name": "Regency Centers",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SBAC",
+    "name": "SBA Communications",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SPG",
+    "name": "Simon Property Group",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "UDR",
+    "name": "UDR Inc.",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "VICI",
+    "name": "Vici Properties",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "VTR",
+    "name": "Ventas",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "WELL",
+    "name": "Welltower",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "WY",
+    "name": "Weyerhaeuser",
+    "category": "Real Estate",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AEE",
+    "name": "Ameren",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AEP",
+    "name": "American Electric Power",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AES",
+    "name": "AES Corporation",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ATO",
+    "name": "Atmos Energy",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "AWK",
+    "name": "American Water Works",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CEG",
+    "name": "Constellation Energy",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CMS",
+    "name": "CMS Energy",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "CNP",
+    "name": "CenterPoint Energy",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "D",
+    "name": "Dominion Energy",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DTE",
+    "name": "DTE Energy",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "DUK",
+    "name": "Duke Energy",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ED",
+    "name": "Consolidated Edison",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EIX",
+    "name": "Edison International",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ES",
+    "name": "Eversource Energy",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "ETR",
+    "name": "Entergy",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EVRG",
+    "name": "Evergy",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "EXC",
+    "name": "Exelon",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "FE",
+    "name": "FirstEnergy",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "LNT",
+    "name": "Alliant Energy",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NEE",
+    "name": "NextEra Energy",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NI",
+    "name": "NiSource",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "NRG",
+    "name": "NRG Energy",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PCG",
+    "name": "PG&E Corporation",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PEG",
+    "name": "Public Service Enterprise Group",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PNW",
+    "name": "Pinnacle West Capital",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "PPL",
+    "name": "PPL Corporation",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SO",
+    "name": "Southern Company",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "SRE",
+    "name": "Sempra",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "VST",
+    "name": "Vistra Corp.",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "WEC",
+    "name": "WEC Energy Group",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  },
+  {
+    "symbol": "XEL",
+    "name": "Xcel Energy",
+    "category": "Utilities",
+    "isin": "",
+    "market_cap": 0
+  }
+]
