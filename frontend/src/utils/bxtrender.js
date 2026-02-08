@@ -378,36 +378,7 @@ export function calculateBXtrender(ohlcv, isAggressive = false, config = null, n
       }
     }
 
-    if (buySignal) {
-      // IMPORTANT: Signal is evaluated at month end, so trade happens at START of NEXT month
-      if (i + 1 < closes.length && opens[i + 1] > 0) {
-        inPosition = true
-        entryPrice = opens[i + 1]
-        entryDate = times[i + 1]
-
-        markers.push({
-          time: times[i + 1],
-          position: 'belowBar',
-          color: '#00FF00',
-          shape: 'arrowUp',
-          text: `BUY $${opens[i + 1].toFixed(2)}`
-        })
-      } else if (nextOpen && nextOpen.open > 0) {
-        // Last candle signal — use next month's open from current (stripped) data
-        inPosition = true
-        entryPrice = nextOpen.open
-        entryDate = nextOpen.time
-
-        markers.push({
-          time: nextOpen.time,
-          position: 'belowBar',
-          color: '#00FF00',
-          shape: 'arrowUp',
-          text: `BUY $${nextOpen.open.toFixed(2)}`
-        })
-      }
-    }
-
+    // SELL always takes priority over BUY (if both fire simultaneously, SELL wins)
     if (sellSignal) {
       // IMPORTANT: Signal is evaluated at month end, so trade happens at START of NEXT month
       if (i + 1 < closes.length && opens[i + 1] > 0) {
@@ -461,6 +432,34 @@ export function calculateBXtrender(ohlcv, isAggressive = false, config = null, n
         inPosition = false
         entryPrice = 0
         entryDate = null
+      }
+    } else if (buySignal) {
+      // IMPORTANT: Signal is evaluated at month end, so trade happens at START of NEXT month
+      if (i + 1 < closes.length && opens[i + 1] > 0) {
+        inPosition = true
+        entryPrice = opens[i + 1]
+        entryDate = times[i + 1]
+
+        markers.push({
+          time: times[i + 1],
+          position: 'belowBar',
+          color: '#00FF00',
+          shape: 'arrowUp',
+          text: `BUY $${opens[i + 1].toFixed(2)}`
+        })
+      } else if (nextOpen && nextOpen.open > 0) {
+        // Last candle signal — use next month's open from current (stripped) data
+        inPosition = true
+        entryPrice = nextOpen.open
+        entryDate = nextOpen.time
+
+        markers.push({
+          time: nextOpen.time,
+          position: 'belowBar',
+          color: '#00FF00',
+          shape: 'arrowUp',
+          text: `BUY $${nextOpen.open.toFixed(2)}`
+        })
       }
     }
 
@@ -652,38 +651,7 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
       exitSignal = inPosition && ((shortVal < 0 || longVal < 0) || tslTriggered)
     }
 
-    if (entrySignal && opens[i] > 0) {
-      // Enter at next bar open (signal evaluated at bar close)
-      if (i + 1 < closes.length && opens[i + 1] > 0) {
-        inPosition = true
-        entryPrice = opens[i + 1]
-        entryDate = times[i + 1]
-        highestPrice = opens[i + 1]
-
-        markers.push({
-          time: times[i + 1],
-          position: 'belowBar',
-          color: '#00FF00',
-          shape: 'arrowUp',
-          text: `BUY $${opens[i + 1].toFixed(2)}`
-        })
-      } else if (nextOpen && nextOpen.open > 0) {
-        // Last candle signal — use next month's open from current (stripped) data
-        inPosition = true
-        entryPrice = nextOpen.open
-        entryDate = nextOpen.time
-        highestPrice = nextOpen.open
-
-        markers.push({
-          time: nextOpen.time,
-          position: 'belowBar',
-          color: '#00FF00',
-          shape: 'arrowUp',
-          text: `BUY $${nextOpen.open.toFixed(2)}`
-        })
-      }
-    }
-
+    // SELL always takes priority over BUY (if both fire simultaneously, SELL wins)
     if (exitSignal && entryPrice > 0) {
       // Exit at next bar open
       if (i + 1 < closes.length && opens[i + 1] > 0) {
@@ -740,6 +708,36 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
         entryDate = null
         highestPrice = 0
       }
+    } else if (entrySignal && opens[i] > 0) {
+      // Enter at next bar open (signal evaluated at bar close)
+      if (i + 1 < closes.length && opens[i + 1] > 0) {
+        inPosition = true
+        entryPrice = opens[i + 1]
+        entryDate = times[i + 1]
+        highestPrice = opens[i + 1]
+
+        markers.push({
+          time: times[i + 1],
+          position: 'belowBar',
+          color: '#00FF00',
+          shape: 'arrowUp',
+          text: `BUY $${opens[i + 1].toFixed(2)}`
+        })
+      } else if (nextOpen && nextOpen.open > 0) {
+        // Last candle signal — use next month's open from current (stripped) data
+        inPosition = true
+        entryPrice = nextOpen.open
+        entryDate = nextOpen.time
+        highestPrice = nextOpen.open
+
+        markers.push({
+          time: nextOpen.time,
+          position: 'belowBar',
+          color: '#00FF00',
+          shape: 'arrowUp',
+          text: `BUY $${nextOpen.open.toFixed(2)}`
+        })
+      }
     }
 
     shortData.push({
@@ -789,6 +787,14 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
       shouldBuy = shortTermXtrender[lastIdx] > 0 && longTermXtrender[lastIdx] > 0 && (mode === 'trader' ? true : maConditionMet)
     } else {
       shouldBuy = shortTermXtrender[lastIdx] > 0 && longTermXtrender[lastIdx] > 0 && maConditionMet
+    }
+
+    // Don't re-enter if we just exited via nextOpen on the same bar (SELL wins over BUY)
+    if (shouldBuy && trades.length > 0 && nextOpen) {
+      const lastTrade = trades[trades.length - 1]
+      if (!lastTrade.isOpen && lastTrade.exitDate === nextOpen.time) {
+        shouldBuy = false
+      }
     }
 
     if (shouldBuy) {
