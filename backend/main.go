@@ -870,11 +870,12 @@ func main() {
 	// Clean up expired sessions on startup
 	db.Where("expiry < ?", time.Now()).Delete(&DBSession{})
 
-	// Ensure FlipperBot and Lutz users exist for portfolio comparison
+	// Ensure bot users exist for portfolio comparison
 	ensureFlipperBotUser()
 	ensureLutzUser()
 	ensureQuantUser()
 	ensureDitzUser()
+	ensureTraderUser()
 
 	// Fetch live exchange rates on startup
 	go fetchLiveExchangeRates()
@@ -2926,6 +2927,21 @@ func getAllPortfoliosForComparison(c *gin.Context) {
 				}
 			} else if user.ID == LUTZ_USER_ID {
 				var botPos LutzPosition
+				if db.Where("symbol = ?", pos.Symbol).First(&botPos).Error == nil {
+					summary.IsLive = botPos.IsLive
+				}
+			} else if user.ID == QUANT_USER_ID {
+				var botPos QuantPosition
+				if db.Where("symbol = ?", pos.Symbol).First(&botPos).Error == nil {
+					summary.IsLive = botPos.IsLive
+				}
+			} else if user.ID == DITZ_USER_ID {
+				var botPos DitzPosition
+				if db.Where("symbol = ?", pos.Symbol).First(&botPos).Error == nil {
+					summary.IsLive = botPos.IsLive
+				}
+			} else if user.ID == TRADER_USER_ID {
+				var botPos TraderPosition
 				if db.Where("symbol = ?", pos.Symbol).First(&botPos).Error == nil {
 					summary.IsLive = botPos.IsLive
 				}
@@ -12786,6 +12802,23 @@ func ensureDitzUser() {
 			ID:       DITZ_USER_ID,
 			Email:    "ditz@system.local",
 			Username: "Ditz",
+			Password: hashedPassword,
+			IsAdmin:  false,
+		}
+		db.Create(&botUser)
+	}
+}
+
+func ensureTraderUser() {
+	// Create Trader user if not exists (for portfolio comparison visibility)
+	var user User
+	result := db.Where("id = ?", TRADER_USER_ID).First(&user)
+	if result.Error != nil {
+		hashedPassword, _ := hashPassword("trader-system-user-no-login")
+		botUser := User{
+			ID:       TRADER_USER_ID,
+			Email:    "trader@system.local",
+			Username: "Trader",
 			Password: hashedPassword,
 			IsAdmin:  false,
 		}
