@@ -1170,7 +1170,7 @@ export async function saveTraderPerformanceToBackend(symbol, name, metrics, trad
 }
 
 // Calculate signal for Quant mode — unified HOLD/WAIT based on trade history
-function calculateQuantSignal(shortData, longData, trades) {
+export function calculateQuantSignal(shortData, longData, trades) {
   if (!shortData || shortData.length < 2 || !longData || longData.length < 2) {
     return { signal: 'WAIT', bars: 0 }
   }

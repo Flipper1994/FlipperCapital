@@ -1,0 +1,353 @@
+================================================================================
+  FLIPPERBOT BACKFILL-ANALYSE — 08.02.2026
+  Backfill-Datum: 01.02.2026 | Ausgeführt: 08.02.2026 10:21 Uhr
+  Session: 667df798-07cf-4c83-b7e8-d1ee5337e3d6
+================================================================================
+
+ZUSAMMENFASSUNG
+---------------
+- 31 BUY-Trades erstellt, 31 offene Positionen
+- Alle Trades basieren auf BXtrender DEFENSIV-Modus Signaldaten
+- Quelle: stock_performances.trades_json (vorberechnete Trade-Historie)
+- Investment pro Trade: 100 EUR (umgerechnet in USD)
+- 28 Trades mit Signal-Datum 01.02.2026 (Monatsanfang-Signal)
+-  3 Trades mit Signal-Datum 06./07.02.2026 (späteres Signal)
+
+MECHANISMUS
+-----------
+Der Backfill liest die TradesJSON aus der stock_performances-Tabelle.
+Diese enthält die historischen Trades des BXtrender (defensiv). Für jede
+Aktie mit einem Trade-Eintrag (entryDate >= 01.02.2026 UND <= heute)
+wird ein BUY-Trade erstellt.
+
+WICHTIG: Der Backfill prüft NICHT die isStockAllowedForBot()-Allowlist.
+Er geht über ALLE getrackten Aktien mit passenden Signalen.
+
+================================================================================
+  EINZELANALYSE ALLER 31 TRADES
+================================================================================
+
+--- Trade #2079: SLB (SLB N.V.) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $49.50
+  Vorheriges Signal: WAIT seit 01.11.2025
+  Aktueller Kurs: $50.70 | Rendite: +2.42%
+  Historie: 6 Trades | Win-Rate: 50% | Gesamt-Return: -3.06%
+  GRUND: BXtrender-Crossover von WAIT → BUY. Die Aktie war seit Nov 2025
+  im WAIT-Zustand (SELL-Signal abgelaufen, keine Position). Der BXtrender
+  (defensiv) hat zum 01.02.2026 ein frisches Kaufsignal generiert.
+
+--- Trade #2080: SMHN.DE (SUSS MicroTec SE) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $45.10
+  Vorheriges Signal: WAIT seit 01.01.2025
+  Aktueller Kurs: $46.32 | Rendite: +2.71%
+  Historie: 14 Trades | Win-Rate: 50% | Gesamt-Return: +1449.33%
+  GRUND: BXtrender-Crossover von WAIT → BUY. Aktie war seit über einem Jahr
+  im WAIT-Zustand. Der BXtrender drehte zum Monatsanfang Feb 2026 ins
+  Positive — neues Kaufsignal im defensiven Modus.
+
+--- Trade #2081: LMT (Lockheed Martin Corporation) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $614.59
+  Vorheriges Signal: WAIT seit 01.04.2025
+  Aktueller Kurs: $623.58 | Rendite: +1.46%
+  Historie: 6 Trades | Win-Rate: 50% | Gesamt-Return: +236.81%
+  GRUND: BXtrender-Crossover von WAIT → BUY. Seit April 2025 im WAIT-Zustand,
+  der BXtrender (defensiv) hat zum 01.02.2026 ein neues Kaufsignal erzeugt.
+
+--- Trade #2082: OR.PA (L'Oréal S.A.) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $394.00
+  Vorheriges Signal: WAIT seit 01.09.2025
+  Aktueller Kurs: $394.05 | Rendite: +0.01%
+  Historie: 14 Trades | Win-Rate: 50% | Gesamt-Return: +190.62%
+  GRUND: BXtrender-Crossover von WAIT → BUY. Seit Sep 2025 im WAIT-Zustand.
+  Der defensive BXtrender hat zum Monatsanfang Feb 2026 ein Kaufsignal
+  generiert. Kurs hat sich seit Kauf kaum bewegt.
+
+--- Trade #2083: VZ (Verizon Communications Inc.) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $44.58
+  Aktuelles Signal: SELL seit 01.01.2026 (!)
+  Historie: 23 Trades | Win-Rate: 34.78% | Gesamt-Return: +37.29%
+  GRUND: ACHTUNG — Zum Zeitpunkt des Backfills enthielt die TradesJSON
+  offenbar einen Trade-Eintrag mit Entry-Datum 01.02.2026. Die aktuellen
+  Signaldaten zeigen jedoch SELL seit 01.01.2026. Das deutet darauf hin,
+  dass die TradesJSON nach dem Backfill neu berechnet wurde und der
+  BUY-Trade nicht mehr vorhanden ist. Die Position ist trotzdem noch offen.
+  → Potentiell fehlerhafter Trade / sollte geprüft werden.
+
+--- Trade #2084: ABNB (Airbnb, Inc.) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $129.50
+  Vorheriges Signal: SELL seit 08.02.2026
+  Aktueller Kurs: n/a (nur 1 Trade in Historie)
+  Historie: 1 Trade | Win-Rate: 0% | Gesamt-Return: -5.89%
+  GRUND: BXtrender-Crossover von SELL → BUY. Dies ist der allererste
+  BXtrender-Trade für ABNB im defensiven Modus. Das SELL-Signal wurde
+  erst kürzlich abgelöst — frisches Kaufsignal zum 01.02.2026.
+
+--- Trade #2085: ALGN (Align Technology) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $162.83
+  Vorheriges Signal: SELL seit 01.01.2022
+  Aktueller Kurs: $187.60 | Rendite: +15.21%
+  Historie: 11 Trades | Win-Rate: 63.64% | Gesamt-Return: +673.24%
+  GRUND: BXtrender-Crossover von SELL/WAIT → BUY. Aktie war seit Jan 2022
+  (4 Jahre!) im SELL/WAIT-Zustand. Der BXtrender hat erstmals wieder ein
+  Kaufsignal generiert. Gute historische Performance (63% Win-Rate).
+
+--- Trade #2086: BALL (Ball Corporation) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $56.51
+  Vorheriges Signal: SELL seit 01.02.2022
+  Aktueller Kurs: $66.47 | Rendite: +17.63%
+  Historie: 23 Trades | Win-Rate: 47.83% | Gesamt-Return: +886.96%
+  GRUND: BXtrender-Crossover von SELL/WAIT → BUY. Seit Feb 2022 bearish.
+  Der vorherige Trade (BUY $56.30 → SELL $54.58, -3.05%) war ein Verlierer.
+  Neuer Einstieg bei fast gleichem Niveau — diesmal bisher +17.63%.
+
+--- Trade #2087: CB (Chubb Limited) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $310.91
+  Vorheriges Signal: HOLD seit 01.01.2026
+  Aktueller Kurs: $330.97 | Rendite: +6.45%
+  Historie: 14 Trades | Win-Rate: 64.29% | Gesamt-Return: +425.98%
+  GRUND: Neuer BUY nach vorherigem HOLD. Die Aktie war im Jan 2026 im
+  HOLD-Zustand (bestehende Position > 1 Monat). Der BXtrender hat einen
+  neuen Trade-Zyklus begonnen — der vorherige wurde geschlossen und
+  direkt ein neuer BUY eröffnet. Starke Win-Rate (64%).
+
+--- Trade #2088: CTRA (Coterra) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $27.85
+  Vorheriges Signal: HOLD seit 01.01.2026
+  Aktueller Kurs: $30.66 | Rendite: +10.09%
+  Historie: 17 Trades | Win-Rate: 41.18% | Gesamt-Return: +462.03%
+  GRUND: Neuer BUY nach vorherigem HOLD. Die Position aus dem Vormonat
+  wurde geschlossen, neuer Trade-Zyklus gestartet. Trotz niedriger Win-Rate
+  (41%) hat CTRA einen guten Gesamt-Return durch große Gewinner.
+
+--- Trade #2089: CTVA (Corteva) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $72.80
+  Vorheriges Signal: HOLD seit 01.01.2026
+  Aktueller Kurs: $72.60 | Rendite: -0.27%
+  Historie: 2 Trades | Win-Rate: 50% | Gesamt-Return: +1.44%
+  GRUND: Neuer BUY nach vorherigem HOLD. Vorheriger Trade war
+  BUY $58.09 → SELL $60.95 (+4.92%). Neuer Einstieg bei $72.80 —
+  bisher minimal im Minus.
+
+--- Trade #2090: CVS (CVS Health) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $74.36
+  Vorheriges Signal: HOLD seit 01.04.2025
+  Aktueller Kurs: $78.35 | Rendite: +5.37%
+  Historie: 4 Trades | Win-Rate: 75% | Gesamt-Return: +202.40%
+  GRUND: Neuer BUY nach langem HOLD (seit April 2025). Starke Win-Rate
+  (75%) und guter Gesamt-Return. Neuer Trade-Zyklus gestartet.
+
+--- Trade #2091: DOC (Healthpeak Properties) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $17.18
+  Vorheriges Signal: SELL seit 01.11.2013
+  Aktueller Kurs: $16.85 | Rendite: -1.92%
+  Historie: 20 Trades | Win-Rate: 30% | Gesamt-Return: +9.70%
+  GRUND: BXtrender-Crossover von SELL/WAIT → BUY. Extrem lange Bearish-Phase
+  (seit Nov 2013!). Schwache historische Performance (nur 30% Win-Rate).
+  Der vorherige Trade war BUY $19.07 → SELL $16.04 (-15.89%, Verlierer).
+
+--- Trade #2092: ES (Eversource Energy) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $69.11
+  Vorheriges Signal: SELL seit 01.02.2022
+  Aktueller Kurs: $67.36 | Rendite: -2.53%
+  Historie: 3 Trades | Win-Rate: 66.67% | Gesamt-Return: +256.00%
+  GRUND: BXtrender-Crossover von SELL/WAIT → BUY. War seit Feb 2022 bearish.
+  Nur 3 historische Trades, aber gute Win-Rate (67%). Aktuell leicht im Minus.
+
+--- Trade #2093: FDX (FedEx) ---
+  Signal-Datum: 06.02.2026 | Kauf-Preis: $364.08
+  Vorheriges Signal: HOLD seit 01.01.2026
+  Aktueller Kurs: $369.23 | Rendite: +1.41%
+  Historie: 5 Trades | Win-Rate: 40% | Gesamt-Return: -4.32%
+  GRUND: Neuer BUY nach vorherigem HOLD. ACHTUNG: Signal-Datum ist der
+  06.02.2026 (nicht Monatsanfang!). Der BXtrender hat ein Mid-Month-Signal
+  generiert — wahrscheinlich durch ein Daten-Update/Neuberechnung.
+  Vorheriger Trade war BUY $266 → SELL $226.40 (-14.89%, Verlierer).
+  Schwache Historie (negative Gesamt-Return).
+
+--- Trade #2094: FRT (Federal Realty Investment Trust) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $101.32
+  Vorheriges Signal: SELL seit 01.05.2022
+  Aktueller Kurs: $105.76 | Rendite: +4.38%
+  Historie: 23 Trades | Win-Rate: 34.78% | Gesamt-Return: +1420.66%
+  GRUND: BXtrender-Crossover von SELL/WAIT → BUY. Seit Mai 2022 bearish.
+  Trotz sehr niedriger Win-Rate (35%) enormer Gesamt-Return — einzelne
+  Gewinner-Trades waren sehr groß.
+
+--- Trade #2095: FTV (Fortive) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $52.75
+  Vorheriges Signal: WAIT seit 01.04.2025
+  Aktueller Kurs: $60.12 | Rendite: +13.97%
+  Historie: 4 Trades | Win-Rate: 25% | Gesamt-Return: -17.53%
+  GRUND: BXtrender-Crossover von WAIT → BUY. War seit April 2025 im WAIT.
+  Schwache Historie (25% Win-Rate, negativer Gesamt-Return). Vorheriger
+  Trade war BUY $60.04 → SELL $55.01 (-8.37%, Verlierer). Aktuell aber
+  schon +13.97% — bisher bester Trade.
+
+--- Trade #2096: HAL (Halliburton) ---
+  Signal-Datum: 06.02.2026 | Kauf-Preis: $33.90
+  Vorheriges Signal: SELL seit 01.03.2017
+  Aktueller Kurs: $34.98 | Rendite: +3.19%
+  Historie: 8 Trades | Win-Rate: 37.5% | Gesamt-Return: -41.45%
+  GRUND: BXtrender-Crossover von SELL/WAIT → BUY. Mid-Month-Signal
+  (06.02.2026). Sehr lange Bearish-Phase seit März 2017 (fast 9 Jahre!).
+  Schlechte Historie (negativer Gesamt-Return). Vorheriger Trade:
+  BUY $23.00 → SELL $20.11 (-12.57%, Verlierer).
+
+--- Trade #2097: HON (Honeywell) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $226.24
+  Vorheriges Signal: HOLD seit 01.01.2026
+  Aktueller Kurs: $238.38 | Rendite: +5.37%
+  Historie: 33 Trades | Win-Rate: 42.42% | Gesamt-Return: +1215.15%
+  GRUND: Neuer BUY nach HOLD. Sehr viele historische Trades (33), und
+  trotz moderater Win-Rate ein starker Gesamt-Return. Der vorherige
+  Trade war BUY $212.06 → SELL $198.40 (-6.44%, Verlierer). Neuer
+  Einstieg bei $226.24 bisher deutlich im Plus.
+
+--- Trade #2098: HUBB (Hubbell Incorporated) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $487.94
+  Vorheriges Signal: HOLD seit 01.09.2020
+  Aktueller Kurs: $503.80 | Rendite: +3.25%
+  Historie: 20 Trades | Win-Rate: 45% | Gesamt-Return: +3423.05%
+  GRUND: Neuer BUY nach sehr langem HOLD (seit Sep 2020, über 5 Jahre!).
+  Extrem starker Gesamt-Return (3423%). Der vorherige Trade war BUY $429.07
+  → SELL $426.61 (-0.57%, minimaler Verlust). Neuer Trade-Zyklus bei
+  höherem Niveau.
+
+--- Trade #2099: IEX (IDEX Corporation) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $197.66
+  Vorheriges Signal: WAIT seit 01.06.2024
+  Aktueller Kurs: $211.37 | Rendite: +6.94%
+  Historie: 21 Trades | Win-Rate: 33.33% | Gesamt-Return: +343.32%
+  GRUND: BXtrender-Crossover von WAIT → BUY. Seit Juni 2024 im WAIT.
+  Niedrige Win-Rate (33%) aber guter Gesamt-Return durch große Gewinner.
+
+--- Trade #2100: KMI (Kinder Morgan) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $29.88
+  Vorheriges Signal: WAIT seit 01.11.2025
+  Aktueller Kurs: $30.50 | Rendite: +2.07%
+  Historie: 5 Trades | Win-Rate: 40% | Gesamt-Return: -10.45%
+  GRUND: BXtrender-Crossover von WAIT → BUY. Seit Nov 2025 im WAIT.
+  Schwache Historie (negativer Gesamt-Return). Vorheriger Trade war
+  allerdings BUY $18.37 → SELL $25.98 (+41.43%, großer Gewinner).
+
+--- Trade #2101: MCHP (Microchip Technology) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $74.79
+  Vorheriges Signal: SELL seit 01.12.2025
+  Aktueller Kurs: $76.01 | Rendite: +1.63%
+  Historie: 23 Trades | Win-Rate: 30.43% | Gesamt-Return: -28.75%
+  GRUND: BXtrender-Crossover von SELL → BUY. War erst seit Dez 2025 im SELL.
+  Schwache Historie (30% Win-Rate, negativer Return). Vorheriger Trade:
+  BUY $63.26 → SELL $52.88 (-16.42%, Verlierer).
+
+--- Trade #2102: MO (Altria) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $62.37
+  Vorheriges Signal: HOLD seit 01.10.2024
+  Aktueller Kurs: $65.40 | Rendite: +4.86%
+  Historie: 32 Trades | Win-Rate: 46.88% | Gesamt-Return: +2850.62%
+  GRUND: Neuer BUY nach langem HOLD (seit Okt 2024). Extrem starker
+  Gesamt-Return (2851%) über 32 Trades. Vorheriger Trade: BUY $43.70
+  → SELL $57.66 (+31.95%, Gewinner). Solider neuer Einstieg.
+
+--- Trade #2103: NUE (Nucor) ---
+  Signal-Datum: 06.02.2026 | Kauf-Preis: $188.39
+  Vorheriges Signal: BUY (laufend seit 01.03.2025)
+  Aktueller Kurs: $192.84 | Rendite: +2.36%
+  Historie: 6 Trades | Win-Rate: 50% | Gesamt-Return: +77.39%
+  GRUND: Mid-Month-BUY-Signal (06.02.2026). NUE hat bereits seit März 2025
+  ein BUY-Signal — es handelt sich möglicherweise um einen neuen Trade-Zyklus
+  nach einem kurzfristigen Exit/Re-Entry. Vorheriger Trade: BUY $105.00
+  → SELL $139.66 (+33.01%, Gewinner).
+
+--- Trade #2104: PM (Philip Morris International) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $180.86
+  Vorheriges Signal: SELL seit 01.12.2025
+  Aktueller Kurs: $182.81 | Rendite: +1.08%
+  Historie: 8 Trades | Win-Rate: 37.5% | Gesamt-Return: +18.23%
+  GRUND: BXtrender-Crossover von SELL → BUY. War seit Dez 2025 im SELL.
+  Vorheriger Trade war ein großer Gewinner: BUY $101.24 → SELL $157.36
+  (+55.43%). Neuer Einstieg bei deutlich höherem Niveau.
+
+--- Trade #2105: RMD (ResMed) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $257.18
+  Vorheriges Signal: SELL seit 01.01.2026
+  Aktueller Kurs: $271.63 | Rendite: +5.62%
+  Historie: 13 Trades | Win-Rate: 69.23% | Gesamt-Return: +1673.46%
+  GRUND: BXtrender-Crossover von SELL → BUY. War seit Jan 2026 im SELL.
+  Sehr starke Historie: 69% Win-Rate und enormer Gesamt-Return. Vorheriger
+  Trade: BUY $173.25 → SELL $241.75 (+39.54%, Gewinner). Qualitäts-Signal.
+
+--- Trade #2106: SYY (Sysco) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $84.12
+  Vorheriges Signal: SELL seit 01.01.2026
+  Aktueller Kurs: $86.53 | Rendite: +2.86%
+  Historie: 32 Trades | Win-Rate: 50% | Gesamt-Return: +2506.47%
+  GRUND: BXtrender-Crossover von SELL → BUY. War seit Jan 2026 im SELL.
+  Sehr viele historische Trades (32) mit exzellenter Performance.
+  Vorheriger Trade: BUY $79.78 → SELL $72.93 (-8.59%, Verlierer).
+
+--- Trade #2107: TGT (Target Corporation) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $104.93
+  Vorheriges Signal: WAIT seit 01.12.2024
+  Aktueller Kurs: $115.55 | Rendite: +10.12%
+  Historie: 24 Trades | Win-Rate: 41.67% | Gesamt-Return: +588.92%
+  GRUND: BXtrender-Crossover von WAIT → BUY. Seit Dez 2024 im WAIT.
+  Vorheriger Trade: BUY $153.24 → SELL $130.73 (-14.69%, Verlierer).
+  Neuer Einstieg bei deutlich niedrigerem Niveau — bisher +10.12%.
+
+--- Trade #2108: VRTX (Vertex Pharmaceuticals) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $466.79
+  Vorheriges Signal: WAIT seit 01.02.2026
+  Aktueller Kurs: $477.92 | Rendite: +2.38%
+  Historie: 20 Trades | Win-Rate: 45% | Gesamt-Return: +417.36%
+  GRUND: BXtrender-Crossover von WAIT → BUY. Gerade eben erst von WAIT
+  zu BUY gewechselt (gleicher Monat). Vorheriger Trade: BUY $507.00
+  → SELL $441.27 (-12.96%, Verlierer). Neuer Einstieg bei niedrigerem Kurs.
+
+--- Trade #2109: WAB (Wabtec) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $229.49
+  Vorheriges Signal: WAIT seit 01.09.2025
+  Aktueller Kurs: $246.32 | Rendite: +7.33%
+  Historie: 14 Trades | Win-Rate: 42.86% | Gesamt-Return: +590.46%
+  GRUND: BXtrender-Crossover von WAIT → BUY. Seit Sep 2025 im WAIT.
+  Vorheriger Trade war ein großer Gewinner: BUY $109.36 → SELL $190.51
+  (+74.11%). Guter neuer Einstieg.
+
+================================================================================
+  ZUSAMMENFASSUNG NACH SIGNALTYP
+================================================================================
+
+VON WAIT → BUY (13 Trades):
+  SLB, SMHN.DE, LMT, OR.PA, FTV, IEX, KMI, TGT, VRTX, WAB, HAL*, FDX*
+  → Aktie war längere Zeit ohne Signal (SELL > 1 Monat). Frischer Crossover.
+
+VON SELL → BUY (7 Trades):
+  ABNB, ALGN, BALL, DOC, ES, FRT, MCHP, PM, RMD, SYY
+  → Aktie hatte kürzlich ein SELL-Signal. Schneller Richtungswechsel.
+
+VON HOLD → BUY (8 Trades):
+  CB, CTRA, CTVA, CVS, FDX, HON, HUBB, MO
+  → Aktie war in laufender Position (HOLD > 1 Monat). Neuer Trade-Zyklus
+    nach Schließung der vorherigen Position.
+
+SONDERFÄLLE:
+  VZ — Aktuelles Signal ist SELL, nicht BUY. Trade möglicherweise fehlerhaft.
+  NUE — BUY-Signal besteht seit März 2025, Mid-Month Re-Entry am 06.02.
+  FDX, HAL — Mid-Month-Signale (06.02.), nicht Standard-Monatsanfang.
+
+================================================================================
+  PERFORMANCE-ÜBERSICHT (Stand 08.02.2026)
+================================================================================
+
+Top 5 Gewinner:
+  1. BALL     +17.63%  ($56.51 → $66.47)
+  2. ALGN     +15.21%  ($162.83 → $187.60)
+  3. FTV      +13.97%  ($52.75 → $60.12)
+  4. TGT      +10.12%  ($104.93 → $115.55)
+  5. CTRA     +10.09%  ($27.85 → $30.66)
+
+Top 3 Verlierer:
+  1. ES       -2.53%   ($69.11 → $67.36)
+  2. DOC      -1.92%   ($17.18 → $16.85)
+  3. CTVA     -0.27%   ($72.80 → $72.60)
+
+Durchschnittliche Rendite aller 31 Trades: ca. +4.7%

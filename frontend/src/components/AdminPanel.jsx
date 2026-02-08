@@ -2724,11 +2724,13 @@ function AdminPanel() {
                                 { key: 'total_return_pct', label: 'Rendite (Wert)', align: 'right' },
                                 { key: 'stop_loss_price', label: 'SL', align: 'right' },
                                 { key: 'buy_date', label: 'Kaufdatum', align: 'left' },
-                                { key: 'is_live', label: 'Live', align: 'center' }
+                                { key: 'is_live', label: 'Live', align: 'center' },
+                                { key: 'chart', label: 'Chart', align: 'center' }
                               ].map(col => (
                                 <th key={col.key}
-                                  className={`p-2 cursor-pointer hover:text-blue-400 select-none ${col.align === 'right' ? 'text-right' : ''}`}
+                                  className={`p-2 ${col.key !== 'chart' ? 'cursor-pointer hover:text-blue-400' : ''} select-none ${col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : ''}`}
                                   onClick={() => {
+                                    if (col.key === 'chart') return
                                     if (flipperSortColumn === col.key) setFlipperSortDir(flipperSortDir === 'asc' ? 'desc' : 'asc')
                                     else { setFlipperSortColumn(col.key); setFlipperSortDir('asc') }
                                   }}
@@ -2782,6 +2784,11 @@ function AdminPanel() {
                                 <td className="p-2 text-gray-500 text-sm">{new Date(pos.buy_date).toLocaleDateString('de-DE')}</td>
                                 <td className="p-2 text-center">
                                   {pos.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
+                                </td>
+                                <td className="p-2 text-center">
+                                  <a href={`https://www.tradingview.com/chart/?symbol=${pos.symbol}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300" title="TradingView Chart">
+                                    <svg className="w-4 h-4 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                                  </a>
                                 </td>
                               </tr>
                             ))}
@@ -2998,11 +3005,13 @@ function AdminPanel() {
                                 { key: 'total_return_pct', label: 'Rendite (Wert)', align: 'right' },
                                 { key: 'stop_loss_price', label: 'SL', align: 'right' },
                                 { key: 'buy_date', label: 'Kaufdatum', align: 'left' },
-                                { key: 'is_live', label: 'Live', align: 'center' }
+                                { key: 'is_live', label: 'Live', align: 'center' },
+                                { key: 'chart', label: 'Chart', align: 'center' }
                               ].map(col => (
                                 <th key={col.key}
-                                  className={`p-2 cursor-pointer hover:text-orange-400 select-none ${col.align === 'right' ? 'text-right' : ''}`}
+                                  className={`p-2 ${col.key !== 'chart' ? 'cursor-pointer hover:text-orange-400' : ''} select-none ${col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : ''}`}
                                   onClick={() => {
+                                    if (col.key === 'chart') return
                                     if (lutzSortColumn === col.key) setLutzSortDir(lutzSortDir === 'asc' ? 'desc' : 'asc')
                                     else { setLutzSortColumn(col.key); setLutzSortDir('asc') }
                                   }}
@@ -3056,6 +3065,11 @@ function AdminPanel() {
                                 <td className="p-2 text-gray-500 text-sm">{new Date(pos.buy_date).toLocaleDateString('de-DE')}</td>
                                 <td className="p-2 text-center">
                                   {pos.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
+                                </td>
+                                <td className="p-2 text-center">
+                                  <a href={`https://www.tradingview.com/chart/?symbol=${pos.symbol}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300" title="TradingView Chart">
+                                    <svg className="w-4 h-4 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                                  </a>
                                 </td>
                               </tr>
                             ))}
@@ -3367,12 +3381,14 @@ function AdminPanel() {
                                 { key: 'tsl', label: 'SL', align: 'right' },
                                 { key: 'total_return_pct', label: 'Rendite (Wert)', align: 'right' },
                                 { key: 'buy_date', label: 'Kaufdatum', align: 'left' },
-                                { key: 'is_live', label: 'Live', align: 'center' }
+                                { key: 'is_live', label: 'Live', align: 'center' },
+                                { key: 'chart', label: 'Chart', align: 'center' }
                               ].map(col => (
                                 <th
                                   key={col.key}
-                                  className={`p-2 cursor-pointer hover:text-violet-400 select-none ${col.align === 'right' ? 'text-right' : ''}`}
+                                  className={`p-2 ${col.key !== 'chart' ? 'cursor-pointer hover:text-violet-400' : ''} select-none ${col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : ''}`}
                                   onClick={() => {
+                                    if (col.key === 'chart') return
                                     if (quantSortColumn === col.key) {
                                       setQuantSortDir(quantSortDir === 'asc' ? 'desc' : 'asc')
                                     } else {
@@ -3431,6 +3447,11 @@ function AdminPanel() {
                                     </td>
                                     <td className="p-2 text-center">
                                       {pos.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
+                                    </td>
+                                    <td className="p-2 text-center">
+                                      <a href={`https://www.tradingview.com/chart/?symbol=${pos.symbol}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300" title="TradingView Chart">
+                                        <svg className="w-4 h-4 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                                      </a>
                                     </td>
                                   </tr>
                                 )
@@ -3748,12 +3769,14 @@ function AdminPanel() {
                                 { key: 'tsl', label: 'SL', align: 'right' },
                                 { key: 'total_return_pct', label: 'Rendite (Wert)', align: 'right' },
                                 { key: 'buy_date', label: 'Kaufdatum', align: 'left' },
-                                { key: 'is_live', label: 'Live', align: 'center' }
+                                { key: 'is_live', label: 'Live', align: 'center' },
+                                { key: 'chart', label: 'Chart', align: 'center' }
                               ].map(col => (
                                 <th
                                   key={col.key}
-                                  className={`p-2 cursor-pointer hover:text-cyan-400 select-none ${col.align === 'right' ? 'text-right' : ''}`}
+                                  className={`p-2 ${col.key !== 'chart' ? 'cursor-pointer hover:text-cyan-400' : ''} select-none ${col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : ''}`}
                                   onClick={() => {
+                                    if (col.key === 'chart') return
                                     if (ditzSortColumn === col.key) {
                                       setDitzSortDir(ditzSortDir === 'asc' ? 'desc' : 'asc')
                                     } else {
@@ -3812,6 +3835,11 @@ function AdminPanel() {
                                     </td>
                                     <td className="p-2 text-center">
                                       {pos.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
+                                    </td>
+                                    <td className="p-2 text-center">
+                                      <a href={`https://www.tradingview.com/chart/?symbol=${pos.symbol}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300" title="TradingView Chart">
+                                        <svg className="w-4 h-4 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                                      </a>
                                     </td>
                                   </tr>
                                 )
@@ -4128,12 +4156,14 @@ function AdminPanel() {
                                 { key: 'tsl', label: 'SL', align: 'right' },
                                 { key: 'total_return_pct', label: 'Rendite (Wert)', align: 'right' },
                                 { key: 'buy_date', label: 'Kaufdatum', align: 'left' },
-                                { key: 'is_live', label: 'Live', align: 'center' }
+                                { key: 'is_live', label: 'Live', align: 'center' },
+                                { key: 'chart', label: 'Chart', align: 'center' }
                               ].map(col => (
                                 <th
                                   key={col.key}
-                                  className={`p-2 cursor-pointer hover:text-emerald-400 select-none ${col.align === 'right' ? 'text-right' : ''}`}
+                                  className={`p-2 ${col.key !== 'chart' ? 'cursor-pointer hover:text-emerald-400' : ''} select-none ${col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : ''}`}
                                   onClick={() => {
+                                    if (col.key === 'chart') return
                                     if (traderSortColumn === col.key) {
                                       setTraderSortDir(traderSortDir === 'asc' ? 'desc' : 'asc')
                                     } else {
@@ -4192,6 +4222,11 @@ function AdminPanel() {
                                     </td>
                                     <td className="p-2 text-center">
                                       {pos.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
+                                    </td>
+                                    <td className="p-2 text-center">
+                                      <a href={`https://www.tradingview.com/chart/?symbol=${pos.symbol}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300" title="TradingView Chart">
+                                        <svg className="w-4 h-4 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                                      </a>
                                     </td>
                                   </tr>
                                 )
@@ -4806,6 +4841,9 @@ function AdminPanel() {
                     <div>
                       <h2 className="text-lg font-semibold text-white">
                         {botTab === 'flipper' ? 'FlipperBot' : botTab === 'lutz' ? 'Lutz' : botTab === 'ditz' ? 'Ditz' : botTab === 'trader' ? 'Trader' : 'Quant'} Trades
+                        <span className="text-sm font-normal text-gray-500 ml-2">
+                          ({(botTab === 'flipper' ? flipperTrades : botTab === 'lutz' ? lutzTrades : botTab === 'ditz' ? ditzTrades : botTab === 'trader' ? traderTrades : quantTrades).length})
+                        </span>
                       </h2>
                       <p className="text-xs text-gray-500">BUY-Trades bearbeiten um Position zu aktualisieren</p>
                     </div>

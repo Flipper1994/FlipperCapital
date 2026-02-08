@@ -109,13 +109,22 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
         }
 
         // Nur abgeschlossene Monatskerzen für Signalberechnung (aktuellen Monat entfernen)
+        // Yahoo liefert manchmal mehrere Datenpunkte für den aktuellen Monat
         let calcData = json.data
+        let nextOpen = null
         if (timeframe === 'M' && calcData.length > 0) {
           const now = new Date()
-          const lastTime = new Date(calcData[calcData.length - 1].time * 1000)
-          if (lastTime.getUTCFullYear() === now.getUTCFullYear() && lastTime.getUTCMonth() === now.getUTCMonth()) {
-            calcData = calcData.slice(0, -1)
-          }
+          const strippedCandles = calcData.filter(d => {
+            const t = new Date(d.time * 1000)
+            return t.getUTCFullYear() === now.getUTCFullYear() && t.getUTCMonth() === now.getUTCMonth()
+          })
+          calcData = calcData.filter(d => {
+            const t = new Date(d.time * 1000)
+            return !(t.getUTCFullYear() === now.getUTCFullYear() && t.getUTCMonth() === now.getUTCMonth())
+          })
+          nextOpen = strippedCandles.length > 0
+            ? { time: strippedCandles[0].time, open: strippedCandles[0].open, close: strippedCandles[strippedCandles.length - 1].close }
+            : null
         }
 
         // Get config and calculate B-Xtrender based on mode
@@ -123,7 +132,7 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
 
         if (isQuant || isDitz || isTrader) {
           // Quant/Ditz/Trader mode - use QuantTherapy algorithm
-          const result = calculateBXtrenderQuant(calcData, configData, isTrader ? 'trader' : isDitz ? 'ditz' : 'quant')
+          const result = calculateBXtrenderQuant(calcData, configData, isTrader ? 'trader' : isDitz ? 'ditz' : 'quant', nextOpen)
           short = result.short
           long = result.long
           signal = result.signal
@@ -132,7 +141,7 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
         } else {
           // Defensive or Aggressive mode
           const config = isAggressive ? configData.aggressive : configData.defensive
-          const result = calculateBXtrender(calcData, isAggressive, config)
+          const result = calculateBXtrender(calcData, isAggressive, config, nextOpen)
           short = result.short
           long = result.long
           signal = result.signal
@@ -193,7 +202,7 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
 
             // Also save the other mode's data for completeness
             const otherConfig = isAggressive ? configData.defensive : configData.aggressive
-            const otherModeResult = calculateBXtrender(calcData, !isAggressive, otherConfig)
+            const otherModeResult = calculateBXtrender(calcData, !isAggressive, otherConfig, nextOpen)
             const otherMetrics = calculateMetrics(otherModeResult.trades)
             savePerformanceToBackend(symbol, stockName || symbol, otherMetrics, otherModeResult.trades, otherModeResult.short, currentPrice, !isAggressive)
           }

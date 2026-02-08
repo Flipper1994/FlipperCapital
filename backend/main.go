@@ -5661,10 +5661,31 @@ func flipperBotBackfill(c *gin.Context) {
 			continue
 		}
 
+		// Check allowlist
+		if !isStockAllowedForBot("flipper", stock.Symbol) {
+			addLog("SKIP", fmt.Sprintf("%s: Nicht in Allowlist — übersprungen", stock.Symbol))
+			continue
+		}
+
 		// Parse the historical trades from TradesJSON
 		var historicalTrades []TradeData
 		if err := json.Unmarshal([]byte(stock.TradesJSON), &historicalTrades); err != nil {
 			addLog("ERROR", fmt.Sprintf("%s: Fehler beim Parsen der Trades: %v", stock.Symbol, err))
+			continue
+		}
+
+		// Check if there's already an open position from BEFORE the backfill start date
+		// If so, the stock is in HOLD status and we should not open a new position
+		hasOpenPositionBefore := false
+		for _, t := range historicalTrades {
+			entryT := time.Unix(t.EntryDate, 0)
+			if t.IsOpen && entryT.Before(fromDate) {
+				hasOpenPositionBefore = true
+				break
+			}
+		}
+		if hasOpenPositionBefore {
+			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor Startdatum (HOLD) — übersprungen", stock.Symbol))
 			continue
 		}
 
@@ -5868,10 +5889,30 @@ func lutzBackfill(c *gin.Context) {
 			continue
 		}
 
+		// Check allowlist
+		if !isStockAllowedForBot("lutz", stock.Symbol) {
+			addLog("SKIP", fmt.Sprintf("%s: Nicht in Allowlist — übersprungen", stock.Symbol))
+			continue
+		}
+
 		// Parse the historical trades from TradesJSON
 		var historicalTrades []TradeData
 		if err := json.Unmarshal([]byte(stock.TradesJSON), &historicalTrades); err != nil {
 			addLog("ERROR", fmt.Sprintf("%s: Fehler beim Parsen der Trades: %v", stock.Symbol, err))
+			continue
+		}
+
+		// Check if there's already an open position from BEFORE the backfill start date
+		hasOpenPositionBefore := false
+		for _, t := range historicalTrades {
+			entryT := time.Unix(t.EntryDate, 0)
+			if t.IsOpen && entryT.Before(fromDate) {
+				hasOpenPositionBefore = true
+				break
+			}
+		}
+		if hasOpenPositionBefore {
+			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor Startdatum (HOLD) — übersprungen", stock.Symbol))
 			continue
 		}
 
@@ -10098,9 +10139,29 @@ func quantBackfill(c *gin.Context) {
 			continue
 		}
 
+		// Check allowlist
+		if !isStockAllowedForBot("quant", stock.Symbol) {
+			addLog("SKIP", fmt.Sprintf("%s: Nicht in Allowlist — übersprungen", stock.Symbol))
+			continue
+		}
+
 		var historicalTrades []TradeData
 		if err := json.Unmarshal([]byte(stock.TradesJSON), &historicalTrades); err != nil {
 			addLog("ERROR", fmt.Sprintf("%s: Fehler beim Parsen der Trades: %v", stock.Symbol, err))
+			continue
+		}
+
+		// Check if there's already an open position from BEFORE the backfill start date
+		hasOpenPositionBefore := false
+		for _, t := range historicalTrades {
+			entryT := time.Unix(t.EntryDate, 0)
+			if t.IsOpen && entryT.Before(fromDate) {
+				hasOpenPositionBefore = true
+				break
+			}
+		}
+		if hasOpenPositionBefore {
+			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor Startdatum (HOLD) — übersprungen", stock.Symbol))
 			continue
 		}
 
@@ -11551,10 +11612,13 @@ func processStockServer(symbol, name string, defensiveConfig, aggressiveConfig B
 	// Nur abgeschlossene Monatskerzen verwenden (aktuellen unvollständigen Monat entfernen)
 	monthlyData := data
 	now := time.Now().UTC()
-	if len(monthlyData) > 0 {
+	// Strip ALL bars from the current month (Yahoo can return multiple bars for the current month)
+	for len(monthlyData) > 0 {
 		lastBar := time.Unix(monthlyData[len(monthlyData)-1].Time, 0).UTC()
 		if lastBar.Year() == now.Year() && lastBar.Month() == now.Month() {
 			monthlyData = monthlyData[:len(monthlyData)-1]
+		} else {
+			break
 		}
 	}
 
@@ -13631,9 +13695,29 @@ func ditzBackfill(c *gin.Context) {
 			continue
 		}
 
+		// Check allowlist
+		if !isStockAllowedForBot("ditz", stock.Symbol) {
+			addLog("SKIP", fmt.Sprintf("%s: Nicht in Allowlist — übersprungen", stock.Symbol))
+			continue
+		}
+
 		var historicalTrades []TradeData
 		if err := json.Unmarshal([]byte(stock.TradesJSON), &historicalTrades); err != nil {
 			addLog("ERROR", fmt.Sprintf("%s: Fehler beim Parsen der Trades: %v", stock.Symbol, err))
+			continue
+		}
+
+		// Check if there's already an open position from BEFORE the backfill start date
+		hasOpenPositionBefore := false
+		for _, t := range historicalTrades {
+			entryT := time.Unix(t.EntryDate, 0)
+			if t.IsOpen && entryT.Before(fromDate) {
+				hasOpenPositionBefore = true
+				break
+			}
+		}
+		if hasOpenPositionBefore {
+			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor Startdatum (HOLD) — übersprungen", stock.Symbol))
 			continue
 		}
 
@@ -15634,9 +15718,29 @@ func traderBackfill(c *gin.Context) {
 			continue
 		}
 
+		// Check allowlist
+		if !isStockAllowedForBot("trader", stock.Symbol) {
+			addLog("SKIP", fmt.Sprintf("%s: Nicht in Allowlist — übersprungen", stock.Symbol))
+			continue
+		}
+
 		var historicalTrades []TradeData
 		if err := json.Unmarshal([]byte(stock.TradesJSON), &historicalTrades); err != nil {
 			addLog("ERROR", fmt.Sprintf("%s: Fehler beim Parsen der Trades: %v", stock.Symbol, err))
+			continue
+		}
+
+		// Check if there's already an open position from BEFORE the backfill start date
+		hasOpenPositionBefore := false
+		for _, t := range historicalTrades {
+			entryT := time.Unix(t.EntryDate, 0)
+			if t.IsOpen && entryT.Before(fromDate) {
+				hasOpenPositionBefore = true
+				break
+			}
+		}
+		if hasOpenPositionBefore {
+			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor Startdatum (HOLD) — übersprungen", stock.Symbol))
 			continue
 		}
 

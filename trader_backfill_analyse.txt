@@ -1,0 +1,239 @@
+================================================================================
+  TRADER BOT BACKFILL-ANALYSE — 08.02.2026
+  Backfill-Datum: 01.02.2026 | Ausgeführt: 08.02.2026 10:37 Uhr
+  Session: 748eac85-1948-436d-b83f-de766bc6db04
+================================================================================
+
+ZUSAMMENFASSUNG
+---------------
+- 17 BUY-Trades erstellt, 17 offene Positionen
+- Alle Trades basieren auf BXtrender TRADER-Modus Signaldaten
+- Quelle: trader_stock_performances.trades_json
+- Alle 17 Trades mit Signal-Datum 01.02.2026
+- Investment pro Trade: 100 EUR (umgerechnet in USD)
+
+MECHANISMUS
+-----------
+Identisch zum FlipperBot-Backfill: Liest TradesJSON aus der
+trader_stock_performances-Tabelle und erstellt BUY-Trades für
+Einträge mit entryDate >= 01.02.2026.
+
+WICHTIG: Auch hier wurde die isStockAllowedForBot()-Allowlist
+NICHT geprüft. (Ist jetzt im Code gefixt.)
+
+================================================================================
+  EINZELANALYSE ALLER 17 TRADES
+================================================================================
+
+--- Trade #66: WMT (Walmart Inc.) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $119.50
+  Aktuelles Signal: WAIT seit 01.04.2025 (!)
+  Historie: 36 Trades | Win-Rate: 44.44% | Gesamt-Return: +2423.83%
+  GRUND: ACHTUNG — Das aktuelle Signal ist WAIT (seit April 2025, 9 Monate!).
+  Die TradesJSON zeigt nur abgeschlossene Trades (letzter: BUY $60.31 →
+  SELL $87.54, +45.15%). Kein offener Trade mehr vorhanden.
+  → Potentiell fehlerhafter Trade. Die TradesJSON wurde vermutlich nach
+  dem Backfill neu berechnet und der BUY-Eintrag entfernt.
+
+--- Trade #67: ACN (Accenture) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $263.54
+  Vorheriges Signal: BUY (laufend)
+  Aktueller Kurs: $240.62 | Rendite: -8.70%
+  Historie: 14 Trades | Win-Rate: 64.29% | Gesamt-Return: +130.82%
+  GRUND: Neuer BUY-Trade im Trader-Modus. Vorheriger Trade war ein
+  Verlierer: BUY $347.02 → SELL $300.81 (-13.30%). Neuer Einstieg bei
+  niedrigerem Kurs, aber bisher deutlich im Minus (-8.70%). Gute
+  historische Win-Rate (64%).
+
+--- Trade #68: AMCR (Amcor) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $44.27
+  Vorheriges Signal: BUY (laufend seit Jan 2026)
+  Aktueller Kurs: $48.17 | Rendite: +8.81%
+  Historie: 6 Trades | Win-Rate: 16.67% | Gesamt-Return: -22.27%
+  GRUND: BUY-Signal im Trader-Modus. ACHTUNG: Sehr schwache Historie —
+  nur 16.67% Win-Rate und negativer Gesamt-Return (-22%). Vorheriger
+  Trade: BUY $48.20 → SELL $47.95 (-0.52%, Verlierer). Aktuell aber
+  +8.81% im Plus.
+
+--- Trade #69: BALL (Ball Corporation) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $56.51
+  Vorheriges Signal: WAIT seit 01.05.2022
+  Aktueller Kurs: $66.47 | Rendite: +17.63%
+  Historie: 28 Trades | Win-Rate: 53.57% | Gesamt-Return: +515.14%
+  GRUND: BXtrender-Crossover von WAIT → BUY. Seit Mai 2022 im WAIT.
+  Vorheriger Trade: BUY $57.08 → SELL $49.20 (-13.81%, Verlierer).
+  Neuer Einstieg bei fast gleichem Niveau — bisher Top-Performer (+17.63%).
+
+--- Trade #70: CSX (CSX Corporation) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $37.69
+  Vorheriges Signal: HOLD seit 01.08.2025
+  Aktueller Kurs: $40.61 | Rendite: +7.75%
+  Historie: 9 Trades | Win-Rate: 44.44% | Gesamt-Return: +128.12%
+  GRUND: Neuer BUY nach HOLD (seit Aug 2025). Neuer Trade-Zyklus nach
+  Schließung der alten Position. Solide Performance bisher.
+
+--- Trade #71: CTSH (Cognizant) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $81.96
+  Vorheriges Signal: HOLD seit 01.07.2024
+  Aktueller Kurs: $77.08 | Rendite: -5.95%
+  Historie: 18 Trades | Win-Rate: 66.67% | Gesamt-Return: +481.25%
+  GRUND: Neuer BUY nach langem HOLD (seit Jul 2024). Starke Win-Rate
+  (67%). Vorheriger Trade: BUY $74.41 → SELL $76.71 (+3.12%, Gewinner).
+  Neuer Einstieg bei höherem Kurs, bisher im Minus.
+
+--- Trade #72: EMN (Eastman Chemical Company) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $68.99
+  Vorheriges Signal: WAIT seit 01.03.2025
+  Aktueller Kurs: $77.43 | Rendite: +12.23%
+  Historie: 17 Trades | Win-Rate: 47.06% | Gesamt-Return: +61.04%
+  GRUND: BXtrender-Crossover von WAIT → BUY. Seit März 2025 im WAIT.
+  Vorheriger Trade: BUY $84.97 → SELL $91.13 (+7.25%, Gewinner).
+  Neuer Einstieg bei deutlich niedrigerem Kurs — starker Start (+12.23%).
+
+--- Trade #73: EXPD (Expeditors International) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $163.50
+  Vorheriges Signal: BUY (laufend seit Dez 2014!)
+  Aktueller Kurs: $165.04 | Rendite: +0.94%
+  Historie: 6 Trades | Win-Rate: 83.33% | Gesamt-Return: +1172.50%
+  GRUND: Neuer Trade-Zyklus im Trader-Modus. EXPD hat seit Dez 2014
+  ein BUY-Signal — über 11 Jahre! Exzellente Historie: 83% Win-Rate
+  und enormer Gesamt-Return. Trade-Entry war am 07.02. (entryDate im
+  JSON). Vorheriger Trade: BUY $92.62 → SELL $109.04 (+17.73%, Gewinner).
+
+--- Trade #74: GILD (Gilead Sciences) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $141.05
+  Vorheriges Signal: HOLD seit 01.09.2024
+  Aktueller Kurs: $152.50 | Rendite: +8.12%
+  Historie: 22 Trades | Win-Rate: 59.09% | Gesamt-Return: +787.51%
+  GRUND: Neuer BUY nach HOLD (seit Sep 2024). Starke Historie (59% WR).
+  Vorheriger Trade: BUY $79.79 → SELL $112.90 (+41.50%, großer Gewinner).
+  Neuer Einstieg bei höherem Niveau, bisher solide +8.12%.
+
+--- Trade #75: HSY (Hershey Company) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $225.60
+  Vorheriges Signal: WAIT seit 01.09.2023
+  Aktueller Kurs: $231.53 | Rendite: +2.63%
+  Historie: 7 Trades | Win-Rate: 85.71% | Gesamt-Return: +744.60%
+  GRUND: BXtrender-Crossover von WAIT → BUY. Seit Sep 2023 im WAIT
+  (über 2 Jahre). Herausragende Win-Rate (86%). Vorheriger Trade:
+  BUY $178.25 → SELL $214.75 (+20.48%, Gewinner). Qualitäts-Signal.
+
+--- Trade #76: ISRG (Intuitive Surgical) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $502.00
+  Vorheriges Signal: BUY (laufend)
+  Aktueller Kurs: $488.15 | Rendite: -2.76%
+  Historie: 14 Trades | Win-Rate: 85.71% | Gesamt-Return: +6444.61%
+  GRUND: Neuer Trade-Zyklus im Trader-Modus. ISRG hat eine herausragende
+  Historie: 86% Win-Rate und 6445% Gesamt-Return — die beste Aktie im
+  gesamten Trader-Portfolio. Vorheriger Trade: BUY $383.48 → SELL $492.26
+  (+28.37%, Gewinner). Aktuell leicht im Minus.
+
+--- Trade #77: ITW (Illinois Tool Works) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $261.28
+  Aktuelles Signal: SELL seit 01.01.2026 (!)
+  Historie: 28 Trades | Win-Rate: 60.71% | Gesamt-Return: +2951.68%
+  GRUND: ACHTUNG — Das aktuelle Signal ist SELL (seit Jan 2026).
+  Die TradesJSON zeigt nur abgeschlossene Trades (letzter: BUY $259.32
+  → SELL $246.65, -4.89%). Kein offener Trade in der JSON.
+  → Potentiell fehlerhafter Trade. Ähnlich wie bei WMT.
+
+--- Trade #78: JKHY (Jack Henry & Associates) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $179.29
+  Vorheriges Signal: BUY (laufend)
+  Aktueller Kurs: $173.36 | Rendite: -3.31%
+  Historie: 8 Trades | Win-Rate: 50% | Gesamt-Return: +276.45%
+  GRUND: Neuer Trade-Zyklus. Vorheriger Trade: BUY $173.14 → SELL $148.20
+  (-14.41%, Verlierer). Neuer Einstieg bei ähnlichem Niveau, bisher -3.31%.
+
+--- Trade #79: MSCI (MSCI Inc.) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $608.45
+  Vorheriges Signal: BUY (laufend)
+  Aktueller Kurs: $557.78 | Rendite: -8.33%
+  Historie: 13 Trades | Win-Rate: 69.23% | Gesamt-Return: +91.76%
+  GRUND: Neuer Trade-Zyklus. Vorheriger Trade: BUY $583.50 → SELL $543.00
+  (-6.94%, Verlierer). Neuer Einstieg noch höher, und bisher der
+  zweitschlechteste Trade im Portfolio (-8.33%).
+
+--- Trade #80: TSN (Tyson Foods) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $63.89
+  Vorheriges Signal: HOLD seit 01.12.2024
+  Aktueller Kurs: $65.26 | Rendite: +2.14%
+  Historie: 25 Trades | Win-Rate: 56% | Gesamt-Return: +677.31%
+  GRUND: Neuer BUY nach HOLD (seit Dez 2024). Solide Historie.
+  Vorheriger Trade: BUY $55.72 → SELL $57.42 (+3.05%, Gewinner).
+  Neuer Einstieg bei höherem Niveau, bisher leicht im Plus.
+
+--- Trade #81: VRTX (Vertex Pharmaceuticals) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $466.79
+  Vorheriges Signal: BUY (laufend)
+  Aktueller Kurs: $477.92 | Rendite: +2.38%
+  Historie: 18 Trades | Win-Rate: 55.56% | Gesamt-Return: +837.19%
+  GRUND: Neuer Trade-Zyklus. Vorheriger Trade: BUY $495.85 → SELL $471.06
+  (-5.00%, Verlierer). Neuer Einstieg bei niedrigerem Kurs, bisher +2.38%.
+
+--- Trade #82: WAB (Wabtec) ---
+  Signal-Datum: 01.02.2026 | Kauf-Preis: $229.49
+  Vorheriges Signal: BUY (laufend)
+  Aktueller Kurs: $246.32 | Rendite: +7.33%
+  Historie: 19 Trades | Win-Rate: 47.37% | Gesamt-Return: +226.28%
+  GRUND: Neuer Trade-Zyklus. Vorheriger Trade: BUY $126.00 → SELL $203.72
+  (+61.68%, großer Gewinner). Neuer Einstieg bei deutlich höherem Niveau,
+  bisher +7.33%.
+
+================================================================================
+  ZUSAMMENFASSUNG NACH SIGNALTYP
+================================================================================
+
+VON WAIT → BUY (4 Trades):
+  BALL, EMN, HSY, EXPD*
+  → Aktie war längere Zeit ohne Signal. Frischer Crossover.
+
+VON HOLD → BUY (5 Trades):
+  CSX, CTSH, GILD, TSN
+  → Aktie war in laufender Position. Neuer Trade-Zyklus.
+
+BUY → BUY (Neuer Zyklus) (6 Trades):
+  ACN, AMCR, ISRG, JKHY, MSCI, VRTX, WAB
+  → Vorheriger Trade beendet, sofort neuer BUY im gleichen Trend.
+
+SONDERFÄLLE:
+  WMT — Aktuelles Signal ist WAIT seit Apr 2025. Trade möglicherweise
+         fehlerhaft (kein offener Trade in TradesJSON).
+  ITW — Aktuelles Signal ist SELL seit Jan 2026. Trade möglicherweise
+         fehlerhaft (kein offener Trade in TradesJSON).
+
+================================================================================
+  PERFORMANCE-ÜBERSICHT (Stand 08.02.2026)
+================================================================================
+
+Top 5 Gewinner:
+  1. BALL     +17.63%  ($56.51 → $66.47)
+  2. EMN      +12.23%  ($68.99 → $77.43)
+  3. AMCR      +8.81%  ($44.27 → $48.17)
+  4. GILD      +8.12%  ($141.05 → $152.50)
+  5. CSX       +7.75%  ($37.69 → $40.61)
+
+Top 5 Verlierer:
+  1. ACN       -8.70%  ($263.54 → $240.62)
+  2. MSCI      -8.33%  ($608.45 → $557.78)
+  3. CTSH      -5.95%  ($81.96 → $77.08)
+  4. JKHY      -3.31%  ($179.29 → $173.36)
+  5. ISRG      -2.76%  ($502.00 → $488.15)
+
+Durchschnittliche Rendite aller 17 Trades: ca. +3.0%
+
+================================================================================
+  VERGLEICH: TRADER BOT vs FLIPPERBOT
+================================================================================
+
+                    Trader Bot      FlipperBot
+  Anzahl Trades:    17              31
+  Ø Rendite:        ~+3.0%          ~+4.7%
+  Top Performer:    BALL +17.63%    BALL +17.63%  (gleiche Aktie!)
+  Schlimmster:      ACN -8.70%      ES -2.53%
+  Fehlerhafte:      2 (WMT, ITW)   1 (VZ)
+
+Der FlipperBot hat mehr Trades, eine höhere Durchschnittsrendite und
+weniger potentiell fehlerhafte Trades. Der Trader Bot hat einige
+hochkarätige Aktien (ISRG 86% WR, HSY 86% WR, EXPD 83% WR), aber
+auch stärkere Verlierer.
