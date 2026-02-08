@@ -1753,6 +1753,15 @@ func getHistory(c *gin.Context) {
 		}
 	}
 
+	// Normalize monthly timestamps to 1st of month 00:00 UTC
+	if interval == "1mo" {
+		for i := range data {
+			t := time.Unix(data[i].Time, 0).UTC()
+			normalized := time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
+			data[i].Time = normalized.Unix()
+		}
+	}
+
 	// Return actual data granularity from Yahoo Finance
 	actualGranularity := interval
 	if len(yahooResp.Chart.Result) > 0 && yahooResp.Chart.Result[0].Meta.DataGranularity != "" {
@@ -1923,8 +1932,10 @@ func fetchIntervalAndAggregateToMonthly(symbol, interval string) ([]OHLCV, error
 	for _, key := range monthOrder {
 		bar := monthMap[key]
 		if bar.IsSet {
+			// Normalize timestamp to 1st of month 00:00 UTC
+			normalized := time.Date(key.Year, time.Month(key.Month), 1, 0, 0, 0, 0, time.UTC)
 			data = append(data, OHLCV{
-				Time:   bar.Time,
+				Time:   normalized.Unix(),
 				Open:   bar.Open,
 				High:   bar.High,
 				Low:    bar.Low,
@@ -2001,8 +2012,10 @@ func fetchMonthlyFromTwelveData(symbol string) ([]OHLCV, error) {
 			continue
 		}
 
+		// Normalize timestamp to 1st of month 00:00 UTC
+		normalized := time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
 		data = append(data, OHLCV{
-			Time:   t.Unix(),
+			Time:   normalized.Unix(),
 			Open:   open,
 			High:   high,
 			Low:    low,
@@ -4439,9 +4452,9 @@ func updateBXtrenderConfig(c *gin.Context) {
 func updateAllWatchlistStocks(c *gin.Context) {
 	mode := c.DefaultQuery("mode", "defensive")
 
-	// Get all stocks from watchlist
+	// Get all stocks from watchlist, largest market cap first
 	var stocks []Stock
-	db.Order("symbol asc").Find(&stocks)
+	db.Order("market_cap desc").Find(&stocks)
 
 	// Get last performance update per symbol (newest across all 5 mode tables)
 	type SymUpdate struct {
@@ -10092,7 +10105,8 @@ func quantBackfill(c *gin.Context) {
 		}
 
 		for _, trade := range historicalTrades {
-			entryTime := time.Unix(trade.EntryDate, 0)
+			entryTime := time.Unix(trade.EntryDate, 0).UTC()
+			entryTime = time.Date(entryTime.Year(), entryTime.Month(), 1, 0, 0, 0, 0, time.UTC)
 
 			if entryTime.Year() < 2020 || entryTime.Year() > 2030 {
 				continue
@@ -10127,7 +10141,7 @@ func quantBackfill(c *gin.Context) {
 				Quantity:   qty,
 				Price:      trade.EntryPrice,
 				SignalDate: entryTime,
-				ExecutedAt: now,
+				ExecutedAt: entryTime,
 				IsPending:  false,
 			}
 			db.Create(&buyTrade)
@@ -10135,7 +10149,8 @@ func quantBackfill(c *gin.Context) {
 			addLog("ACTION", fmt.Sprintf("%s: BUY erstellt @ $%.2f am %s", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
 
 			if trade.ExitDate != nil && trade.ExitPrice != nil {
-				exitTime := time.Unix(*trade.ExitDate, 0)
+				exitTime := time.Unix(*trade.ExitDate, 0).UTC()
+				exitTime = time.Date(exitTime.Year(), exitTime.Month(), 1, 0, 0, 0, 0, time.UTC)
 
 				if !exitTime.After(now) {
 					profitLoss := (*trade.ExitPrice - trade.EntryPrice) * qty
@@ -10148,7 +10163,7 @@ func quantBackfill(c *gin.Context) {
 						Quantity:      qty,
 						Price:         *trade.ExitPrice,
 						SignalDate:    exitTime,
-						ExecutedAt:    now,
+						ExecutedAt:    exitTime,
 						IsPending:     false,
 						ProfitLoss:    &profitLoss,
 						ProfitLossPct: &profitLossPct,
@@ -11382,9 +11397,9 @@ func setSchedulerTimeHandler(c *gin.Context) {
 func runFullStockUpdate(triggeredBy string) {
 	fmt.Printf("[FullUpdate] Starting full stock update triggered by: %s\n", triggeredBy)
 
-	// Get all stocks from watchlist
+	// Get all stocks from watchlist, largest market cap first
 	var stocks []Stock
-	db.Order("symbol asc").Find(&stocks)
+	db.Order("market_cap desc").Find(&stocks)
 
 	if len(stocks) == 0 {
 		fmt.Println("[FullUpdate] No stocks in watchlist")
@@ -11636,6 +11651,13 @@ func fetchHistoricalDataServer(symbol string) ([]OHLCV, error) {
 				})
 			}
 		}
+	}
+
+	// Normalize Yahoo monthly timestamps to 1st of month 00:00 UTC
+	for i := range data {
+		t := time.Unix(data[i].Time, 0).UTC()
+		normalized := time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
+		data[i].Time = normalized.Unix()
 	}
 
 	return data, nil
@@ -13616,7 +13638,8 @@ func ditzBackfill(c *gin.Context) {
 		}
 
 		for _, trade := range historicalTrades {
-			entryTime := time.Unix(trade.EntryDate, 0)
+			entryTime := time.Unix(trade.EntryDate, 0).UTC()
+			entryTime = time.Date(entryTime.Year(), entryTime.Month(), 1, 0, 0, 0, 0, time.UTC)
 
 			if entryTime.Year() < 2020 || entryTime.Year() > 2030 {
 				continue
@@ -13651,7 +13674,7 @@ func ditzBackfill(c *gin.Context) {
 				Quantity:   qty,
 				Price:      trade.EntryPrice,
 				SignalDate: entryTime,
-				ExecutedAt: now,
+				ExecutedAt: entryTime,
 				IsPending:  false,
 			}
 			db.Create(&buyTrade)
@@ -13659,7 +13682,8 @@ func ditzBackfill(c *gin.Context) {
 			addLog("ACTION", fmt.Sprintf("%s: BUY erstellt @ $%.2f am %s", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
 
 			if trade.ExitDate != nil && trade.ExitPrice != nil {
-				exitTime := time.Unix(*trade.ExitDate, 0)
+				exitTime := time.Unix(*trade.ExitDate, 0).UTC()
+				exitTime = time.Date(exitTime.Year(), exitTime.Month(), 1, 0, 0, 0, 0, time.UTC)
 
 				if !exitTime.After(now) {
 					profitLoss := (*trade.ExitPrice - trade.EntryPrice) * qty
@@ -13672,7 +13696,7 @@ func ditzBackfill(c *gin.Context) {
 						Quantity:      qty,
 						Price:         *trade.ExitPrice,
 						SignalDate:    exitTime,
-						ExecutedAt:    now,
+						ExecutedAt:    exitTime,
 						IsPending:     false,
 						ProfitLoss:    &profitLoss,
 						ProfitLossPct: &profitLossPct,
@@ -15617,7 +15641,8 @@ func traderBackfill(c *gin.Context) {
 		}
 
 		for _, trade := range historicalTrades {
-			entryTime := time.Unix(trade.EntryDate, 0)
+			entryTime := time.Unix(trade.EntryDate, 0).UTC()
+			entryTime = time.Date(entryTime.Year(), entryTime.Month(), 1, 0, 0, 0, 0, time.UTC)
 
 			if entryTime.Year() < 2020 || entryTime.Year() > 2030 {
 				continue
@@ -15652,7 +15677,7 @@ func traderBackfill(c *gin.Context) {
 				Quantity:   qty,
 				Price:      trade.EntryPrice,
 				SignalDate: entryTime,
-				ExecutedAt: now,
+				ExecutedAt: entryTime,
 				IsPending:  false,
 			}
 			db.Create(&buyTrade)
@@ -15660,7 +15685,8 @@ func traderBackfill(c *gin.Context) {
 			addLog("ACTION", fmt.Sprintf("%s: BUY erstellt @ $%.2f am %s", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
 
 			if trade.ExitDate != nil && trade.ExitPrice != nil {
-				exitTime := time.Unix(*trade.ExitDate, 0)
+				exitTime := time.Unix(*trade.ExitDate, 0).UTC()
+				exitTime = time.Date(exitTime.Year(), exitTime.Month(), 1, 0, 0, 0, 0, time.UTC)
 
 				if !exitTime.After(now) {
 					profitLoss := (*trade.ExitPrice - trade.EntryPrice) * qty
@@ -15673,7 +15699,7 @@ func traderBackfill(c *gin.Context) {
 						Quantity:      qty,
 						Price:         *trade.ExitPrice,
 						SignalDate:    exitTime,
-						ExecutedAt:    now,
+						ExecutedAt:    exitTime,
 						IsPending:     false,
 						ProfitLoss:    &profitLoss,
 						ProfitLossPct: &profitLossPct,

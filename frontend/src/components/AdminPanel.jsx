@@ -5271,9 +5271,10 @@ function AdminPanel() {
                         onClick={async () => {
                           if (!confirm('FlipperBot komplett zurücksetzen? Alle Trades und Positionen werden gelöscht!')) return
                           try {
-                            await fetch('/api/flipperbot/reset', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } })
-                            fetchBotData()
+                            const res = await fetch('/api/flipperbot/reset', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } })
+                            if (!res.ok) throw new Error('Reset fehlgeschlagen')
                             alert('FlipperBot wurde zurückgesetzt')
+                            window.location.reload()
                           } catch (err) { alert('Fehler beim Zurücksetzen') }
                         }}
                         className="px-4 py-2 bg-purple-500/20 text-purple-400 rounded-lg hover:bg-purple-500/30 transition-colors font-medium text-sm flex items-center gap-2"
@@ -5287,9 +5288,10 @@ function AdminPanel() {
                         onClick={async () => {
                           if (!confirm('Lutz komplett zurücksetzen? Alle Trades und Positionen werden gelöscht!')) return
                           try {
-                            await fetch('/api/lutz/reset', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } })
-                            fetchBotData()
+                            const res = await fetch('/api/lutz/reset', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } })
+                            if (!res.ok) throw new Error('Reset fehlgeschlagen')
                             alert('Lutz wurde zurückgesetzt')
+                            window.location.reload()
                           } catch (err) { alert('Fehler beim Zurücksetzen') }
                         }}
                         className="px-4 py-2 bg-orange-500/20 text-orange-400 rounded-lg hover:bg-orange-500/30 transition-colors font-medium text-sm flex items-center gap-2"
@@ -5303,9 +5305,10 @@ function AdminPanel() {
                         onClick={async () => {
                           if (!confirm('Quant komplett zurücksetzen? Alle Trades und Positionen werden gelöscht!')) return
                           try {
-                            await fetch('/api/quant/reset', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } })
-                            fetchBotData()
+                            const res = await fetch('/api/quant/reset', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } })
+                            if (!res.ok) throw new Error('Reset fehlgeschlagen')
                             alert('Quant wurde zurückgesetzt')
+                            window.location.reload()
                           } catch (err) { alert('Fehler beim Zurücksetzen') }
                         }}
                         className="px-4 py-2 bg-violet-500/20 text-violet-400 rounded-lg hover:bg-violet-500/30 transition-colors font-medium text-sm flex items-center gap-2"
@@ -5319,9 +5322,10 @@ function AdminPanel() {
                         onClick={async () => {
                           if (!confirm('Ditz komplett zurücksetzen? Alle Trades und Positionen werden gelöscht!')) return
                           try {
-                            await fetch('/api/ditz/reset', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } })
-                            fetchBotData()
+                            const res = await fetch('/api/ditz/reset', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } })
+                            if (!res.ok) throw new Error('Reset fehlgeschlagen')
                             alert('Ditz wurde zurückgesetzt')
+                            window.location.reload()
                           } catch (err) { alert('Fehler beim Zurücksetzen') }
                         }}
                         className="px-4 py-2 bg-cyan-500/20 text-cyan-400 rounded-lg hover:bg-cyan-500/30 transition-colors font-medium text-sm flex items-center gap-2"
@@ -5335,9 +5339,10 @@ function AdminPanel() {
                         onClick={async () => {
                           if (!confirm('Trader komplett zurücksetzen? Alle Trades und Positionen werden gelöscht!')) return
                           try {
-                            await fetch('/api/trader/reset', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } })
-                            fetchBotData()
+                            const res = await fetch('/api/trader/reset', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } })
+                            if (!res.ok) throw new Error('Reset fehlgeschlagen')
                             alert('Trader wurde zurückgesetzt')
+                            window.location.reload()
                           } catch (err) { alert('Fehler beim Zurücksetzen') }
                         }}
                         className="px-4 py-2 bg-emerald-500/20 text-emerald-400 rounded-lg hover:bg-emerald-500/30 transition-colors font-medium text-sm flex items-center gap-2"
