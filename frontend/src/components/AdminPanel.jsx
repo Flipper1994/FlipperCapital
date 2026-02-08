@@ -4,6 +4,7 @@ import { useTradingMode } from '../context/TradingModeContext'
 import { useCurrency } from '../context/CurrencyContext'
 import { processStock } from '../utils/bxtrender'
 import PortfolioChart from './PortfolioChart'
+import StockDetailOverlay from './StockDetailOverlay'
 
 function AdminPanel() {
   const token = localStorage.getItem('authToken')
@@ -16,6 +17,8 @@ function AdminPanel() {
   const [loading, setLoading] = useState(true)
   const [selectedUser, setSelectedUser] = useState(null)
   const [activityFilter, setActivityFilter] = useState('')
+  const [editingUserId, setEditingUserId] = useState(null)
+  const [editingUsername, setEditingUsername] = useState('')
   const [updatingStocks, setUpdatingStocks] = useState(false)
   const [updateProgress, setUpdateProgress] = useState(null)
   const [forceUpdate, setForceUpdate] = useState(false)
@@ -25,6 +28,9 @@ function AdminPanel() {
   const [loadingDiff, setLoadingDiff] = useState(false)
   const { mode, isAggressive } = useTradingMode()
   const { formatPrice, convertPrice, convertToUSD, currencySymbol } = useCurrency()
+
+  // Stock detail overlay
+  const [selectedPosition, setSelectedPosition] = useState(null)
 
   // Bots state
   const [flipperPositions, setFlipperPositions] = useState([])
@@ -1446,6 +1452,30 @@ function AdminPanel() {
     }
   }
 
+  const handleSaveUsername = async (userId) => {
+    const trimmed = editingUsername.trim()
+    if (!trimmed) return
+    try {
+      const res = await fetch(`/api/admin/users/${userId}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ username: trimmed })
+      })
+      if (res.ok) {
+        setEditingUserId(null)
+        fetchUsers()
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Fehler beim Speichern')
+      }
+    } catch (err) {
+      console.error('Failed to update username:', err)
+    }
+  }
+
   const formatPercent = (val) => {
     const v = val || 0
     return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
@@ -2150,10 +2180,38 @@ function AdminPanel() {
                             <div className="flex items-center gap-3">
                               <div className="w-8 h-8 bg-accent-500/20 rounded-full flex items-center justify-center">
                                 <span className="text-accent-400 font-bold text-sm">
-                                  {user.username?.charAt(0).toUpperCase()}
+                                  {(editingUserId === user.id ? editingUsername : user.username)?.charAt(0).toUpperCase()}
                                 </span>
                               </div>
-                              <span className="font-medium text-white">{user.username}</span>
+                              {editingUserId === user.id ? (
+                                <div className="flex items-center gap-1">
+                                  <input
+                                    type="text"
+                                    value={editingUsername}
+                                    onChange={(e) => setEditingUsername(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') handleSaveUsername(user.id)
+                                      if (e.key === 'Escape') setEditingUserId(null)
+                                    }}
+                                    autoFocus
+                                    className="bg-dark-700 border border-accent-500 rounded px-2 py-1 text-white text-sm w-32 focus:outline-none"
+                                  />
+                                  <button onClick={() => handleSaveUsername(user.id)} className="p-1 text-green-400 hover:text-green-300" title="Speichern">
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                                  </button>
+                                  <button onClick={() => setEditingUserId(null)} className="p-1 text-gray-400 hover:text-gray-300" title="Abbrechen">
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                                  </button>
+                                </div>
+                              ) : (
+                                <span
+                                  className="font-medium text-white cursor-pointer hover:text-accent-400 transition-colors"
+                                  onClick={() => { setEditingUserId(user.id); setEditingUsername(user.username) }}
+                                  title="Klicken zum Bearbeiten"
+                                >
+                                  {user.username}
+                                </span>
+                              )}
                             </div>
                           </td>
                           <td className="p-4 text-gray-400">{user.email}</td>
@@ -2749,8 +2807,8 @@ function AdminPanel() {
                               return flipperSortDir === 'asc' ? valA - valB : valB - valA
                             }).map(pos => (
                               <tr key={pos.id} className="border-b border-dark-700/50 hover:bg-dark-700/30">
-                                <td className="p-2 font-medium text-white">{pos.symbol}</td>
-                                <td className="p-2 text-gray-400 text-sm">{pos.name}</td>
+                                <td className="p-2 font-medium text-white cursor-pointer hover:text-blue-400" onClick={() => setSelectedPosition({ symbol: pos.symbol, name: pos.name, mode: 'defensive' })}>{pos.symbol}</td>
+                                <td className="p-2 text-gray-400 text-sm cursor-pointer hover:text-blue-400" onClick={() => setSelectedPosition({ symbol: pos.symbol, name: pos.name, mode: 'defensive' })}>{pos.name}</td>
                                 <td className="p-2 text-right text-gray-300">
                                   {pos.quantity?.toFixed(2)}
                                   <span className="text-gray-500 text-xs ml-1">({formatPrice(pos.invested_eur || pos.avg_price * pos.quantity)})</span>
@@ -3030,8 +3088,8 @@ function AdminPanel() {
                               return lutzSortDir === 'asc' ? valA - valB : valB - valA
                             }).map(pos => (
                               <tr key={pos.id} className="border-b border-dark-700/50 hover:bg-dark-700/30">
-                                <td className="p-2 font-medium text-white">{pos.symbol}</td>
-                                <td className="p-2 text-gray-400 text-sm">{pos.name}</td>
+                                <td className="p-2 font-medium text-white cursor-pointer hover:text-orange-400" onClick={() => setSelectedPosition({ symbol: pos.symbol, name: pos.name, mode: 'aggressive' })}>{pos.symbol}</td>
+                                <td className="p-2 text-gray-400 text-sm cursor-pointer hover:text-orange-400" onClick={() => setSelectedPosition({ symbol: pos.symbol, name: pos.name, mode: 'aggressive' })}>{pos.name}</td>
                                 <td className="p-2 text-right text-gray-300">
                                   {pos.quantity?.toFixed(2)}
                                   <span className="text-gray-500 text-xs ml-1">({formatPrice(pos.invested_eur || pos.avg_price * pos.quantity)})</span>
@@ -3425,8 +3483,8 @@ function AdminPanel() {
                                 const isNearStop = pos.current_price && stopPrice && (pos.current_price - stopPrice) / pos.current_price < 0.05
                                 return (
                                   <tr key={pos.id} className="border-b border-dark-700/50 hover:bg-dark-700/30">
-                                    <td className="p-2 font-medium text-white">{pos.symbol}</td>
-                                    <td className="p-2 text-gray-400 text-sm">{pos.name}</td>
+                                    <td className="p-2 font-medium text-white cursor-pointer hover:text-violet-400" onClick={() => setSelectedPosition({ symbol: pos.symbol, name: pos.name, mode: 'quant' })}>{pos.symbol}</td>
+                                    <td className="p-2 text-gray-400 text-sm cursor-pointer hover:text-violet-400" onClick={() => setSelectedPosition({ symbol: pos.symbol, name: pos.name, mode: 'quant' })}>{pos.name}</td>
                                     <td className="p-2 text-right text-gray-300">
                                       {pos.quantity?.toFixed(2)}
                                       <span className="text-gray-500 text-xs ml-1">({formatPrice(pos.invested_eur || pos.avg_price * pos.quantity)})</span>
@@ -3813,8 +3871,8 @@ function AdminPanel() {
                                 const isNearStop = pos.current_price && stopPrice && (pos.current_price - stopPrice) / pos.current_price < 0.05
                                 return (
                                   <tr key={pos.id} className="border-b border-dark-700/50 hover:bg-dark-700/30">
-                                    <td className="p-2 font-medium text-white">{pos.symbol}</td>
-                                    <td className="p-2 text-gray-400 text-sm">{pos.name}</td>
+                                    <td className="p-2 font-medium text-white cursor-pointer hover:text-cyan-400" onClick={() => setSelectedPosition({ symbol: pos.symbol, name: pos.name, mode: 'ditz' })}>{pos.symbol}</td>
+                                    <td className="p-2 text-gray-400 text-sm cursor-pointer hover:text-cyan-400" onClick={() => setSelectedPosition({ symbol: pos.symbol, name: pos.name, mode: 'ditz' })}>{pos.name}</td>
                                     <td className="p-2 text-right text-gray-300">
                                       {pos.quantity?.toFixed(2)}
                                       <span className="text-gray-500 text-xs ml-1">({formatPrice(pos.invested_eur || pos.avg_price * pos.quantity)})</span>
@@ -4200,8 +4258,8 @@ function AdminPanel() {
                                 const isNearStop = pos.current_price && stopPrice && (pos.current_price - stopPrice) / pos.current_price < 0.05
                                 return (
                                   <tr key={pos.id} className="border-b border-dark-700/50 hover:bg-dark-700/30">
-                                    <td className="p-2 font-medium text-white">{pos.symbol}</td>
-                                    <td className="p-2 text-gray-400 text-sm">{pos.name}</td>
+                                    <td className="p-2 font-medium text-white cursor-pointer hover:text-emerald-400" onClick={() => setSelectedPosition({ symbol: pos.symbol, name: pos.name, mode: 'trader' })}>{pos.symbol}</td>
+                                    <td className="p-2 text-gray-400 text-sm cursor-pointer hover:text-emerald-400" onClick={() => setSelectedPosition({ symbol: pos.symbol, name: pos.name, mode: 'trader' })}>{pos.name}</td>
                                     <td className="p-2 text-right text-gray-300">
                                       {pos.quantity?.toFixed(2)}
                                       <span className="text-gray-500 text-xs ml-1">({formatPrice(pos.invested_eur || pos.avg_price * pos.quantity)})</span>
@@ -6213,6 +6271,15 @@ function AdminPanel() {
             </div>
           </div>
         </div>
+      )}
+
+      {selectedPosition && (
+        <StockDetailOverlay
+          symbol={selectedPosition.symbol}
+          name={selectedPosition.name}
+          mode={selectedPosition.mode}
+          onClose={() => setSelectedPosition(null)}
+        />
       )}
     </div>
   )

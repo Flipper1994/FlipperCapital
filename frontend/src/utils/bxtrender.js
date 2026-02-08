@@ -576,6 +576,8 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
   let inPosition = false
   let entryPrice = 0
   let entryDate = null
+  let highestPrice = 0
+  const tslPercent = cfg.tslPercent || cfg.tsl_percent || 20.0
 
   for (let i = startIdx; i < closes.length; i++) {
     const shortVal = shortTermXtrender[i]
@@ -586,6 +588,20 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
     const sigPrev = signalLine[i - 1]
     const price = closes[i]
     const maVal = ma ? ma[i] : 0
+
+    // Track highest price since entry for TSL
+    if (inPosition && price > highestPrice) {
+      highestPrice = price
+    }
+
+    // Check trailing stop loss
+    let tslTriggered = false
+    if (inPosition && highestPrice > 0) {
+      const stopPrice = highestPrice * (1 - tslPercent / 100)
+      if (price <= stopPrice) {
+        tslTriggered = true
+      }
+    }
 
     // Quant coloring: Both positive = green shades, both negative = red shades, mixed = gray
     let shortColor, longColor
@@ -618,15 +634,13 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
     let entrySignal, exitSignal
 
     if (mode === 'ditz' || mode === 'trader') {
-      // Ditz/Trader mode: trade based on signal line (T3) color changes
-      const lineIsGreen = sigVal > sigPrev
-      const lineWasGreen = i > startIdx ? sigPrev > signalLine[i - 2] : false
+      // Ditz/Trader mode: both indicators must be positive (same as backend)
+      const bothPositivePrev = shortPrev > 0 && longPrev > 0
 
-      // BUY when signal line turns from red to green
-      // Trader mode: no MA filter on entries
-      entrySignal = !inPosition && lineIsGreen && !lineWasGreen && (mode === 'trader' ? true : maFilterLong)
-      // SELL when signal line turns from green to red
-      exitSignal = inPosition && !lineIsGreen && lineWasGreen
+      // BUY when both turn positive; Trader mode: no MA filter
+      entrySignal = !inPosition && bothPositive && (!bothPositivePrev || !inPosition) && (mode === 'trader' ? true : maFilterLong)
+      // SELL when both negative OR trailing stop loss
+      exitSignal = inPosition && (bothNegative || tslTriggered)
     } else {
       // Quant mode: both indicators alignment
       entrySignal = !inPosition &&
@@ -634,7 +648,8 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
         maFilterLong &&
         (shortPrev <= 0 || longPrev <= 0)
 
-      exitSignal = inPosition && (shortVal < 0 || longVal < 0)
+      // SELL when either negative OR trailing stop loss
+      exitSignal = inPosition && ((shortVal < 0 || longVal < 0) || tslTriggered)
     }
 
     if (entrySignal && opens[i] > 0) {
@@ -643,6 +658,7 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
         inPosition = true
         entryPrice = opens[i + 1]
         entryDate = times[i + 1]
+        highestPrice = opens[i + 1]
 
         markers.push({
           time: times[i + 1],
@@ -656,6 +672,7 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
         inPosition = true
         entryPrice = nextOpen.open
         entryDate = nextOpen.time
+        highestPrice = nextOpen.open
 
         markers.push({
           time: nextOpen.time,
@@ -694,6 +711,7 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
         inPosition = false
         entryPrice = 0
         entryDate = null
+        highestPrice = 0
       } else if (nextOpen && nextOpen.open > 0) {
         // Last candle signal — sell at next month's open
         const exitPrice = nextOpen.open
@@ -720,6 +738,7 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
         inPosition = false
         entryPrice = 0
         entryDate = null
+        highestPrice = 0
       }
     }
 
@@ -766,9 +785,8 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
 
     let shouldBuy = false
     if (mode === 'ditz' || mode === 'trader') {
-      const lastSig = signalLine[lastIdx]
-      const prevSig = signalLine[lastIdx - 1]
-      shouldBuy = lastSig > prevSig && (mode === 'trader' ? true : maConditionMet)
+      // Both oscillators must be positive (matching backend logic)
+      shouldBuy = shortTermXtrender[lastIdx] > 0 && longTermXtrender[lastIdx] > 0 && (mode === 'trader' ? true : maConditionMet)
     } else {
       shouldBuy = shortTermXtrender[lastIdx] > 0 && longTermXtrender[lastIdx] > 0 && maConditionMet
     }
@@ -793,10 +811,11 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
       for (let j = searchStart; j < lastIdx; j++) {
         let signalFound = false
         if (mode === 'ditz' || mode === 'trader') {
-          const sigGreen = signalLine[j] > signalLine[j - 1]
-          const sigWasRed = j >= 2 && signalLine[j - 1] <= signalLine[j - 2]
+          // Both oscillators must be positive (matching backend logic)
+          const bothPos = shortTermXtrender[j] > 0 && longTermXtrender[j] > 0
+          const bothPosPrev = shortTermXtrender[j - 1] > 0 && longTermXtrender[j - 1] > 0
           const maCond = mode === 'trader' ? true : (!maFilterOn || closes[j] > (ma ? ma[j] : 0))
-          signalFound = sigGreen && sigWasRed && maCond
+          signalFound = bothPos && !bothPosPrev && maCond
         } else {
           const bothPos = shortTermXtrender[j] > 0 && longTermXtrender[j] > 0
           const prevNotBoth = shortTermXtrender[j - 1] <= 0 || longTermXtrender[j - 1] <= 0

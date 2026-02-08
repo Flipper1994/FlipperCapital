@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useCurrency } from '../context/CurrencyContext'
 import PortfolioChart from './PortfolioChart'
+import StockDetailOverlay from './StockDetailOverlay'
 
 function LutzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
   const [portfolio, setPortfolio] = useState(null)
@@ -15,6 +16,7 @@ function LutzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
   const [loadingCompletedTrades, setLoadingCompletedTrades] = useState(false)
   const [isLive, setIsLive] = useState(true)
   const [hasLivePositions, setHasLivePositions] = useState(false)
+  const [selectedPosition, setSelectedPosition] = useState(null)
   const { formatPrice } = useCurrency()
 
   useEffect(() => {
@@ -414,8 +416,8 @@ function LutzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                   return (
                     <div key={pos.id} className={`bg-dark-700 rounded-lg p-4 ${pos.is_live ? 'border-l-4 border-green-500' : ''}`}>
                       <div className="flex justify-between items-start mb-3">
-                        <div>
-                          <div className="font-semibold text-white flex items-center gap-2">
+                        <div className="cursor-pointer" onClick={() => setSelectedPosition({ symbol: pos.symbol, name: pos.name, mode: 'aggressive' })}>
+                          <div className="font-semibold text-white flex items-center gap-2 hover:text-orange-400">
                             {pos.symbol}
                             {pos.is_live && (
                               <span className="px-2 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded flex items-center gap-1">
@@ -490,10 +492,10 @@ function LutzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                       const gain = totalValue - totalCost
                       return (
                         <tr key={pos.id} className={`border-b border-dark-700/50 last:border-0 ${pos.is_live ? 'bg-green-500/5' : ''}`}>
-                          <td className="py-3 px-4">
+                          <td className="py-3 px-4 cursor-pointer" onClick={() => setSelectedPosition({ symbol: pos.symbol, name: pos.name, mode: 'aggressive' })}>
                             <div className="flex items-center gap-2">
                               <div>
-                                <div className="font-medium text-white flex items-center gap-2">
+                                <div className="font-medium text-white flex items-center gap-2 hover:text-orange-400">
                                   {pos.symbol}
                                   {pos.is_live && (
                                     <span className="px-2 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded flex items-center gap-1">
@@ -659,6 +661,14 @@ function LutzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
           </div>
         </div>
       </div>
+      {selectedPosition && (
+        <StockDetailOverlay
+          symbol={selectedPosition.symbol}
+          name={selectedPosition.name}
+          mode={selectedPosition.mode}
+          onClose={() => setSelectedPosition(null)}
+        />
+      )}
     </div>
   )
 }

@@ -6458,8 +6458,9 @@ func getFlipperBotSimulatedPerformance(c *gin.Context) {
 	}
 	quotes := fetchQuotes(symbols)
 
-	unrealizedPL := 0.0
-	totalInvested := 0.0
+	unrealizedGain := 0.0
+	investedInPositions := 0.0
+	currentValue := 0.0
 
 	for _, pos := range positions {
 		quote := quotes[pos.Symbol]
@@ -6467,17 +6468,18 @@ func getFlipperBotSimulatedPerformance(c *gin.Context) {
 		if currentPrice <= 0 {
 			currentPrice = pos.AvgPrice
 		}
-		totalInvested += pos.AvgPrice * pos.Quantity
-		unrealizedPL += (currentPrice - pos.AvgPrice) * pos.Quantity
+		investedInPositions += pos.AvgPrice * pos.Quantity
+		currentValue += currentPrice * pos.Quantity
+		unrealizedGain += (currentPrice - pos.AvgPrice) * pos.Quantity
 	}
 
-	unrealizedPLPct := 0.0
-	if totalInvested > 0 {
-		unrealizedPLPct = (unrealizedPL / totalInvested) * 100
+	totalReturnPct := 0.0
+	if investedInPositions > 0 {
+		totalReturnPct = (unrealizedGain / investedInPositions) * 100
 	}
 
-	overallReturn := totalProfitLoss + unrealizedPL
-	totalInvestedAll := totalInvested
+	totalGain := totalProfitLoss + unrealizedGain
+	totalInvestedAll := investedInPositions
 	for _, trade := range sellTrades {
 		if trade.ProfitLoss != nil {
 			totalInvestedAll += (trade.Price * trade.Quantity) - *trade.ProfitLoss
@@ -6485,22 +6487,25 @@ func getFlipperBotSimulatedPerformance(c *gin.Context) {
 	}
 	overallReturnPct := 0.0
 	if totalInvestedAll > 0 {
-		overallReturnPct = (overallReturn / totalInvestedAll) * 100
+		overallReturnPct = (totalGain / totalInvestedAll) * 100
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"total_trades":       len(buyTrades) + len(sellTrades),
-		"open_positions":     len(positions),
-		"closed_trades":      len(sellTrades),
-		"wins":               wins,
-		"losses":             losses,
-		"win_rate":           winRate,
-		"total_profit_loss":  totalProfitLoss,
-		"avg_return_trade":   avgReturnPerTrade,
-		"unrealized_pl":      unrealizedPL,
-		"unrealized_pl_pct":  unrealizedPLPct,
-		"overall_return":     overallReturn,
-		"overall_return_pct": overallReturnPct,
+		"total_trades":          len(buyTrades) + len(sellTrades),
+		"total_buys":            len(buyTrades),
+		"open_positions":        len(positions),
+		"closed_trades":         len(sellTrades),
+		"wins":                  wins,
+		"losses":                losses,
+		"win_rate":              winRate,
+		"realized_profit":       totalProfitLoss,
+		"avg_return_per_trade":  avgReturnPerTrade,
+		"unrealized_gain":       unrealizedGain,
+		"invested_in_positions": investedInPositions,
+		"current_value":         currentValue,
+		"total_gain":            totalGain,
+		"total_return_pct":      totalReturnPct,
+		"overall_return_pct":    overallReturnPct,
 	})
 }
 
@@ -8658,8 +8663,9 @@ func getLutzSimulatedPerformance(c *gin.Context) {
 	}
 	quotes := fetchQuotes(symbols)
 
-	unrealizedPL := 0.0
-	totalInvested := 0.0
+	unrealizedGain := 0.0
+	investedInPositions := 0.0
+	currentValue := 0.0
 
 	for _, pos := range positions {
 		quote := quotes[pos.Symbol]
@@ -8667,17 +8673,18 @@ func getLutzSimulatedPerformance(c *gin.Context) {
 		if currentPrice <= 0 {
 			currentPrice = pos.AvgPrice
 		}
-		totalInvested += pos.AvgPrice * pos.Quantity
-		unrealizedPL += (currentPrice - pos.AvgPrice) * pos.Quantity
+		investedInPositions += pos.AvgPrice * pos.Quantity
+		currentValue += currentPrice * pos.Quantity
+		unrealizedGain += (currentPrice - pos.AvgPrice) * pos.Quantity
 	}
 
-	unrealizedPLPct := 0.0
-	if totalInvested > 0 {
-		unrealizedPLPct = (unrealizedPL / totalInvested) * 100
+	totalReturnPct := 0.0
+	if investedInPositions > 0 {
+		totalReturnPct = (unrealizedGain / investedInPositions) * 100
 	}
 
-	overallReturn := totalProfitLoss + unrealizedPL
-	totalInvestedAll := totalInvested
+	totalGain := totalProfitLoss + unrealizedGain
+	totalInvestedAll := investedInPositions
 	for _, trade := range sellTrades {
 		if trade.ProfitLoss != nil {
 			totalInvestedAll += (trade.Price * trade.Quantity) - *trade.ProfitLoss
@@ -8685,22 +8692,25 @@ func getLutzSimulatedPerformance(c *gin.Context) {
 	}
 	overallReturnPct := 0.0
 	if totalInvestedAll > 0 {
-		overallReturnPct = (overallReturn / totalInvestedAll) * 100
+		overallReturnPct = (totalGain / totalInvestedAll) * 100
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"total_trades":       len(buyTrades) + len(sellTrades),
-		"open_positions":     len(positions),
-		"closed_trades":      len(sellTrades),
-		"wins":               wins,
-		"losses":             losses,
-		"win_rate":           winRate,
-		"total_profit_loss":  totalProfitLoss,
-		"avg_return_trade":   avgReturnPerTrade,
-		"unrealized_pl":      unrealizedPL,
-		"unrealized_pl_pct":  unrealizedPLPct,
-		"overall_return":     overallReturn,
-		"overall_return_pct": overallReturnPct,
+		"total_trades":          len(buyTrades) + len(sellTrades),
+		"total_buys":            len(buyTrades),
+		"open_positions":        len(positions),
+		"closed_trades":         len(sellTrades),
+		"wins":                  wins,
+		"losses":                losses,
+		"win_rate":              winRate,
+		"realized_profit":       totalProfitLoss,
+		"avg_return_per_trade":  avgReturnPerTrade,
+		"unrealized_gain":       unrealizedGain,
+		"invested_in_positions": investedInPositions,
+		"current_value":         currentValue,
+		"total_gain":            totalGain,
+		"total_return_pct":      totalReturnPct,
+		"overall_return_pct":    overallReturnPct,
 	})
 }
 
@@ -11201,9 +11211,9 @@ func getQuantSimulatedPerformance(c *gin.Context) {
 	}
 	quotes := fetchQuotes(symbols)
 
-	unrealizedPL := 0.0
-	unrealizedPLPct := 0.0
-	totalInvested := 0.0
+	unrealizedGain := 0.0
+	investedInPositions := 0.0
+	currentValue := 0.0
 
 	for _, pos := range positions {
 		quote := quotes[pos.Symbol]
@@ -11211,41 +11221,44 @@ func getQuantSimulatedPerformance(c *gin.Context) {
 		if currentPrice <= 0 {
 			currentPrice = pos.AvgPrice
 		}
-		invested := pos.AvgPrice * pos.Quantity
-		totalInvested += invested
-		unrealizedPL += (currentPrice - pos.AvgPrice) * pos.Quantity
+		investedInPositions += pos.AvgPrice * pos.Quantity
+		currentValue += currentPrice * pos.Quantity
+		unrealizedGain += (currentPrice - pos.AvgPrice) * pos.Quantity
 	}
 
-	if totalInvested > 0 {
-		unrealizedPLPct = (unrealizedPL / totalInvested) * 100
+	totalReturnPct := 0.0
+	if investedInPositions > 0 {
+		totalReturnPct = (unrealizedGain / investedInPositions) * 100
 	}
 
-	overallReturn := totalProfitLoss + unrealizedPL
-	// Dollar-gewichtete Gesamtrendite: Gesamtgewinn / Gesamtinvestiert
-	totalInvestedAll := totalInvested // offene Positionen
+	totalGain := totalProfitLoss + unrealizedGain
+	totalInvestedAll := investedInPositions
 	for _, trade := range sellTrades {
 		if trade.ProfitLoss != nil {
-			totalInvestedAll += (trade.Price * trade.Quantity) - *trade.ProfitLoss // Originalkosten geschlossener Trades
+			totalInvestedAll += (trade.Price * trade.Quantity) - *trade.ProfitLoss
 		}
 	}
 	overallReturnPct := 0.0
 	if totalInvestedAll > 0 {
-		overallReturnPct = (overallReturn / totalInvestedAll) * 100
+		overallReturnPct = (totalGain / totalInvestedAll) * 100
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"total_trades":       len(buyTrades) + len(sellTrades),
-		"open_positions":     len(positions),
-		"closed_trades":      len(sellTrades),
-		"wins":               wins,
-		"losses":             losses,
-		"win_rate":           winRate,
-		"total_profit_loss":  totalProfitLoss,
-		"avg_return_trade":   avgReturnPerTrade,
-		"unrealized_pl":      unrealizedPL,
-		"unrealized_pl_pct":  unrealizedPLPct,
-		"overall_return":     overallReturn,
-		"overall_return_pct": overallReturnPct,
+		"total_trades":          len(buyTrades) + len(sellTrades),
+		"total_buys":            len(buyTrades),
+		"open_positions":        len(positions),
+		"closed_trades":         len(sellTrades),
+		"wins":                  wins,
+		"losses":                losses,
+		"win_rate":              winRate,
+		"realized_profit":       totalProfitLoss,
+		"avg_return_per_trade":  avgReturnPerTrade,
+		"unrealized_gain":       unrealizedGain,
+		"invested_in_positions": investedInPositions,
+		"current_value":         currentValue,
+		"total_gain":            totalGain,
+		"total_return_pct":      totalReturnPct,
+		"overall_return_pct":    overallReturnPct,
 	})
 }
 
@@ -14755,9 +14768,9 @@ func getDitzSimulatedPerformance(c *gin.Context) {
 	}
 	quotes := fetchQuotes(symbols)
 
-	unrealizedPL := 0.0
-	unrealizedPLPct := 0.0
-	totalInvested := 0.0
+	unrealizedGain := 0.0
+	investedInPositions := 0.0
+	currentValue := 0.0
 
 	for _, pos := range positions {
 		quote := quotes[pos.Symbol]
@@ -14765,41 +14778,44 @@ func getDitzSimulatedPerformance(c *gin.Context) {
 		if currentPrice <= 0 {
 			currentPrice = pos.AvgPrice
 		}
-		invested := pos.AvgPrice * pos.Quantity
-		totalInvested += invested
-		unrealizedPL += (currentPrice - pos.AvgPrice) * pos.Quantity
+		investedInPositions += pos.AvgPrice * pos.Quantity
+		currentValue += currentPrice * pos.Quantity
+		unrealizedGain += (currentPrice - pos.AvgPrice) * pos.Quantity
 	}
 
-	if totalInvested > 0 {
-		unrealizedPLPct = (unrealizedPL / totalInvested) * 100
+	totalReturnPct := 0.0
+	if investedInPositions > 0 {
+		totalReturnPct = (unrealizedGain / investedInPositions) * 100
 	}
 
-	overallReturn := totalProfitLoss + unrealizedPL
-	// Dollar-gewichtete Gesamtrendite: Gesamtgewinn / Gesamtinvestiert
-	totalInvestedAll := totalInvested // offene Positionen
+	totalGain := totalProfitLoss + unrealizedGain
+	totalInvestedAll := investedInPositions
 	for _, trade := range sellTrades {
 		if trade.ProfitLoss != nil {
-			totalInvestedAll += (trade.Price * trade.Quantity) - *trade.ProfitLoss // Originalkosten geschlossener Trades
+			totalInvestedAll += (trade.Price * trade.Quantity) - *trade.ProfitLoss
 		}
 	}
 	overallReturnPct := 0.0
 	if totalInvestedAll > 0 {
-		overallReturnPct = (overallReturn / totalInvestedAll) * 100
+		overallReturnPct = (totalGain / totalInvestedAll) * 100
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"total_trades":       len(buyTrades) + len(sellTrades),
-		"open_positions":     len(positions),
-		"closed_trades":      len(sellTrades),
-		"wins":               wins,
-		"losses":             losses,
-		"win_rate":           winRate,
-		"total_profit_loss":  totalProfitLoss,
-		"avg_return_trade":   avgReturnPerTrade,
-		"unrealized_pl":      unrealizedPL,
-		"unrealized_pl_pct":  unrealizedPLPct,
-		"overall_return":     overallReturn,
-		"overall_return_pct": overallReturnPct,
+		"total_trades":          len(buyTrades) + len(sellTrades),
+		"total_buys":            len(buyTrades),
+		"open_positions":        len(positions),
+		"closed_trades":         len(sellTrades),
+		"wins":                  wins,
+		"losses":                losses,
+		"win_rate":              winRate,
+		"realized_profit":       totalProfitLoss,
+		"avg_return_per_trade":  avgReturnPerTrade,
+		"unrealized_gain":       unrealizedGain,
+		"invested_in_positions": investedInPositions,
+		"current_value":         currentValue,
+		"total_gain":            totalGain,
+		"total_return_pct":      totalReturnPct,
+		"overall_return_pct":    overallReturnPct,
 	})
 }
 
@@ -16778,9 +16794,9 @@ func getTraderSimulatedPerformance(c *gin.Context) {
 	}
 	quotes := fetchQuotes(symbols)
 
-	unrealizedPL := 0.0
-	unrealizedPLPct := 0.0
-	totalInvested := 0.0
+	unrealizedGain := 0.0
+	investedInPositions := 0.0
+	currentValue := 0.0
 
 	for _, pos := range positions {
 		quote := quotes[pos.Symbol]
@@ -16788,41 +16804,44 @@ func getTraderSimulatedPerformance(c *gin.Context) {
 		if currentPrice <= 0 {
 			currentPrice = pos.AvgPrice
 		}
-		invested := pos.AvgPrice * pos.Quantity
-		totalInvested += invested
-		unrealizedPL += (currentPrice - pos.AvgPrice) * pos.Quantity
+		investedInPositions += pos.AvgPrice * pos.Quantity
+		currentValue += currentPrice * pos.Quantity
+		unrealizedGain += (currentPrice - pos.AvgPrice) * pos.Quantity
 	}
 
-	if totalInvested > 0 {
-		unrealizedPLPct = (unrealizedPL / totalInvested) * 100
+	totalReturnPct := 0.0
+	if investedInPositions > 0 {
+		totalReturnPct = (unrealizedGain / investedInPositions) * 100
 	}
 
-	overallReturn := totalProfitLoss + unrealizedPL
-	// Dollar-gewichtete Gesamtrendite: Gesamtgewinn / Gesamtinvestiert
-	totalInvestedAll := totalInvested // offene Positionen
+	totalGain := totalProfitLoss + unrealizedGain
+	totalInvestedAll := investedInPositions
 	for _, trade := range sellTrades {
 		if trade.ProfitLoss != nil {
-			totalInvestedAll += (trade.Price * trade.Quantity) - *trade.ProfitLoss // Originalkosten geschlossener Trades
+			totalInvestedAll += (trade.Price * trade.Quantity) - *trade.ProfitLoss
 		}
 	}
 	overallReturnPct := 0.0
 	if totalInvestedAll > 0 {
-		overallReturnPct = (overallReturn / totalInvestedAll) * 100
+		overallReturnPct = (totalGain / totalInvestedAll) * 100
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"total_trades":       len(buyTrades) + len(sellTrades),
-		"open_positions":     len(positions),
-		"closed_trades":      len(sellTrades),
-		"wins":               wins,
-		"losses":             losses,
-		"win_rate":           winRate,
-		"total_profit_loss":  totalProfitLoss,
-		"avg_return_trade":   avgReturnPerTrade,
-		"unrealized_pl":      unrealizedPL,
-		"unrealized_pl_pct":  unrealizedPLPct,
-		"overall_return":     overallReturn,
-		"overall_return_pct": overallReturnPct,
+		"total_trades":          len(buyTrades) + len(sellTrades),
+		"total_buys":            len(buyTrades),
+		"open_positions":        len(positions),
+		"closed_trades":         len(sellTrades),
+		"wins":                  wins,
+		"losses":                losses,
+		"win_rate":              winRate,
+		"realized_profit":       totalProfitLoss,
+		"avg_return_per_trade":  avgReturnPerTrade,
+		"unrealized_gain":       unrealizedGain,
+		"invested_in_positions": investedInPositions,
+		"current_value":         currentValue,
+		"total_gain":            totalGain,
+		"total_return_pct":      totalReturnPct,
+		"overall_return_pct":    overallReturnPct,
 	})
 }
 
