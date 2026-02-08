@@ -1,0 +1,61 @@
+# Dependencies (grösster Token-Sparer)
+node_modules/
+frontend/node_modules/
+backend/vendor/
+
+# Build-Artefakte
+dist/
+build/
+frontend/dist/
+
+# Environment / Secrets
+.env
+.env.*
+.env.local
+.env.prod
+certbot/
+
+# Datenbank-Dateien (binär, nicht lesbar)
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Go Binaries
+backend/main
+*.exe
+
+# Docker Volumes
+docker-data/
+
+# Temp
+tmp/
+temp/
+
+# Bilder / Assets (Token-Verschwendung)
+vergleichsbilder/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.ico
+
+# Lock-Dateien (gross, selten relevant)
+package-lock.json
+go.sum
+
+# Import-Dateien
+sp500_import.json

@@ -242,7 +242,7 @@ export function clearTraderConfigCache() {
   traderConfigPromise = null
 }
 
-export function calculateBXtrender(ohlcv, isAggressive = false, config = null) {
+export function calculateBXtrender(ohlcv, isAggressive = false, config = null, nextOpen = null) {
   // Use provided config or defaults
   const cfg = config || DEFAULT_CONFIG
   const shortL1 = cfg.shortL1 || cfg.short_l1 || 5
@@ -353,7 +353,7 @@ export function calculateBXtrender(ohlcv, isAggressive = false, config = null) {
       // Aggressive BUY: First or second light red bar, OR red->green transition
       const justTurnedGreen = isBullish && !wasBullish
       if (!inPosition && opens[i] > 0) {
-        if ((isLightRed && consecutiveLightRed <= 2) || justTurnedGreen) {
+        if ((isLightRed && consecutiveLightRed === 1) || justTurnedGreen) {
           buySignal = true
         }
       }
@@ -380,11 +380,10 @@ export function calculateBXtrender(ohlcv, isAggressive = false, config = null) {
 
     if (buySignal) {
       // IMPORTANT: Signal is evaluated at month end, so trade happens at START of NEXT month
-      // Check if next month data exists
       if (i + 1 < closes.length && opens[i + 1] > 0) {
         inPosition = true
-        entryPrice = opens[i + 1]  // Open price of NEXT month
-        entryDate = times[i + 1]   // First trading day of NEXT month
+        entryPrice = opens[i + 1]
+        entryDate = times[i + 1]
 
         markers.push({
           time: times[i + 1],
@@ -393,21 +392,32 @@ export function calculateBXtrender(ohlcv, isAggressive = false, config = null) {
           shape: 'arrowUp',
           text: `BUY $${opens[i + 1].toFixed(2)}`
         })
+      } else if (nextOpen && nextOpen.open > 0) {
+        // Last candle signal — use next month's open from current (stripped) data
+        inPosition = true
+        entryPrice = nextOpen.open
+        entryDate = nextOpen.time
+
+        markers.push({
+          time: nextOpen.time,
+          position: 'belowBar',
+          color: '#00FF00',
+          shape: 'arrowUp',
+          text: `BUY $${nextOpen.open.toFixed(2)}`
+        })
       }
-      // If no next month data, skip this signal (can't trade yet)
     }
 
     if (sellSignal) {
       // IMPORTANT: Signal is evaluated at month end, so trade happens at START of NEXT month
-      // Check if next month data exists
       if (i + 1 < closes.length && opens[i + 1] > 0) {
-        const exitPrice = opens[i + 1]  // Open price of NEXT month
+        const exitPrice = opens[i + 1]
         const returnPct = ((exitPrice - entryPrice) / entryPrice) * 100
 
         trades.push({
           entryDate: entryDate,
           entryPrice: entryPrice,
-          exitDate: times[i + 1],   // First trading day of NEXT month
+          exitDate: times[i + 1],
           exitPrice: exitPrice,
           returnPct: returnPct,
           isOpen: false
@@ -425,8 +435,33 @@ export function calculateBXtrender(ohlcv, isAggressive = false, config = null) {
         inPosition = false
         entryPrice = 0
         entryDate = null
+      } else if (nextOpen && nextOpen.open > 0 && entryPrice > 0) {
+        // Last candle signal — sell at next month's open
+        const exitPrice = nextOpen.open
+        const returnPct = ((exitPrice - entryPrice) / entryPrice) * 100
+
+        trades.push({
+          entryDate: entryDate,
+          entryPrice: entryPrice,
+          exitDate: nextOpen.time,
+          exitPrice: exitPrice,
+          returnPct: returnPct,
+          isOpen: false
+        })
+
+        const returnText = returnPct >= 0 ? `+${returnPct.toFixed(1)}%` : `${returnPct.toFixed(1)}%`
+        markers.push({
+          time: nextOpen.time,
+          position: 'aboveBar',
+          color: '#FF0000',
+          shape: 'arrowDown',
+          text: `SELL $${exitPrice.toFixed(2)} ${returnText}`
+        })
+
+        inPosition = false
+        entryPrice = 0
+        entryDate = null
       }
-      // If no next month data, position stays open
     }
 
     shortData.push({
@@ -451,7 +486,8 @@ export function calculateBXtrender(ohlcv, isAggressive = false, config = null) {
   // If still in position, add open trade info
   if (inPosition && entryPrice > 0) {
     const lastIdx = closes.length - 1
-    const currentPrice = closes[lastIdx]
+    // Use nextOpen's close (actual current price) if entry was via nextOpen
+    const currentPrice = (nextOpen && nextOpen.close > 0) ? nextOpen.close : closes[lastIdx]
     const unrealizedReturn = ((currentPrice - entryPrice) / entryPrice) * 100
 
     trades.push({
@@ -473,7 +509,7 @@ export function calculateBXtrender(ohlcv, isAggressive = false, config = null) {
  * Entry: Both short-term AND long-term indicators positive (with optional MA filter)
  * Exit: Either short-term OR long-term indicator turns negative
  */
-export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant') {
+export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', nextOpen = null) {
   const cfg = config || DEFAULT_QUANT_CONFIG
   const shortL1 = cfg.shortL1 || cfg.short_l1 || 5
   const shortL2 = cfg.shortL2 || cfg.short_l2 || 20
@@ -615,6 +651,19 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant') {
           shape: 'arrowUp',
           text: `BUY $${opens[i + 1].toFixed(2)}`
         })
+      } else if (nextOpen && nextOpen.open > 0) {
+        // Last candle signal — use next month's open from current (stripped) data
+        inPosition = true
+        entryPrice = nextOpen.open
+        entryDate = nextOpen.time
+
+        markers.push({
+          time: nextOpen.time,
+          position: 'belowBar',
+          color: '#00FF00',
+          shape: 'arrowUp',
+          text: `BUY $${nextOpen.open.toFixed(2)}`
+        })
       }
     }
 
@@ -636,6 +685,32 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant') {
         const returnText = returnPct >= 0 ? `+${returnPct.toFixed(1)}%` : `${returnPct.toFixed(1)}%`
         markers.push({
           time: times[i + 1],
+          position: 'aboveBar',
+          color: '#FF0000',
+          shape: 'arrowDown',
+          text: `SELL $${exitPrice.toFixed(2)} ${returnText}`
+        })
+
+        inPosition = false
+        entryPrice = 0
+        entryDate = null
+      } else if (nextOpen && nextOpen.open > 0) {
+        // Last candle signal — sell at next month's open
+        const exitPrice = nextOpen.open
+        const returnPct = ((exitPrice - entryPrice) / entryPrice) * 100
+
+        trades.push({
+          entryDate: entryDate,
+          entryPrice: entryPrice,
+          exitDate: nextOpen.time,
+          exitPrice: exitPrice,
+          returnPct: returnPct,
+          isOpen: false
+        })
+
+        const returnText = returnPct >= 0 ? `+${returnPct.toFixed(1)}%` : `${returnPct.toFixed(1)}%`
+        markers.push({
+          time: nextOpen.time,
           position: 'aboveBar',
           color: '#FF0000',
           shape: 'arrowDown',
@@ -670,7 +745,7 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant') {
   // If still in position, add open trade info
   if (inPosition && entryPrice > 0) {
     const lastIdx = closes.length - 1
-    const currentPrice = closes[lastIdx]
+    const currentPrice = (nextOpen && nextOpen.close > 0) ? nextOpen.close : closes[lastIdx]
     const unrealizedReturn = ((currentPrice - entryPrice) / entryPrice) * 100
 
     trades.push({
@@ -714,7 +789,7 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant') {
         }
       }
 
-      let entryIdx = lastIdx
+      let entryIdx = -1
       for (let j = searchStart; j < lastIdx; j++) {
         let signalFound = false
         if (mode === 'ditz' || mode === 'trader') {
@@ -734,26 +809,52 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant') {
         }
       }
 
-      const actualEntryPrice = opens[entryIdx] > 0 ? opens[entryIdx] : closes[entryIdx]
-      const unrealizedReturn = actualEntryPrice > 0 ? ((lastPrice - actualEntryPrice) / actualEntryPrice) * 100 : 0
+      if (entryIdx >= 0) {
+        // Signal found at historical candle — entry at next month's open (correct)
+        const actualEntryPrice = opens[entryIdx] > 0 ? opens[entryIdx] : closes[entryIdx]
+        const currentP = (nextOpen && nextOpen.close > 0) ? nextOpen.close : lastPrice
+        const unrealizedReturn = actualEntryPrice > 0 ? ((currentP - actualEntryPrice) / actualEntryPrice) * 100 : 0
 
-      trades.push({
-        entryDate: times[entryIdx],
-        entryPrice: actualEntryPrice,
-        exitDate: null,
-        exitPrice: null,
-        currentPrice: lastPrice,
-        returnPct: unrealizedReturn,
-        isOpen: true
-      })
+        trades.push({
+          entryDate: times[entryIdx],
+          entryPrice: actualEntryPrice,
+          exitDate: null,
+          exitPrice: null,
+          currentPrice: currentP,
+          returnPct: unrealizedReturn,
+          isOpen: true
+        })
 
-      markers.push({
-        time: times[entryIdx],
-        position: 'belowBar',
-        color: '#00FF00',
-        shape: 'arrowUp',
-        text: `BUY $${actualEntryPrice.toFixed(2)}`
-      })
+        markers.push({
+          time: times[entryIdx],
+          position: 'belowBar',
+          color: '#00FF00',
+          shape: 'arrowUp',
+          text: `BUY $${actualEntryPrice.toFixed(2)}`
+        })
+      } else if (nextOpen && nextOpen.open > 0) {
+        // Signal first appeared on last candle — entry at next month's open
+        const currentP = nextOpen.close > 0 ? nextOpen.close : lastPrice
+        const unrealizedReturn = nextOpen.open > 0 ? ((currentP - nextOpen.open) / nextOpen.open) * 100 : 0
+
+        trades.push({
+          entryDate: nextOpen.time,
+          entryPrice: nextOpen.open,
+          exitDate: null,
+          exitPrice: null,
+          currentPrice: currentP,
+          returnPct: unrealizedReturn,
+          isOpen: true
+        })
+
+        markers.push({
+          time: nextOpen.time,
+          position: 'belowBar',
+          color: '#00FF00',
+          shape: 'arrowUp',
+          text: `BUY $${nextOpen.open.toFixed(2)}`
+        })
+      }
     }
   }
 
@@ -838,114 +939,46 @@ export function calculateMetrics(trades) {
 export function calculateSignal(shortData, isAggressive = false, trades = []) {
   if (shortData.length < 4) return { signal: 'WAIT', bars: 0 }
 
-  // Use last bar = last completed month (current incomplete month was already removed by processStock)
-  const prevMonthIdx = shortData.length - 1
-  const prevMonthValue = shortData[prevMonthIdx].value
-  const prevPrevValue = shortData[prevMonthIdx - 1].value
-  const isPositive = prevMonthValue > 0
+  // Unified HOLD/WAIT logic based on trade history (all modes)
+  const hasOpenPosition = trades.some(t => t.isOpen)
 
-  // Count consecutive bars of the same sign from the previous month backwards
-  let consecutiveBars = 1
-  for (let i = prevMonthIdx - 1; i >= 0; i--) {
-    const val = shortData[i].value
-    if ((val > 0) === isPositive) {
-      consecutiveBars++
-    } else {
-      break
-    }
-  }
-
-  if (isAggressive) {
-    // AGGRESSIVE MODE SIGNALS (based on trade history):
-    // Signal is based on PREVIOUS MONTH (last completed month)
-    // BUY: BUY triggered last/prev month AND open position exists
-    // SELL: SELL triggered last/prev month AND no open position
-    // HOLD: No recent BUY but open position exists
-    // WAIT: No open position and no recent SELL
-
-    const now = new Date()
-    // We look at last month and month before (since current month is ignored)
-    const lastMonth = now.getMonth() === 0 ? 11 : now.getMonth() - 1
-    const lastMonthYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear()
-    const prevMonth = lastMonth === 0 ? 11 : lastMonth - 1
-    const prevMonthYear = lastMonth === 0 ? lastMonthYear - 1 : lastMonthYear
-
-    // Check for open position
-    const hasOpenPosition = trades.some(t => t.isOpen)
-
-    // Check for recent BUY/SELL (last month or month before)
-    let recentBuy = false
-    let recentSell = false
-    let buyBars = 0
-    let sellBars = 0
-
-    for (const trade of trades) {
-      if (trade.entryDate) {
-        const entryDate = new Date(trade.entryDate * 1000)
-        const entryMonth = entryDate.getMonth()
-        const entryYear = entryDate.getFullYear()
-
-        const isLastMonth = entryMonth === lastMonth && entryYear === lastMonthYear
-        const isPrevMonth = entryMonth === prevMonth && entryYear === prevMonthYear
-
-        if ((isLastMonth || isPrevMonth) && trade.isOpen) {
-          recentBuy = true
-          buyBars = isLastMonth ? 1 : 2
+  if (hasOpenPosition) {
+    // Find the most recent BUY entry and count bars since then
+    const openTrade = trades.find(t => t.isOpen)
+    if (openTrade && openTrade.entryDate) {
+      // Count bars since entry
+      let barsSinceBuy = 0
+      for (let i = shortData.length - 1; i >= 0; i--) {
+        if (shortData[i].time === openTrade.entryDate) {
+          barsSinceBuy = shortData.length - 1 - i
+          break
         }
       }
-
-      if (trade.exitDate && !trade.isOpen) {
-        const exitDate = new Date(trade.exitDate * 1000)
-        const exitMonth = exitDate.getMonth()
-        const exitYear = exitDate.getFullYear()
-
-        const isLastMonth = exitMonth === lastMonth && exitYear === lastMonthYear
-        const isPrevMonth = exitMonth === prevMonth && exitYear === prevMonthYear
-
-        if (isLastMonth || isPrevMonth) {
-          recentSell = true
-          sellBars = isLastMonth ? 1 : 2
-        }
+      if (barsSinceBuy <= 1) {
+        return { signal: 'BUY', bars: barsSinceBuy }
       }
+      return { signal: 'HOLD', bars: barsSinceBuy }
     }
-
-    // BUY: Recent buy with open position
-    if (recentBuy && hasOpenPosition) {
-      return { signal: 'BUY', bars: buyBars }
-    }
-
-    // SELL: Recent sell and no open position
-    if (recentSell && !hasOpenPosition) {
-      return { signal: 'SELL', bars: sellBars }
-    }
-
-    // HOLD: Open position but no recent buy
-    if (hasOpenPosition) {
-      return { signal: 'HOLD', bars: consecutiveBars }
-    }
-
-    // WAIT: No open position and no recent sell
-    return { signal: 'WAIT', bars: consecutiveBars }
+    return { signal: 'HOLD', bars: 1 }
   } else {
-    // DEFENSIVE MODE SIGNALS (original logic):
-    // BUY: First 1-2 green bars
-    // HOLD: Green continuation (3+ bars)
-    // SELL: First 1-2 red bars
-    // WAIT: Red continuation (3+ bars)
-
-    if (isPositive) {
-      if (consecutiveBars <= 2) {
-        return { signal: 'BUY', bars: consecutiveBars }
-      } else {
-        return { signal: 'HOLD', bars: consecutiveBars }
-      }
-    } else {
-      if (consecutiveBars <= 2) {
-        return { signal: 'SELL', bars: consecutiveBars }
-      } else {
-        return { signal: 'WAIT', bars: consecutiveBars }
+    // No open position — find last SELL
+    let barsSinceSell = 0
+    let foundSell = false
+    const closedTrades = trades.filter(t => !t.isOpen && t.exitDate)
+    if (closedTrades.length > 0) {
+      const lastSell = closedTrades[closedTrades.length - 1]
+      for (let i = shortData.length - 1; i >= 0; i--) {
+        if (shortData[i].time === lastSell.exitDate) {
+          barsSinceSell = shortData.length - 1 - i
+          foundSell = true
+          break
+        }
       }
     }
+    if (foundSell && barsSinceSell <= 1) {
+      return { signal: 'SELL', bars: barsSinceSell }
+    }
+    return { signal: 'WAIT', bars: barsSinceSell }
   }
 }
 
@@ -1020,37 +1053,47 @@ export async function saveQuantPerformanceToBackend(symbol, name, metrics, trade
   }
 }
 
-// Calculate signal for Ditz mode based on trade history
-// BUY  = a BUY trade was triggered this month (color change red→green)
-// SELL = a SELL trade was triggered this month (color change green→red)
-// HOLD = open position exists but BUY was 1+ months ago
-// WAIT = no open position and no recent SELL
+// Calculate signal for Ditz mode — unified HOLD/WAIT based on trade history
 export function calculateDitzSignal(signalData, trades) {
   if (!signalData || signalData.length < 3) return { signal: 'WAIT', bars: 0 }
 
   const hasOpenPosition = trades && trades.some(t => t.isOpen)
-  const lastIdx = signalData.length - 1
-  const lastBarTime = signalData[lastIdx].time
 
-  // 1. Pending signal: line changed color at the last bar (trade can't execute yet = actionable NOW)
-  const lineIsGreen = signalData[lastIdx].value > signalData[lastIdx - 1].value
-  const lineWasGreen = signalData[lastIdx - 1].value > signalData[lastIdx - 2].value
-
-  if (lineIsGreen !== lineWasGreen) {
-    return lineIsGreen ? { signal: 'BUY', bars: 1 } : { signal: 'SELL', bars: 1 }
-  }
-
-  // 2. Trade executed at the last bar (signal fired at bar before)
-  if (trades) {
-    for (const trade of trades) {
-      if (trade.entryDate === lastBarTime) return { signal: 'BUY', bars: 1 }
-      if (trade.exitDate === lastBarTime) return { signal: 'SELL', bars: 1 }
+  if (hasOpenPosition) {
+    const openTrade = trades.find(t => t.isOpen)
+    if (openTrade && openTrade.entryDate) {
+      let barsSinceBuy = 0
+      for (let i = signalData.length - 1; i >= 0; i--) {
+        if (signalData[i].time === openTrade.entryDate) {
+          barsSinceBuy = signalData.length - 1 - i
+          break
+        }
+      }
+      if (barsSinceBuy <= 1) {
+        return { signal: 'BUY', bars: barsSinceBuy }
+      }
+      return { signal: 'HOLD', bars: barsSinceBuy }
     }
+    return { signal: 'HOLD', bars: 1 }
+  } else {
+    let barsSinceSell = 0
+    let foundSell = false
+    const closedTrades = trades ? trades.filter(t => !t.isOpen && t.exitDate) : []
+    if (closedTrades.length > 0) {
+      const lastSell = closedTrades[closedTrades.length - 1]
+      for (let i = signalData.length - 1; i >= 0; i--) {
+        if (signalData[i].time === lastSell.exitDate) {
+          barsSinceSell = signalData.length - 1 - i
+          foundSell = true
+          break
+        }
+      }
+    }
+    if (foundSell && barsSinceSell <= 1) {
+      return { signal: 'SELL', bars: barsSinceSell }
+    }
+    return { signal: 'WAIT', bars: barsSinceSell }
   }
-
-  // 3. No recent signal change
-  if (hasOpenPosition) return { signal: 'HOLD', bars: 1 }
-  return { signal: 'WAIT', bars: 0 }
 }
 
 // Save Ditz mode performance data to backend
@@ -1126,54 +1169,48 @@ export async function saveTraderPerformanceToBackend(symbol, name, metrics, trad
   }
 }
 
-// Calculate signal for Quant mode (based on both indicators alignment)
+// Calculate signal for Quant mode — unified HOLD/WAIT based on trade history
 function calculateQuantSignal(shortData, longData, trades) {
   if (!shortData || shortData.length < 2 || !longData || longData.length < 2) {
     return { signal: 'WAIT', bars: 0 }
   }
 
-  // Use second-to-last bar (previous month = last completed)
-  const idx = shortData.length - 2
-  const shortVal = shortData[idx].value
-  const longVal = longData[idx].value
-
-  // Check if we have an open position
   const hasOpenPosition = trades && trades.some(t => t.isOpen)
 
-  // Count consecutive aligned bars
-  let consecutiveBars = 1
-  const bothPositive = shortVal > 0 && longVal > 0
-  const bothNegative = shortVal < 0 && longVal < 0
-
-  for (let i = idx - 1; i >= 0; i--) {
-    const sv = shortData[i].value
-    const lv = longData[i].value
-    const wasPositive = sv > 0 && lv > 0
-    const wasNegative = sv < 0 && lv < 0
-
-    if ((bothPositive && wasPositive) || (bothNegative && wasNegative)) {
-      consecutiveBars++
-    } else {
-      break
+  if (hasOpenPosition) {
+    const openTrade = trades.find(t => t.isOpen)
+    if (openTrade && openTrade.entryDate) {
+      let barsSinceBuy = 0
+      for (let i = shortData.length - 1; i >= 0; i--) {
+        if (shortData[i].time === openTrade.entryDate) {
+          barsSinceBuy = shortData.length - 1 - i
+          break
+        }
+      }
+      if (barsSinceBuy <= 1) {
+        return { signal: 'BUY', bars: barsSinceBuy }
+      }
+      return { signal: 'HOLD', bars: barsSinceBuy }
     }
-  }
-
-  if (bothPositive) {
-    // Both indicators positive - BUY for first 2 bars, then HOLD
-    return consecutiveBars <= 2
-      ? { signal: 'BUY', bars: consecutiveBars }
-      : { signal: 'HOLD', bars: consecutiveBars }
-  } else if (bothNegative) {
-    // Both indicators negative
-    return consecutiveBars <= 2
-      ? { signal: 'SELL', bars: consecutiveBars }
-      : { signal: 'WAIT', bars: consecutiveBars }
+    return { signal: 'HOLD', bars: 1 }
   } else {
-    // Mixed signals - potential exit
-    if (hasOpenPosition) {
-      return { signal: 'SELL', bars: 1 }
+    let barsSinceSell = 0
+    let foundSell = false
+    const closedTrades = trades ? trades.filter(t => !t.isOpen && t.exitDate) : []
+    if (closedTrades.length > 0) {
+      const lastSell = closedTrades[closedTrades.length - 1]
+      for (let i = shortData.length - 1; i >= 0; i--) {
+        if (shortData[i].time === lastSell.exitDate) {
+          barsSinceSell = shortData.length - 1 - i
+          foundSell = true
+          break
+        }
+      }
     }
-    return { signal: 'WAIT', bars: 1 }
+    if (foundSell && barsSinceSell <= 1) {
+      return { signal: 'SELL', bars: barsSinceSell }
+    }
+    return { signal: 'WAIT', bars: barsSinceSell }
   }
 }
 
@@ -1197,10 +1234,10 @@ export async function fetchHistoricalData(symbol) {
 // Fetch market cap for a single stock
 export async function fetchMarketCap(symbol) {
   try {
-    const res = await fetch(`/api/quote/${symbol}`)
+    const res = await fetch(`/api/test-marketcap/${symbol}`)
     if (!res.ok) return 0
     const data = await res.json()
-    return data.market_cap || 0
+    return data.market_cap_raw || 0
   } catch {
     return 0
   }
@@ -1227,37 +1264,44 @@ export async function processStock(symbol, name) {
     const currentPrice = data[data.length - 1].close
 
     // Nur abgeschlossene Monatskerzen verwenden (aktuellen unvollständigen Monat entfernen)
-    let monthlyData = data
+    // Yahoo liefert manchmal mehrere Datenpunkte für den aktuellen Monat
     const now = new Date()
-    if (monthlyData.length > 0) {
-      const lastTime = new Date(monthlyData[monthlyData.length - 1].time * 1000)
-      if (lastTime.getUTCFullYear() === now.getUTCFullYear() && lastTime.getUTCMonth() === now.getUTCMonth()) {
-        monthlyData = monthlyData.slice(0, -1)
-      }
-    }
+    let monthlyData = data.filter(d => {
+      const t = new Date(d.time * 1000)
+      return !(t.getUTCFullYear() === now.getUTCFullYear() && t.getUTCMonth() === now.getUTCMonth())
+    })
+
+    // Extract next month's open from stripped current-month data for signal execution
+    const strippedCandles = data.filter(d => {
+      const t = new Date(d.time * 1000)
+      return t.getUTCFullYear() === now.getUTCFullYear() && t.getUTCMonth() === now.getUTCMonth()
+    })
+    const nextOpen = strippedCandles.length > 0
+      ? { time: strippedCandles[0].time, open: strippedCandles[0].open, close: strippedCandles[strippedCandles.length - 1].close }
+      : null
 
     // Calculate and save defensive mode
-    const defensiveResult = calculateBXtrender(monthlyData, false, configData.defensive)
+    const defensiveResult = calculateBXtrender(monthlyData, false, configData.defensive, nextOpen)
     const defensiveMetrics = calculateMetrics(defensiveResult.trades)
     await savePerformanceToBackend(symbol, name, defensiveMetrics, defensiveResult.trades, defensiveResult.short, currentPrice, false, marketCap)
 
     // Calculate and save aggressive mode
-    const aggressiveResult = calculateBXtrender(monthlyData, true, configData.aggressive)
+    const aggressiveResult = calculateBXtrender(monthlyData, true, configData.aggressive, nextOpen)
     const aggressiveMetrics = calculateMetrics(aggressiveResult.trades)
     await savePerformanceToBackend(symbol, name, aggressiveMetrics, aggressiveResult.trades, aggressiveResult.short, currentPrice, true, marketCap)
 
     // Calculate and save quant mode
-    const quantResult = calculateBXtrenderQuant(monthlyData, quantConfig)
+    const quantResult = calculateBXtrenderQuant(monthlyData, quantConfig, 'quant', nextOpen)
     const quantMetrics = calculateMetrics(quantResult.trades)
     await saveQuantPerformanceToBackend(symbol, name, quantMetrics, quantResult.trades, quantResult.short, quantResult.long, currentPrice, marketCap)
 
     // Calculate and save ditz mode
-    const ditzResult = calculateBXtrenderQuant(monthlyData, ditzConfig, 'ditz')
+    const ditzResult = calculateBXtrenderQuant(monthlyData, ditzConfig, 'ditz', nextOpen)
     const ditzMetrics = calculateMetrics(ditzResult.trades)
     await saveDitzPerformanceToBackend(symbol, name, ditzMetrics, ditzResult.trades, ditzResult.signal, currentPrice, marketCap)
 
     // Calculate and save trader mode
-    const traderResult = calculateBXtrenderQuant(monthlyData, traderConfig, 'trader')
+    const traderResult = calculateBXtrenderQuant(monthlyData, traderConfig, 'trader', nextOpen)
     const traderMetrics = calculateMetrics(traderResult.trades)
     await saveTraderPerformanceToBackend(symbol, name, traderMetrics, traderResult.trades, traderResult.signal, currentPrice, marketCap)
 

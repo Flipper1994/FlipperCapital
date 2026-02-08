@@ -448,6 +448,16 @@ function DitzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                             {gain >= 0 ? '+' : ''}{formatPrice(gain)}
                           </div>
                         </div>
+                        {pos.stop_loss_price > 0 && (
+                          <div>
+                            <div className="text-xs text-gray-500">SL</div>
+                            <div className={`font-medium text-sm ${
+                              pos.current_price > 0 && ((pos.current_price - pos.stop_loss_price) / pos.current_price * 100) > 10
+                                ? 'text-green-400' : ((pos.current_price - pos.stop_loss_price) / pos.current_price * 100) > 5
+                                  ? 'text-orange-400' : 'text-red-400'
+                            }`}>{formatPrice(pos.stop_loss_price)}</div>
+                          </div>
+                        )}
                       </div>
                       {pos.buy_date && (
                         <div className="mt-2 pt-2 border-t border-dark-600 text-xs text-gray-500">
@@ -469,6 +479,7 @@ function DitzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                       <th className="pt-4 pb-3 px-4">Anzahl</th>
                       <th className="pt-4 pb-3 px-4">Wert</th>
                       <th className="pt-4 pb-3 px-4">Rendite</th>
+                      <th className="pt-4 pb-3 px-4">SL</th>
                       <th className="pt-4 pb-3 px-4">Kaufdatum</th>
                     </tr>
                   </thead>
@@ -508,6 +519,18 @@ function DitzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                             <div className={`text-xs ${gain >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                               {gain >= 0 ? '+' : ''}{formatPrice(gain)}
                             </div>
+                          </td>
+                          <td className="py-3 px-4">
+                            {pos.stop_loss_price > 0 ? (
+                              <div>
+                                <span className={`font-medium ${
+                                  pos.current_price > 0 && ((pos.current_price - pos.stop_loss_price) / pos.current_price * 100) > 10
+                                    ? 'text-green-400' : ((pos.current_price - pos.stop_loss_price) / pos.current_price * 100) > 5
+                                      ? 'text-orange-400' : 'text-red-400'
+                                }`}>{formatPrice(pos.stop_loss_price)}</span>
+                                <div className="text-[10px] text-gray-500">{pos.stop_loss_percent ? `${pos.stop_loss_percent}%` : 'default'} {pos.stop_loss_type || 'trailing'}</div>
+                              </div>
+                            ) : <span className="text-gray-600">-</span>}
                           </td>
                           <td className="py-3 px-4"><div className="text-gray-400 text-sm">{formatDate(pos.buy_date)}</div></td>
                         </tr>
@@ -557,6 +580,7 @@ function DitzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                             <div className="flex items-center gap-2">
                               <div className="font-medium text-white">{trade.symbol}</div>
                               {trade.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
+                              {trade.is_stop_loss && <span className="px-1.5 py-0.5 bg-red-500/20 text-red-400 text-[10px] rounded font-medium">SL</span>}
                             </div>
                           </td>
                           <td className="py-3 px-4">
@@ -595,6 +619,7 @@ function DitzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                       <span className={`px-2 py-1 rounded text-xs font-bold ${action.action === 'BUY' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
                         {action.action}
                       </span>
+                      {action.is_stop_loss && <span className="px-1.5 py-0.5 bg-red-500/20 text-red-400 text-[10px] rounded font-medium">SL</span>}
                       <span className="font-semibold text-white">{action.symbol}</span>
                       {action.is_live && (
                         <span className="px-2 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded flex items-center gap-1">

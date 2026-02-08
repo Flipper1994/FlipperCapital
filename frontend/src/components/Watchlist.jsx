@@ -645,6 +645,13 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock, o
                                   </svg>
                                 )}
                                 <span className="font-semibold text-white text-sm">{stock.symbol}</span>
+                                {stock.market_cap > 0 && (
+                                  <span className="text-[10px] text-gray-500">
+                                    {stock.market_cap >= 1e12 ? `${(stock.market_cap / 1e12).toFixed(1)}T`
+                                      : stock.market_cap >= 1e9 ? `${(stock.market_cap / 1e9).toFixed(0)}B`
+                                      : `${(stock.market_cap / 1e6).toFixed(0)}M`}
+                                  </span>
+                                )}
                                 {signal && (
                                   <span className={`px-1 py-0.5 text-[10px] font-bold rounded ${getSignalStyle(signal)}`}>
                                     {signal}

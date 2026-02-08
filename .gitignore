@@ -48,9 +48,8 @@ docker-data/
 tmp/
 temp/
 
-# Claude config
-.claude/
-claude.md
+# Claude config (lokale Settings, nicht einchecken)
+.claude/settings.local.json
 
 # Test/temp images
 vergleichsbilder/

@@ -33,6 +33,7 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
   const [error, setError] = useState(null)
   const [intervalWarning, setIntervalWarning] = useState(null) // Warning if Yahoo returns different interval
   const [dataSource, setDataSource] = useState(null)
+  const [apiWarnings, setApiWarnings] = useState([])
   const { isAggressive, isQuant, isDitz, isTrader, mode } = useTradingMode()
 
   useEffect(() => {
@@ -98,6 +99,13 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
         // Set data source
         if (json.source) {
           setDataSource(json.source)
+        }
+
+        // API warnings (e.g. Twelve Data rate limit)
+        if (json.warnings && json.warnings.length > 0) {
+          setApiWarnings(json.warnings)
+        } else {
+          setApiWarnings([])
         }
 
         // Nur abgeschlossene Monatskerzen für Signalberechnung (aktuellen Monat entfernen)
@@ -418,6 +426,18 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
           )}
         </div>
       </div>
+      {apiWarnings.length > 0 && (
+        <div className="mx-3 mb-1 px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+          {apiWarnings.map((w, i) => (
+            <p key={i} className="text-amber-400 text-xs flex items-center gap-2">
+              <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              {w}
+            </p>
+          ))}
+        </div>
+      )}
       <div ref={chartContainerRef} className="h-[200px] relative">
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center bg-dark-800">

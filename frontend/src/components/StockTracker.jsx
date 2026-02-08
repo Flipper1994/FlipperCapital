@@ -73,7 +73,14 @@ function StockTracker() {
   const [selectedStock, setSelectedStock] = useState(null)
   const [signalFilter, setSignalFilter] = useState(null)
   const [searchQuery, setSearchQuery] = useState('')
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [filters, setFilters] = useState({
+    minWinrate: '', maxWinrate: '', minRR: '', maxRR: '',
+    minAvgReturn: '', maxAvgReturn: '', minMarketCap: ''
+  })
   const [, forceUpdate] = useState(0)
+  const [isinCache, setIsinCache] = useState({})
+  const [copyMsg, setCopyMsg] = useState(null)
   const { mode, isAggressive, isQuant, isDitz, isTrader, isDefensive } = useTradingMode()
   const { formatPrice } = useCurrency()
 
@@ -211,13 +218,21 @@ function StockTracker() {
     // Signal filter
     if (signalFilter) {
       if (signalFilter === 'SELL_WAIT') {
-        return s.monthSignal === 'SELL' || s.monthSignal === 'WAIT'
+        if (s.monthSignal !== 'SELL' && s.monthSignal !== 'WAIT') return false
+      } else if (signalFilter === 'CHANGED') {
+        if (!s.signalChanged) return false
+      } else {
+        if (s.monthSignal !== signalFilter) return false
       }
-      if (signalFilter === 'CHANGED') {
-        return s.signalChanged
-      }
-      return s.monthSignal === signalFilter
     }
+    // Advanced filters
+    if (filters.minWinrate && s.win_rate < parseFloat(filters.minWinrate)) return false
+    if (filters.maxWinrate && s.win_rate > parseFloat(filters.maxWinrate)) return false
+    if (filters.minRR && s.risk_reward < parseFloat(filters.minRR)) return false
+    if (filters.maxRR && s.risk_reward > parseFloat(filters.maxRR)) return false
+    if (filters.minAvgReturn && s.avg_return < parseFloat(filters.minAvgReturn)) return false
+    if (filters.maxAvgReturn && s.avg_return > parseFloat(filters.maxAvgReturn)) return false
+    if (filters.minMarketCap && s.market_cap < parseFloat(filters.minMarketCap) * 1e9) return false
     return true
   })
 
@@ -250,6 +265,10 @@ function StockTracker() {
   const toggleFilter = (filter) => {
     setSignalFilter(signalFilter === filter ? null : filter)
   }
+
+  const handleFilterChange = (f, v) => setFilters(p => ({ ...p, [f]: v }))
+  const clearFilters = () => setFilters({ minWinrate: '', maxWinrate: '', minRR: '', maxRR: '', minAvgReturn: '', maxAvgReturn: '', minMarketCap: '' })
+  const hasActiveFilters = Object.values(filters).some(v => v !== '')
 
   const getSignalStyle = (signal) => {
     switch (signal) {
@@ -288,6 +307,37 @@ function StockTracker() {
     if (value === undefined || value === null || isNaN(value)) return '--'
     const sign = value >= 0 ? '+' : ''
     return `${sign}${value.toFixed(1)}%`
+  }
+
+  const formatMarketCap = (mc) => {
+    if (!mc || mc <= 0) return '—'
+    if (mc >= 1e12) return `${(mc / 1e12).toFixed(2)}T`
+    if (mc >= 1e9) return `${(mc / 1e9).toFixed(1)}B`
+    if (mc >= 1e6) return `${(mc / 1e6).toFixed(0)}M`
+    return `${mc.toLocaleString('de-DE')} $`
+  }
+
+  const fetchISIN = async (symbol) => {
+    if (isinCache[symbol] !== undefined) return
+    setIsinCache(prev => ({ ...prev, [symbol]: null }))
+    try {
+      const res = await fetch(`/api/isin/${symbol}`)
+      const data = await res.json()
+      setIsinCache(prev => ({ ...prev, [symbol]: data.isin || '' }))
+    } catch {
+      setIsinCache(prev => ({ ...prev, [symbol]: '' }))
+    }
+  }
+
+  const handleCopyISIN = async (e, symbol) => {
+    e.stopPropagation()
+    const isin = isinCache[symbol]
+    if (!isin) return
+    try {
+      await navigator.clipboard.writeText(isin)
+      setCopyMsg(`${isin} in Zwischenablage`)
+      setTimeout(() => setCopyMsg(null), 2000)
+    } catch {}
   }
 
   const SortIcon = ({ field }) => {
@@ -412,6 +462,66 @@ function StockTracker() {
           </div>
         </div>
 
+        {/* Filters */}
+        <div className="mb-3 bg-dark-800 rounded-xl border border-dark-600 overflow-hidden">
+          <button onClick={() => setFiltersOpen(!filtersOpen)}
+            className="w-full px-4 py-2.5 flex items-center justify-between text-left hover:bg-dark-700/50 transition-colors">
+            <div className="flex items-center gap-2">
+              <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+              </svg>
+              <span className="text-white font-medium text-sm">Filter</span>
+              {hasActiveFilters && <span className="px-1.5 py-0.5 text-xs bg-accent-500 text-white rounded-full">Aktiv</span>}
+            </div>
+            <svg className={`w-4 h-4 text-gray-400 transition-transform ${filtersOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          {filtersOpen && (
+            <div className="px-4 pb-3 border-t border-dark-600">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Winrate (%)</label>
+                  <div className="flex gap-2">
+                    <input type="number" placeholder="Min" value={filters.minWinrate} onChange={e => handleFilterChange('minWinrate', e.target.value)}
+                      className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500" />
+                    <input type="number" placeholder="Max" value={filters.maxWinrate} onChange={e => handleFilterChange('maxWinrate', e.target.value)}
+                      className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500" />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Risk/Reward</label>
+                  <div className="flex gap-2">
+                    <input type="number" step="0.1" placeholder="Min" value={filters.minRR} onChange={e => handleFilterChange('minRR', e.target.value)}
+                      className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500" />
+                    <input type="number" step="0.1" placeholder="Max" value={filters.maxRR} onChange={e => handleFilterChange('maxRR', e.target.value)}
+                      className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500" />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Ø Rendite (%)</label>
+                  <div className="flex gap-2">
+                    <input type="number" step="0.1" placeholder="Min" value={filters.minAvgReturn} onChange={e => handleFilterChange('minAvgReturn', e.target.value)}
+                      className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500" />
+                    <input type="number" step="0.1" placeholder="Max" value={filters.maxAvgReturn} onChange={e => handleFilterChange('maxAvgReturn', e.target.value)}
+                      className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500" />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Min Market Cap (Mrd)</label>
+                  <input type="number" step="0.1" placeholder="z.B. 10" value={filters.minMarketCap} onChange={e => handleFilterChange('minMarketCap', e.target.value)}
+                    className="w-full px-2 py-1.5 text-sm bg-dark-700 border border-dark-600 rounded text-white placeholder-gray-500" />
+                </div>
+              </div>
+              {hasActiveFilters && (
+                <div className="mt-2 flex justify-end">
+                  <button onClick={clearFilters} className="px-3 py-1 text-xs text-gray-400 hover:text-white transition-colors">Filter zurücksetzen</button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         {loading ? (
           <div className="text-center py-12">
             <div className="w-8 h-8 border-2 border-accent-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
@@ -523,8 +633,13 @@ function StockTracker() {
                 >
                   <div className="flex justify-between items-start mb-3">
                     <div>
-                      <div className="font-semibold text-white">{stock.symbol}</div>
-                      <div className="text-xs text-gray-500 truncate max-w-[180px]">{stock.name}</div>
+                      <div
+                        className="font-semibold text-white cursor-pointer hover:text-accent-400 transition-colors"
+                        title={isinCache[stock.symbol] || 'ISIN laden...'}
+                        onMouseEnter={() => fetchISIN(stock.symbol)}
+                        onClick={(e) => handleCopyISIN(e, stock.symbol)}
+                      >{stock.symbol}</div>
+                      <div className="text-xs text-gray-500 truncate max-w-[180px]" title={`Market Cap: ${formatMarketCap(stock.market_cap)}`}>{stock.name}</div>
                     </div>
                     <span className={`px-2 py-1 text-xs font-bold rounded border ${getSignalStyle(stock.monthSignal)}`}>
                       {stock.monthSignal}
@@ -564,65 +679,70 @@ function StockTracker() {
             {/* Desktop Table View */}
             <div className="hidden md:block bg-dark-800 rounded-xl border border-dark-600 overflow-hidden">
               <div className="overflow-x-auto">
-                <table className="w-full">
+                <table className="w-full text-sm">
                   <thead>
-                    <tr className="text-left text-xs text-gray-500 border-b border-dark-600 bg-dark-900/50">
+                    <tr className="text-left text-xs text-gray-500 border-b border-dark-600 bg-dark-900/50 whitespace-nowrap">
                       <th
-                        className="p-4 cursor-pointer hover:text-white transition-colors"
+                        className="px-2 py-2 cursor-pointer hover:text-white transition-colors"
                         onClick={() => handleSort('symbol')}
                       >
                         Symbol <SortIcon field="symbol" />
                       </th>
-                      <th className="p-4">Name</th>
+                      <th className="px-2 py-2">Name</th>
                       <th
-                        className="p-4 cursor-pointer hover:text-white transition-colors"
+                        className="px-2 py-2 cursor-pointer hover:text-white transition-colors"
                         onClick={() => handleSort('signal')}
                       >
                         Signal <SortIcon field="signal" />
                       </th>
-                      <th className="p-4 text-xs">Seit</th>
-                      <th className="p-4 text-xs">Vorheriges</th>
+                      <th className="px-2 py-2 text-xs">Seit</th>
                       <th
-                        className="p-4 cursor-pointer hover:text-white transition-colors text-right"
+                        className="px-2 py-2 cursor-pointer hover:text-white transition-colors text-right"
                         onClick={() => handleSort('current_price')}
                       >
                         Kurs <SortIcon field="current_price" />
                       </th>
                       <th
-                        className="p-4 cursor-pointer hover:text-white transition-colors text-right"
+                        className="px-2 py-2 cursor-pointer hover:text-white transition-colors text-right"
                         onClick={() => handleSort('win_rate')}
                       >
-                        Win Rate <SortIcon field="win_rate" />
+                        Win% <SortIcon field="win_rate" />
                       </th>
                       <th
-                        className="p-4 cursor-pointer hover:text-white transition-colors text-right"
+                        className="px-2 py-2 cursor-pointer hover:text-white transition-colors text-right"
                         onClick={() => handleSort('risk_reward')}
                       >
                         R/R <SortIcon field="risk_reward" />
                       </th>
                       <th
-                        className="p-4 cursor-pointer hover:text-white transition-colors text-right"
+                        className="px-2 py-2 cursor-pointer hover:text-white transition-colors text-right"
                         onClick={() => handleSort('total_return')}
                       >
-                        Total Return <SortIcon field="total_return" />
+                        Total <SortIcon field="total_return" />
                       </th>
                       <th
-                        className="p-4 cursor-pointer hover:text-white transition-colors text-right"
+                        className="px-2 py-2 cursor-pointer hover:text-white transition-colors text-right"
                         onClick={() => handleSort('avg_return')}
                       >
-                        Ø/Trade <SortIcon field="avg_return" />
+                        Ø/T <SortIcon field="avg_return" />
                       </th>
                       <th
-                        className="p-4 cursor-pointer hover:text-white transition-colors text-right"
+                        className="px-2 py-2 cursor-pointer hover:text-white transition-colors text-right"
                         onClick={() => handleSort('total_trades')}
                       >
                         Trades <SortIcon field="total_trades" />
                       </th>
                       <th
-                        className="p-4 cursor-pointer hover:text-white transition-colors"
+                        className="px-2 py-2 cursor-pointer hover:text-white transition-colors text-right"
+                        onClick={() => handleSort('market_cap')}
+                      >
+                        MCap <SortIcon field="market_cap" />
+                      </th>
+                      <th
+                        className="px-2 py-2 cursor-pointer hover:text-white transition-colors"
                         onClick={() => handleSort('updated_at')}
                       >
-                        Aktualisiert <SortIcon field="updated_at" />
+                        Update <SortIcon field="updated_at" />
                       </th>
                     </tr>
                   </thead>
@@ -633,48 +753,54 @@ function StockTracker() {
                         onClick={() => setSelectedStock(stock)}
                         className="border-b border-dark-700/50 hover:bg-dark-700/30 transition-colors cursor-pointer"
                       >
-                        <td className="p-4 font-medium text-white">{stock.symbol}</td>
-                        <td className="p-4 text-gray-400 text-sm truncate max-w-[200px]">{stock.name}</td>
-                        <td className="p-4">
-                          <span className={`px-2 py-1 text-xs font-bold rounded border ${getSignalStyle(stock.monthSignal)}`}>
+                        <td className="px-2 py-1.5 font-medium text-white whitespace-nowrap">
+                          <span
+                            className="cursor-pointer hover:text-accent-400 transition-colors relative group/ticker"
+                            title={isinCache[stock.symbol] || 'ISIN laden...'}
+                            onMouseEnter={() => fetchISIN(stock.symbol)}
+                            onClick={(e) => handleCopyISIN(e, stock.symbol)}
+                          >
+                            {stock.symbol}
+                            <span className="absolute left-0 -top-8 bg-dark-600 text-white text-xs px-2 py-1 rounded shadow-lg whitespace-nowrap opacity-0 group-hover/ticker:opacity-100 transition-opacity pointer-events-none z-50">
+                              {isinCache[stock.symbol] === undefined ? 'ISIN laden...' : isinCache[stock.symbol] || 'Keine ISIN'}
+                            </span>
+                          </span>
+                        </td>
+                        <td className="px-2 py-1.5 text-gray-400 truncate max-w-[150px] relative group/name">
+                          {stock.name}
+                          <span className="absolute left-0 -top-8 bg-dark-600 text-white text-xs px-2 py-1 rounded shadow-lg whitespace-nowrap opacity-0 group-hover/name:opacity-100 transition-opacity pointer-events-none z-50">
+                            Market Cap: {formatMarketCap(stock.market_cap)}
+                          </span>
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <span className={`px-1.5 py-0.5 text-xs font-bold rounded border ${getSignalStyle(stock.monthSignal)}`}>
                             {stock.monthSignal}
                           </span>
                         </td>
-                        <td className="p-4 text-xs text-gray-400">
+                        <td className="px-2 py-1.5 text-xs text-gray-400 whitespace-nowrap">
                           {stock.signal_since ? new Date(stock.signal_since).toLocaleDateString('de-DE', { month: 'short', year: '2-digit' }) : '-'}
                         </td>
-                        <td className="p-4">
-                          {stock.prev_signal ? (
-                            <div className="flex items-center gap-1">
-                              <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded ${getSignalStyle(stock.prev_signal)}`}>
-                                {stock.prev_signal}
-                              </span>
-                              <span className="text-[10px] text-gray-500">
-                                {stock.prev_signal_since ? new Date(stock.prev_signal_since).toLocaleDateString('de-DE', { month: 'short', year: '2-digit' }) : ''}
-                              </span>
-                            </div>
-                          ) : <span className="text-gray-600 text-xs">-</span>}
-                        </td>
-                        <td className="p-4 text-right text-white">{formatPrice(stock.current_price, stock.symbol)}</td>
-                        <td className={`p-4 text-right font-medium ${stock.win_rate >= 50 ? 'text-green-400' : 'text-red-400'}`}>
+                        <td className="px-2 py-1.5 text-right text-white whitespace-nowrap">{formatPrice(stock.current_price, stock.symbol)}</td>
+                        <td className={`px-2 py-1.5 text-right font-medium ${stock.win_rate >= 50 ? 'text-green-400' : 'text-red-400'}`}>
                           {stock.win_rate?.toFixed(0)}%
                         </td>
-                        <td className={`p-4 text-right font-medium ${stock.risk_reward >= 1 ? 'text-green-400' : 'text-red-400'}`}>
+                        <td className={`px-2 py-1.5 text-right font-medium ${stock.risk_reward >= 1 ? 'text-green-400' : 'text-red-400'}`}>
                           {stock.risk_reward?.toFixed(2)}
                         </td>
-                        <td className={`p-4 text-right font-bold ${stock.total_return >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        <td className={`px-2 py-1.5 text-right font-bold ${stock.total_return >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                           {formatPercent(stock.total_return)}
                         </td>
-                        <td className={`p-4 text-right font-medium ${(stock.avg_return || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        <td className={`px-2 py-1.5 text-right font-medium ${(stock.avg_return || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                           {formatPercent(stock.avg_return)}
                         </td>
-                        <td className="p-4 text-right">
+                        <td className="px-2 py-1.5 text-right whitespace-nowrap">
                           <span className="text-white">{stock.total_trades}</span>
-                          <span className="text-gray-500 text-xs ml-1">
+                          <span className="text-gray-500 text-xs ml-0.5">
                             ({stock.wins}W/{stock.losses}L)
                           </span>
                         </td>
-                        <td className="p-4 text-gray-500 text-sm">{formatDate(stock.updated_at)}</td>
+                        <td className="px-2 py-1.5 text-right text-gray-300 whitespace-nowrap">{formatMarketCap(stock.market_cap)}</td>
+                        <td className="px-2 py-1.5 text-gray-500 whitespace-nowrap">{formatDate(stock.updated_at)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -893,6 +1019,13 @@ function StockTracker() {
                 Zuletzt aktualisiert: {formatDate(selectedStock.updated_at)}
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Copy ISIN Toast */}
+        {copyMsg && (
+          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-accent-500 text-white px-4 py-2 rounded-lg shadow-lg text-sm font-medium z-[9999] animate-pulse">
+            {copyMsg}
           </div>
         )}
       </div>

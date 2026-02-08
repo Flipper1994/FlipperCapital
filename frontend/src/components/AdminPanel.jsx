@@ -42,6 +42,8 @@ function AdminPanel() {
   const [showBxConfig, setShowBxConfig] = useState(false)
   const [showBotReset, setShowBotReset] = useState(false)
   const [showBackfill, setShowBackfill] = useState(false)
+  const [importProgress, setImportProgress] = useState(null)
+  const [importing, setImporting] = useState(false)
   const [flipperPendingTrades, setFlipperPendingTrades] = useState([])
   const [lutzPendingTrades, setLutzPendingTrades] = useState([])
   const [quantPendingTrades, setQuantPendingTrades] = useState([])
@@ -57,14 +59,14 @@ function AdminPanel() {
   const [quantSortColumn, setQuantSortColumn] = useState('symbol')
   const [quantSortDir, setQuantSortDir] = useState('asc')
   const [bxtrenderConfig, setBxtrenderConfig] = useState({
-    defensive: { short_l1: 5, short_l2: 20, short_l3: 15, long_l1: 20, long_l2: 15 },
-    aggressive: { short_l1: 5, short_l2: 20, short_l3: 15, long_l1: 20, long_l2: 15 }
+    defensive: { short_l1: 5, short_l2: 20, short_l3: 15, long_l1: 20, long_l2: 15, tsl_percent: 20.0, tsl_enabled: true },
+    aggressive: { short_l1: 5, short_l2: 20, short_l3: 15, long_l1: 20, long_l2: 15, tsl_percent: 15.0, tsl_enabled: true }
   })
   const [quantConfig, setQuantConfig] = useState({
     short_l1: 5, short_l2: 20, short_l3: 15,
     long_l1: 20, long_l2: 15,
     ma_filter_on: true, ma_length: 200, ma_type: 'EMA',
-    tsl_percent: 20.0
+    tsl_percent: 20.0, tsl_enabled: true
   })
   const [savingConfig, setSavingConfig] = useState(false)
   const [savingQuantConfig, setSavingQuantConfig] = useState(false)
@@ -109,7 +111,7 @@ function AdminPanel() {
     short_l1: 5, short_l2: 20, short_l3: 15,
     long_l1: 20, long_l2: 15,
     ma_filter_on: true, ma_length: 200, ma_type: 'EMA',
-    tsl_percent: 20.0
+    tsl_percent: 20.0, tsl_enabled: true
   })
   const [savingDitzConfig, setSavingDitzConfig] = useState(false)
   const [ditzUnreadCount, setDitzUnreadCount] = useState(0)
@@ -132,7 +134,7 @@ function AdminPanel() {
     short_l1: 5, short_l2: 20, short_l3: 15,
     long_l1: 20, long_l2: 15,
     ma_filter_on: false, ma_length: 200, ma_type: 'EMA',
-    tsl_percent: 20.0
+    tsl_percent: 20.0, tsl_enabled: true
   })
   const [savingTraderConfig, setSavingTraderConfig] = useState(false)
   const [traderUnreadCount, setTraderUnreadCount] = useState(0)
@@ -409,7 +411,9 @@ function AdminPanel() {
           short_l2: parseInt(config.short_l2),
           short_l3: parseInt(config.short_l3),
           long_l1: parseInt(config.long_l1),
-          long_l2: parseInt(config.long_l2)
+          long_l2: parseInt(config.long_l2),
+          tsl_percent: parseFloat(config.tsl_percent) || 20.0,
+          tsl_enabled: config.tsl_enabled !== false
         })
       })
       if (res.ok) {
@@ -470,7 +474,8 @@ function AdminPanel() {
           ma_filter_on: quantConfig.ma_filter_on,
           ma_length: parseInt(quantConfig.ma_length),
           ma_type: quantConfig.ma_type,
-          tsl_percent: parseFloat(quantConfig.tsl_percent)
+          tsl_percent: parseFloat(quantConfig.tsl_percent),
+          tsl_enabled: quantConfig.tsl_enabled !== false
         })
       })
       if (res.ok) {
@@ -625,7 +630,8 @@ function AdminPanel() {
           ma_filter_on: ditzConfig.ma_filter_on,
           ma_length: parseInt(ditzConfig.ma_length),
           ma_type: ditzConfig.ma_type,
-          tsl_percent: parseFloat(ditzConfig.tsl_percent)
+          tsl_percent: parseFloat(ditzConfig.tsl_percent),
+          tsl_enabled: ditzConfig.tsl_enabled !== false
         })
       })
       if (res.ok) {
@@ -741,7 +747,8 @@ function AdminPanel() {
           ma_filter_on: traderConfig.ma_filter_on,
           ma_length: parseInt(traderConfig.ma_length),
           ma_type: traderConfig.ma_type,
-          tsl_percent: parseFloat(traderConfig.tsl_percent)
+          tsl_percent: parseFloat(traderConfig.tsl_percent),
+          tsl_enabled: traderConfig.tsl_enabled !== false
         })
       })
       if (res.ok) {
@@ -1152,18 +1159,11 @@ function AdminPanel() {
   }
 
   const handleDeleteTrade = async (bot, tradeId, symbol, action, isDeleted) => {
-    // For quant/ditz/trader bot: soft-delete toggle (no confirm needed for restore)
-    if (bot === 'quant' || bot === 'ditz' || bot === 'trader') {
-      if (!isDeleted) {
-        const msg = action === 'BUY'
-          ? `Trade streichen? Die Position für ${symbol} wird geschlossen.`
-          : `Trade streichen? Die Position für ${symbol} wird wieder geöffnet.`
-        if (!confirm(msg)) return
-      }
-    } else {
+    // Soft-delete toggle: no confirm needed for restore
+    if (!isDeleted) {
       const msg = action === 'BUY'
-        ? `Trade löschen? Die Position für ${symbol} wird ebenfalls gelöscht.`
-        : `Trade für ${symbol} löschen?`
+        ? `Trade streichen? BUY + zugehöriger SELL für ${symbol} werden gestrichen. Position wird gelöscht.`
+        : `SELL streichen? Position für ${symbol} wird wieder geöffnet.`
       if (!confirm(msg)) return
     }
     try {
@@ -1516,6 +1516,109 @@ function AdminPanel() {
     fetchTrackedDiff()
   }
 
+  const handleExportWatchlist = async () => {
+    try {
+      const res = await fetch('/api/admin/export-watchlist', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      const date = new Date().toISOString().split('T')[0]
+      a.download = `watchlist_export_${date}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('Export failed:', err)
+      alert('Export fehlgeschlagen: ' + err.message)
+    }
+  }
+
+  const handleImportWatchlist = async (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    e.target.value = ''
+
+    try {
+      const text = await file.text()
+      const entries = JSON.parse(text)
+      if (!Array.isArray(entries)) {
+        alert('Ungültiges Format: JSON-Array erwartet')
+        return
+      }
+      if (!confirm(`${entries.length} Aktien importieren? Bestehende Ticker bekommen die Kategorie aus dem Import. Neue Aktien werden angelegt und verarbeitet.`)) {
+        return
+      }
+
+      setImporting(true)
+      setImportProgress({ current: 0, total: 0, status: 'Importiere...' })
+
+      // Phase 1: Import to backend
+      const res = await fetch('/api/admin/import-watchlist', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(entries)
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data.error || 'Import fehlgeschlagen')
+      }
+
+      // Phase 2: Process new stocks
+      const newStocks = data.new_stocks || []
+      if (newStocks.length > 0) {
+        setImportProgress({ current: 0, total: newStocks.length, status: 'Verarbeite neue Aktien...' })
+        let successCount = 0
+        let errorCount = 0
+
+        for (let i = 0; i < newStocks.length; i++) {
+          const stock = newStocks[i]
+          setImportProgress({
+            current: i,
+            total: newStocks.length,
+            status: `Verarbeite ${stock.symbol}...`,
+            currentStock: `${stock.symbol} - ${stock.name}`
+          })
+
+          try {
+            await processStock(stock.symbol, stock.name)
+            successCount++
+          } catch (err) {
+            errorCount++
+            console.warn(`Failed to process ${stock.symbol}:`, err)
+          }
+
+          await new Promise(r => setTimeout(r, 1000))
+        }
+
+        setImportProgress({
+          current: newStocks.length,
+          total: newStocks.length,
+          status: `Import fertig! ${data.updated} aktualisiert, ${data.created} neu angelegt (${successCount} verarbeitet, ${errorCount} fehlgeschlagen)`,
+          currentStock: null
+        })
+      } else {
+        setImportProgress({
+          current: 0,
+          total: 0,
+          status: `Import fertig! ${data.updated} aktualisiert, ${data.created} neu angelegt.`
+        })
+      }
+
+      fetchStats()
+    } catch (err) {
+      console.error('Import failed:', err)
+      setImportProgress({ current: 0, total: 0, status: 'Fehler: ' + err.message })
+    } finally {
+      setImporting(false)
+    }
+  }
+
   const handleUpdateAllStocks = async () => {
     if (!confirm(`Alle Watchlist-Aktien aktualisieren? Das speichert BX-Trender Daten für ALLE Modi (Defensiv, Aggressiv, Quant, Ditz & Trader). Das kann mehrere Minuten dauern.`)) {
       return
@@ -1773,6 +1876,89 @@ function AdminPanel() {
                     </div>
                   )}
 
+                </div>
+
+                {/* Import / Export */}
+                <div className={`rounded-xl border p-4 ${
+                  isAggressive
+                    ? 'bg-orange-500/10 border-orange-500/30'
+                    : 'bg-blue-500/10 border-blue-500/30'
+                }`}>
+                  <h2 className="text-lg font-semibold text-white">Import / Export</h2>
+                  <p className="text-sm text-gray-400 mt-1">
+                    Watchlist als JSON exportieren oder importieren. Neue Aktien werden automatisch verarbeitet.
+                  </p>
+                  <div className="flex gap-3 mt-4">
+                    <button
+                      onClick={handleExportWatchlist}
+                      disabled={importing || updatingStocks}
+                      className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium transition-colors ${
+                        isAggressive
+                          ? 'bg-orange-500 text-white hover:bg-orange-400 disabled:bg-orange-500/50'
+                          : 'bg-blue-500 text-white hover:bg-blue-400 disabled:bg-blue-500/50'
+                      } disabled:cursor-not-allowed`}
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                      </svg>
+                      Exportieren
+                    </button>
+                    <label className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium transition-colors cursor-pointer ${
+                      importing || updatingStocks
+                        ? isAggressive
+                          ? 'bg-orange-500/50 text-white cursor-not-allowed'
+                          : 'bg-blue-500/50 text-white cursor-not-allowed'
+                        : isAggressive
+                          ? 'bg-orange-500 text-white hover:bg-orange-400'
+                          : 'bg-blue-500 text-white hover:bg-blue-400'
+                    }`}>
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                      </svg>
+                      Importieren
+                      <input
+                        type="file"
+                        accept=".json"
+                        className="hidden"
+                        onChange={handleImportWatchlist}
+                        disabled={importing || updatingStocks}
+                      />
+                    </label>
+                  </div>
+                  {importProgress && (
+                    <div className="mt-4 p-3 bg-dark-800 rounded-lg">
+                      <div className="flex items-center justify-between text-sm mb-2">
+                        <span className="text-gray-400">{importProgress.status}</span>
+                        {importProgress.total > 0 && (
+                          <span className="text-white font-medium">
+                            {importProgress.current} / {importProgress.total}
+                          </span>
+                        )}
+                      </div>
+                      {importProgress.total > 0 && (
+                        <div className="w-full h-2 bg-dark-700 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full transition-all duration-300 ${
+                              isAggressive ? 'bg-orange-500' : 'bg-blue-500'
+                            }`}
+                            style={{ width: `${(importProgress.current / importProgress.total) * 100}%` }}
+                          />
+                        </div>
+                      )}
+                      {importProgress.currentStock && (
+                        <div className="text-xs text-gray-500 mt-2">
+                          Aktuell: {importProgress.currentStock}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className={`rounded-xl border p-4 ${
+                  isAggressive
+                    ? 'bg-orange-500/10 border-orange-500/30'
+                    : 'bg-blue-500/10 border-blue-500/30'
+                }`}>
                   {/* Scheduler Time Setting */}
                   <div className="mt-4 p-4 bg-dark-800 rounded-lg border border-dark-600">
                     <div className="flex items-center justify-between">
@@ -2335,6 +2521,44 @@ function AdminPanel() {
                       </div>
                     ))}
                   </div>
+                  <div className="grid grid-cols-2 gap-3 mb-4">
+                    <div className="bg-dark-800 rounded-lg p-3">
+                      <label className="text-xs text-gray-500 block mb-1">Stop Loss %</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="50"
+                        step="0.5"
+                        value={bxtrenderConfig[botTab === 'flipper' ? 'defensive' : 'aggressive']?.tsl_percent || 20}
+                        onChange={(e) => updateConfigValue(
+                          botTab === 'flipper' ? 'defensive' : 'aggressive',
+                          'tsl_percent',
+                          e.target.value
+                        )}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-2 py-1 text-white text-sm"
+                      />
+                      <span className="text-[10px] text-gray-600">Trailing Stop Loss</span>
+                    </div>
+                    <div className="bg-dark-800 rounded-lg p-3 flex items-center gap-3">
+                      <label className="text-xs text-gray-500">Stop Loss aktiv</label>
+                      <button
+                        onClick={() => updateConfigValue(
+                          botTab === 'flipper' ? 'defensive' : 'aggressive',
+                          'tsl_enabled',
+                          !bxtrenderConfig[botTab === 'flipper' ? 'defensive' : 'aggressive']?.tsl_enabled
+                        )}
+                        className={`relative w-10 h-5 rounded-full transition-colors ${
+                          bxtrenderConfig[botTab === 'flipper' ? 'defensive' : 'aggressive']?.tsl_enabled !== false
+                            ? 'bg-green-500' : 'bg-gray-600'
+                        }`}
+                      >
+                        <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                          bxtrenderConfig[botTab === 'flipper' ? 'defensive' : 'aggressive']?.tsl_enabled !== false
+                            ? 'translate-x-5' : ''
+                        }`} />
+                      </button>
+                    </div>
+                  </div>
                   <div className="flex items-center justify-between">
                     <p className="text-xs text-gray-500">
                       Short: RSI(EMA(close, L1) - EMA(close, L2), L3) - 50<br/>
@@ -2450,7 +2674,12 @@ function AdminPanel() {
                           <div className="bg-dark-700/50 rounded-lg p-3">
                             <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
                             <div className="text-base font-bold text-white">{flipperEnrichedPerf.open_positions || 0}</div>
-                            <div className="text-xs text-gray-500 mt-1">von {flipperEnrichedPerf.total_buys || 0} Käufen</div>
+                            <div className="text-xs mt-1">
+                              <span className="text-gray-500">von {flipperEnrichedPerf.total_buys || 0} Käufen</span>
+                              {flipperPrivatePortfolio?.positions?.filter(p => p.is_live).length > 0 && (
+                                <span className="ml-1 text-green-400">{flipperPrivatePortfolio.positions.filter(p => p.is_live).length} Live</span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -2468,7 +2697,9 @@ function AdminPanel() {
                                 { key: 'avg_price', label: 'Kaufpreis', align: 'right' },
                                 { key: 'current_price', label: 'Aktuell', align: 'right' },
                                 { key: 'total_return_pct', label: 'Rendite (Wert)', align: 'right' },
-                                { key: 'buy_date', label: 'Kaufdatum', align: 'left' }
+                                { key: 'stop_loss_price', label: 'SL', align: 'right' },
+                                { key: 'buy_date', label: 'Kaufdatum', align: 'left' },
+                                { key: 'is_live', label: 'Live', align: 'center' }
                               ].map(col => (
                                 <th key={col.key}
                                   className={`p-2 cursor-pointer hover:text-blue-400 select-none ${col.align === 'right' ? 'text-right' : ''}`}
@@ -2503,7 +2734,30 @@ function AdminPanel() {
                                   {pos.total_return_pct >= 0 ? '+' : ''}{pos.total_return_pct?.toFixed(2)}%
                                   <span className="text-gray-400 text-xs ml-1">({formatPrice(pos.current_price * pos.quantity)})</span>
                                 </td>
+                                <td className="p-2 text-right">
+                                  {pos.stop_loss_price > 0 ? (
+                                    <div>
+                                      <span className={`font-medium ${
+                                        pos.current_price > 0 && pos.stop_loss_price > 0
+                                          ? ((pos.current_price - pos.stop_loss_price) / pos.current_price * 100) > 10
+                                            ? 'text-green-400'
+                                            : ((pos.current_price - pos.stop_loss_price) / pos.current_price * 100) > 5
+                                              ? 'text-orange-400'
+                                              : 'text-red-400'
+                                          : 'text-gray-400'
+                                      }`}>{formatPrice(pos.stop_loss_price)}</span>
+                                      <div className="text-[10px] text-gray-500">
+                                        {pos.stop_loss_percent ? `${pos.stop_loss_percent}%` : 'default'} {pos.stop_loss_type || 'trailing'}
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <span className="text-gray-600">-</span>
+                                  )}
+                                </td>
                                 <td className="p-2 text-gray-500 text-sm">{new Date(pos.buy_date).toLocaleDateString('de-DE')}</td>
+                                <td className="p-2 text-center">
+                                  {pos.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
+                                </td>
                               </tr>
                             ))}
                           </tbody>
@@ -2694,7 +2948,12 @@ function AdminPanel() {
                           <div className="bg-dark-700/50 rounded-lg p-3">
                             <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
                             <div className="text-base font-bold text-white">{lutzEnrichedPerf.open_positions || 0}</div>
-                            <div className="text-xs text-gray-500 mt-1">von {lutzEnrichedPerf.total_buys || 0} Käufen</div>
+                            <div className="text-xs mt-1">
+                              <span className="text-gray-500">von {lutzEnrichedPerf.total_buys || 0} Käufen</span>
+                              {lutzPrivatePortfolio?.positions?.filter(p => p.is_live).length > 0 && (
+                                <span className="ml-1 text-green-400">{lutzPrivatePortfolio.positions.filter(p => p.is_live).length} Live</span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -2712,7 +2971,9 @@ function AdminPanel() {
                                 { key: 'avg_price', label: 'Kaufpreis', align: 'right' },
                                 { key: 'current_price', label: 'Aktuell', align: 'right' },
                                 { key: 'total_return_pct', label: 'Rendite (Wert)', align: 'right' },
-                                { key: 'buy_date', label: 'Kaufdatum', align: 'left' }
+                                { key: 'stop_loss_price', label: 'SL', align: 'right' },
+                                { key: 'buy_date', label: 'Kaufdatum', align: 'left' },
+                                { key: 'is_live', label: 'Live', align: 'center' }
                               ].map(col => (
                                 <th key={col.key}
                                   className={`p-2 cursor-pointer hover:text-orange-400 select-none ${col.align === 'right' ? 'text-right' : ''}`}
@@ -2747,7 +3008,30 @@ function AdminPanel() {
                                   {pos.total_return_pct >= 0 ? '+' : ''}{pos.total_return_pct?.toFixed(2)}%
                                   <span className="text-gray-400 text-xs ml-1">({formatPrice(pos.current_price * pos.quantity)})</span>
                                 </td>
+                                <td className="p-2 text-right">
+                                  {pos.stop_loss_price > 0 ? (
+                                    <div>
+                                      <span className={`font-medium ${
+                                        pos.current_price > 0 && pos.stop_loss_price > 0
+                                          ? ((pos.current_price - pos.stop_loss_price) / pos.current_price * 100) > 10
+                                            ? 'text-green-400'
+                                            : ((pos.current_price - pos.stop_loss_price) / pos.current_price * 100) > 5
+                                              ? 'text-orange-400'
+                                              : 'text-red-400'
+                                          : 'text-gray-400'
+                                      }`}>{formatPrice(pos.stop_loss_price)}</span>
+                                      <div className="text-[10px] text-gray-500">
+                                        {pos.stop_loss_percent ? `${pos.stop_loss_percent}%` : 'default'} {pos.stop_loss_type || 'trailing'}
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <span className="text-gray-600">-</span>
+                                  )}
+                                </td>
                                 <td className="p-2 text-gray-500 text-sm">{new Date(pos.buy_date).toLocaleDateString('de-DE')}</td>
+                                <td className="p-2 text-center">
+                                  {pos.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
+                                </td>
                               </tr>
                             ))}
                           </tbody>
@@ -3032,7 +3316,12 @@ function AdminPanel() {
                           <div className="bg-dark-700/50 rounded-lg p-3">
                             <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
                             <div className="text-base font-bold text-white">{quantEnrichedPerf.open_positions || 0}</div>
-                            <div className="text-xs text-gray-500 mt-1">von {quantEnrichedPerf.total_buys || 0} Käufen</div>
+                            <div className="text-xs mt-1">
+                              <span className="text-gray-500">von {quantEnrichedPerf.total_buys || 0} Käufen</span>
+                              {quantPrivatePortfolio?.positions?.filter(p => p.is_live).length > 0 && (
+                                <span className="ml-1 text-green-400">{quantPrivatePortfolio.positions.filter(p => p.is_live).length} Live</span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -3050,9 +3339,10 @@ function AdminPanel() {
                                 { key: 'quantity', label: 'Menge (Invest.)', align: 'right' },
                                 { key: 'avg_price', label: 'Kaufpreis', align: 'right' },
                                 { key: 'current_price', label: 'Aktuell', align: 'right' },
-                                { key: 'tsl', label: `TSL (${quantConfig.tsl_percent || 20}%)`, align: 'right' },
+                                { key: 'tsl', label: 'SL', align: 'right' },
                                 { key: 'total_return_pct', label: 'Rendite (Wert)', align: 'right' },
-                                { key: 'buy_date', label: 'Kaufdatum', align: 'left' }
+                                { key: 'buy_date', label: 'Kaufdatum', align: 'left' },
+                                { key: 'is_live', label: 'Live', align: 'center' }
                               ].map(col => (
                                 <th
                                   key={col.key}
@@ -3090,8 +3380,7 @@ function AdminPanel() {
                               })
                               .map((pos) => {
                                 const currentValue = (pos.current_price || 0) * (pos.quantity || 0)
-                                const tslPercent = quantConfig.tsl_percent || 20
-                                const stopPrice = (pos.current_price || 0) * (1 - tslPercent / 100)
+                                const stopPrice = pos.stop_loss_price || 0
                                 const isNearStop = pos.current_price && stopPrice && (pos.current_price - stopPrice) / pos.current_price < 0.05
                                 return (
                                   <tr key={pos.id} className="border-b border-dark-700/50 hover:bg-dark-700/30">
@@ -3114,6 +3403,9 @@ function AdminPanel() {
                                     </td>
                                     <td className="p-2 text-gray-500 text-sm">
                                       {new Date(pos.buy_date).toLocaleDateString('de-DE')}
+                                    </td>
+                                    <td className="p-2 text-center">
+                                      {pos.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
                                     </td>
                                   </tr>
                                 )
@@ -3405,7 +3697,12 @@ function AdminPanel() {
                           <div className="bg-dark-700/50 rounded-lg p-3">
                             <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
                             <div className="text-base font-bold text-white">{ditzEnrichedPerf.open_positions || 0}</div>
-                            <div className="text-xs text-gray-500 mt-1">von {ditzEnrichedPerf.total_buys || 0} Käufen</div>
+                            <div className="text-xs mt-1">
+                              <span className="text-gray-500">von {ditzEnrichedPerf.total_buys || 0} Käufen</span>
+                              {ditzPrivatePortfolio?.positions?.filter(p => p.is_live).length > 0 && (
+                                <span className="ml-1 text-green-400">{ditzPrivatePortfolio.positions.filter(p => p.is_live).length} Live</span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -3423,9 +3720,10 @@ function AdminPanel() {
                                 { key: 'quantity', label: 'Menge (Invest.)', align: 'right' },
                                 { key: 'avg_price', label: 'Kaufpreis', align: 'right' },
                                 { key: 'current_price', label: 'Aktuell', align: 'right' },
-                                { key: 'tsl', label: `TSL (${ditzConfig.tsl_percent || 20}%)`, align: 'right' },
+                                { key: 'tsl', label: 'SL', align: 'right' },
                                 { key: 'total_return_pct', label: 'Rendite (Wert)', align: 'right' },
-                                { key: 'buy_date', label: 'Kaufdatum', align: 'left' }
+                                { key: 'buy_date', label: 'Kaufdatum', align: 'left' },
+                                { key: 'is_live', label: 'Live', align: 'center' }
                               ].map(col => (
                                 <th
                                   key={col.key}
@@ -3463,8 +3761,7 @@ function AdminPanel() {
                               })
                               .map((pos) => {
                                 const currentValue = (pos.current_price || 0) * (pos.quantity || 0)
-                                const tslPercent = ditzConfig.tsl_percent || 20
-                                const stopPrice = (pos.current_price || 0) * (1 - tslPercent / 100)
+                                const stopPrice = pos.stop_loss_price || 0
                                 const isNearStop = pos.current_price && stopPrice && (pos.current_price - stopPrice) / pos.current_price < 0.05
                                 return (
                                   <tr key={pos.id} className="border-b border-dark-700/50 hover:bg-dark-700/30">
@@ -3487,6 +3784,9 @@ function AdminPanel() {
                                     </td>
                                     <td className="p-2 text-gray-500 text-sm">
                                       {new Date(pos.buy_date).toLocaleDateString('de-DE')}
+                                    </td>
+                                    <td className="p-2 text-center">
+                                      {pos.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
                                     </td>
                                   </tr>
                                 )
@@ -3777,7 +4077,12 @@ function AdminPanel() {
                           <div className="bg-dark-700/50 rounded-lg p-3">
                             <div className="text-xs text-gray-500 mb-1">Offene Positionen</div>
                             <div className="text-base font-bold text-white">{traderEnrichedPerf.open_positions || 0}</div>
-                            <div className="text-xs text-gray-500 mt-1">von {traderEnrichedPerf.total_buys || 0} Käufen</div>
+                            <div className="text-xs mt-1">
+                              <span className="text-gray-500">von {traderEnrichedPerf.total_buys || 0} Käufen</span>
+                              {traderPrivatePortfolio?.positions?.filter(p => p.is_live).length > 0 && (
+                                <span className="ml-1 text-green-400">{traderPrivatePortfolio.positions.filter(p => p.is_live).length} Live</span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -3795,9 +4100,10 @@ function AdminPanel() {
                                 { key: 'quantity', label: 'Menge (Invest.)', align: 'right' },
                                 { key: 'avg_price', label: 'Kaufpreis', align: 'right' },
                                 { key: 'current_price', label: 'Aktuell', align: 'right' },
-                                { key: 'tsl', label: `TSL (${traderConfig.tsl_percent || 20}%)`, align: 'right' },
+                                { key: 'tsl', label: 'SL', align: 'right' },
                                 { key: 'total_return_pct', label: 'Rendite (Wert)', align: 'right' },
-                                { key: 'buy_date', label: 'Kaufdatum', align: 'left' }
+                                { key: 'buy_date', label: 'Kaufdatum', align: 'left' },
+                                { key: 'is_live', label: 'Live', align: 'center' }
                               ].map(col => (
                                 <th
                                   key={col.key}
@@ -3835,8 +4141,7 @@ function AdminPanel() {
                               })
                               .map((pos) => {
                                 const currentValue = (pos.current_price || 0) * (pos.quantity || 0)
-                                const tslPercent = traderConfig.tsl_percent || 20
-                                const stopPrice = (pos.current_price || 0) * (1 - tslPercent / 100)
+                                const stopPrice = pos.stop_loss_price || 0
                                 const isNearStop = pos.current_price && stopPrice && (pos.current_price - stopPrice) / pos.current_price < 0.05
                                 return (
                                   <tr key={pos.id} className="border-b border-dark-700/50 hover:bg-dark-700/30">
@@ -3859,6 +4164,9 @@ function AdminPanel() {
                                     </td>
                                     <td className="p-2 text-gray-500 text-sm">
                                       {new Date(pos.buy_date).toLocaleDateString('de-DE')}
+                                    </td>
+                                    <td className="p-2 text-center">
+                                      {pos.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
                                     </td>
                                   </tr>
                                 )
@@ -4015,6 +4323,7 @@ function AdminPanel() {
                                 }`}>
                                   {trade.action}
                                 </span>
+                                {trade.is_stop_loss && <span className="ml-1 px-1.5 py-0.5 bg-red-500/20 text-red-400 text-[10px] rounded font-medium">SL</span>}
                               </td>
                               <td className="p-2 text-sm text-gray-300 text-right">{trade.quantity?.toFixed(4)}</td>
                               <td className="p-2 text-sm text-gray-300 text-right">{formatPrice(trade.price)}</td>
@@ -4654,6 +4963,7 @@ function AdminPanel() {
                                   }`}>
                                     {trade.action}
                                   </span>
+                                  {trade.is_stop_loss && <span className="ml-1 px-1.5 py-0.5 bg-red-500/20 text-red-400 text-[10px] rounded font-medium">SL</span>}
                                 </td>
                                 <td className="p-3">
                                   <input
@@ -4717,6 +5027,7 @@ function AdminPanel() {
                                   }`}>
                                     {trade.action}
                                   </span>
+                                  {trade.is_stop_loss && <span className="ml-1 px-1.5 py-0.5 bg-red-500/20 text-red-400 text-[10px] rounded font-medium">SL</span>}
                                 </td>
                                 <td className={`p-3 text-right ${trade.is_deleted ? 'text-gray-500 line-through' : 'text-white'}`}>{trade.quantity}</td>
                                 <td className={`p-3 text-right ${trade.is_deleted ? 'text-gray-500 line-through' : 'text-white'}`}>{formatPrice(trade.price, trade.symbol)}</td>
@@ -4838,6 +5149,19 @@ function AdminPanel() {
                                             <circle cx="12" cy="12" r="3" />
                                           </svg>
                                         )}
+                                      </button>
+                                    )}
+                                    {trade.is_stop_loss && !trade.is_deleted && (
+                                      <button
+                                        onClick={() => {
+                                          if (confirm(`Stop Loss für ${trade.symbol} rückgängig machen? Position wird wieder geöffnet.`)) {
+                                            handleDeleteTrade(getBotApiName(), trade.id, trade.symbol, trade.action, trade.is_deleted)
+                                          }
+                                        }}
+                                        className="px-2 py-1 bg-orange-500/20 text-orange-400 hover:bg-orange-500/30 text-[10px] rounded font-medium transition-colors"
+                                        title="Stop Loss rückgängig machen"
+                                      >
+                                        Undo SL
                                       </button>
                                     )}
                                     {!trade.is_deleted && (
@@ -5268,6 +5592,20 @@ function AdminPanel() {
                       />
                       <p className="text-xs text-gray-500">Trailing Stop Loss in %. Höher = mehr Spielraum. Niedriger = schnellerer Ausstieg bei Verlust.</p>
                     </div>
+
+                    <div className="bg-dark-800 rounded-lg p-3 flex items-center gap-3">
+                      <label className="text-xs text-gray-500">SL aktiv</label>
+                      <button
+                        onClick={() => updateDitzConfigValue('tsl_enabled', !ditzConfig.tsl_enabled)}
+                        className={`relative w-10 h-5 rounded-full transition-colors ${
+                          ditzConfig.tsl_enabled !== false ? 'bg-green-500' : 'bg-gray-600'
+                        }`}
+                      >
+                        <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                          ditzConfig.tsl_enabled !== false ? 'translate-x-5' : ''
+                        }`} />
+                      </button>
+                    </div>
                   </div>
 
                   <div className="flex items-center justify-between pt-4 border-t border-cyan-500/20">
@@ -5414,6 +5752,20 @@ function AdminPanel() {
                         className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-white mb-2"
                       />
                       <p className="text-xs text-gray-500">Trailing Stop Loss in %. Höher = mehr Spielraum. Niedriger = schnellerer Ausstieg bei Verlust.</p>
+                    </div>
+
+                    <div className="bg-dark-800 rounded-lg p-3 flex items-center gap-3">
+                      <label className="text-xs text-gray-500">SL aktiv</label>
+                      <button
+                        onClick={() => updateTraderConfigValue('tsl_enabled', !traderConfig.tsl_enabled)}
+                        className={`relative w-10 h-5 rounded-full transition-colors ${
+                          traderConfig.tsl_enabled !== false ? 'bg-green-500' : 'bg-gray-600'
+                        }`}
+                      >
+                        <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                          traderConfig.tsl_enabled !== false ? 'translate-x-5' : ''
+                        }`} />
+                      </button>
                     </div>
                   </div>
 
@@ -5566,6 +5918,20 @@ function AdminPanel() {
                       />
                       <p className="text-xs text-gray-500">Trailing Stop Loss in %. Höher = mehr Spielraum. Niedriger = schnellerer Ausstieg bei Verlust.</p>
                     </div>
+
+                    <div className="bg-dark-800 rounded-lg p-3 flex items-center gap-3">
+                      <label className="text-xs text-gray-500">SL aktiv</label>
+                      <button
+                        onClick={() => updateQuantConfigValue('tsl_enabled', !quantConfig.tsl_enabled)}
+                        className={`relative w-10 h-5 rounded-full transition-colors ${
+                          quantConfig.tsl_enabled !== false ? 'bg-green-500' : 'bg-gray-600'
+                        }`}
+                      >
+                        <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                          quantConfig.tsl_enabled !== false ? 'translate-x-5' : ''
+                        }`} />
+                      </button>
+                    </div>
                   </div>
 
                   <div className="flex items-center justify-between pt-4 border-t border-violet-500/20">
@@ -5582,6 +5948,108 @@ function AdminPanel() {
                     </button>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* Aktien Listen Tab */}
+            {activeTab === 'allowlist' && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-medium text-white">Bot Aktien Listen</h3>
+                  <button
+                    onClick={fetchAllowlist}
+                    className="px-3 py-1.5 bg-dark-700 text-gray-300 rounded-lg text-sm hover:bg-dark-600"
+                  >
+                    Aktualisieren
+                  </button>
+                </div>
+
+                {allowlistMessage && (
+                  <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg text-yellow-300 text-sm">
+                    {allowlistMessage}
+                  </div>
+                )}
+
+                <input
+                  type="text"
+                  placeholder="Aktie suchen..."
+                  value={allowlistFilter}
+                  onChange={(e) => setAllowlistFilter(e.target.value)}
+                  className="w-full md:w-64 px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:border-accent-500"
+                />
+
+                {allowlistLoading ? (
+                  <div className="text-center py-12">
+                    <div className="w-8 h-8 border-2 border-accent-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-dark-600">
+                          <th className="text-left py-2 px-3 text-gray-400 font-medium">Symbol</th>
+                          {['flipper', 'lutz', 'quant', 'ditz', 'trader'].map(bot => (
+                            <th key={bot} className="text-center py-2 px-3 text-gray-400 font-medium capitalize">{bot}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          const allSymbols = new Set()
+                          Object.values(allowlistData).forEach(entries => {
+                            if (entries) entries.forEach(e => allSymbols.add(e.symbol))
+                          })
+                          const symbolList = [...allSymbols].sort().filter(s =>
+                            !allowlistFilter || s.toLowerCase().includes(allowlistFilter.toLowerCase())
+                          )
+
+                          return symbolList.map(symbol => (
+                            <tr key={symbol} className="border-b border-dark-700 hover:bg-dark-700/50">
+                              <td className="py-2 px-3 text-white font-mono">{symbol}</td>
+                              {['flipper', 'lutz', 'quant', 'ditz', 'trader'].map(bot => {
+                                const botEntries = allowlistData[bot] || []
+                                const entry = botEntries.find(e => e.symbol === symbol)
+                                const hasStock = !!entry
+                                const isAllowed = entry ? entry.allowed : true
+
+                                return (
+                                  <td key={bot} className="text-center py-2 px-3">
+                                    {hasStock ? (
+                                      <button
+                                        onClick={() => toggleAllowlist(bot, symbol, isAllowed)}
+                                        className={`w-8 h-8 rounded-lg flex items-center justify-center mx-auto transition-colors ${
+                                          isAllowed
+                                            ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                                            : 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
+                                        }`}
+                                        title={isAllowed ? 'Erlaubt - Klicken zum Deaktivieren' : 'Blockiert - Klicken zum Aktivieren'}
+                                      >
+                                        {isAllowed ? (
+                                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                          </svg>
+                                        ) : (
+                                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                          </svg>
+                                        )}
+                                      </button>
+                                    ) : (
+                                      <span className="text-gray-600">-</span>
+                                    )}
+                                  </td>
+                                )
+                              })}
+                            </tr>
+                          ))
+                        })()}
+                      </tbody>
+                    </table>
+                    {Object.keys(allowlistData).length === 0 && (
+                      <div className="text-center py-8 text-gray-500">Keine Daten geladen</div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </>
@@ -5675,109 +6143,6 @@ function AdminPanel() {
                 </div>
               )}
             </div>
-
-            {/* Aktien Listen Tab */}
-            {activeTab === 'allowlist' && (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-lg font-medium text-white">Bot Aktien Listen</h3>
-                  <button
-                    onClick={fetchAllowlist}
-                    className="px-3 py-1.5 bg-dark-700 text-gray-300 rounded-lg text-sm hover:bg-dark-600"
-                  >
-                    Aktualisieren
-                  </button>
-                </div>
-
-                {allowlistMessage && (
-                  <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg text-yellow-300 text-sm">
-                    {allowlistMessage}
-                  </div>
-                )}
-
-                <input
-                  type="text"
-                  placeholder="Aktie suchen..."
-                  value={allowlistFilter}
-                  onChange={(e) => setAllowlistFilter(e.target.value)}
-                  className="w-full md:w-64 px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:border-accent-500"
-                />
-
-                {allowlistLoading ? (
-                  <div className="text-center py-12">
-                    <div className="w-8 h-8 border-2 border-accent-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-dark-600">
-                          <th className="text-left py-2 px-3 text-gray-400 font-medium">Symbol</th>
-                          {['flipper', 'lutz', 'quant', 'ditz', 'trader'].map(bot => (
-                            <th key={bot} className="text-center py-2 px-3 text-gray-400 font-medium capitalize">{bot}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(() => {
-                          // Collect all unique symbols across all bots
-                          const allSymbols = new Set()
-                          Object.values(allowlistData).forEach(entries => {
-                            if (entries) entries.forEach(e => allSymbols.add(e.symbol))
-                          })
-                          const symbolList = [...allSymbols].sort().filter(s =>
-                            !allowlistFilter || s.toLowerCase().includes(allowlistFilter.toLowerCase())
-                          )
-
-                          return symbolList.map(symbol => (
-                            <tr key={symbol} className="border-b border-dark-700 hover:bg-dark-700/50">
-                              <td className="py-2 px-3 text-white font-mono">{symbol}</td>
-                              {['flipper', 'lutz', 'quant', 'ditz', 'trader'].map(bot => {
-                                const botEntries = allowlistData[bot] || []
-                                const entry = botEntries.find(e => e.symbol === symbol)
-                                const hasStock = !!entry
-                                const isAllowed = entry ? entry.allowed : true
-
-                                return (
-                                  <td key={bot} className="text-center py-2 px-3">
-                                    {hasStock ? (
-                                      <button
-                                        onClick={() => toggleAllowlist(bot, symbol, isAllowed)}
-                                        className={`w-8 h-8 rounded-lg flex items-center justify-center mx-auto transition-colors ${
-                                          isAllowed
-                                            ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
-                                            : 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
-                                        }`}
-                                        title={isAllowed ? 'Erlaubt - Klicken zum Deaktivieren' : 'Blockiert - Klicken zum Aktivieren'}
-                                      >
-                                        {isAllowed ? (
-                                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                          </svg>
-                                        ) : (
-                                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                          </svg>
-                                        )}
-                                      </button>
-                                    ) : (
-                                      <span className="text-gray-600">-</span>
-                                    )}
-                                  </td>
-                                )
-                              })}
-                            </tr>
-                          ))
-                        })()}
-                      </tbody>
-                    </table>
-                    {Object.keys(allowlistData).length === 0 && (
-                      <div className="text-center py-8 text-gray-500">Keine Daten geladen</div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         </div>
       )}
