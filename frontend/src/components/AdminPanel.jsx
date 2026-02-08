@@ -18,6 +18,7 @@ function AdminPanel() {
   const [activityFilter, setActivityFilter] = useState('')
   const [updatingStocks, setUpdatingStocks] = useState(false)
   const [updateProgress, setUpdateProgress] = useState(null)
+  const [forceUpdate, setForceUpdate] = useState(false)
   const [lastFullUpdate, setLastFullUpdate] = useState(null)
   const [showTrackedDiff, setShowTrackedDiff] = useState(false)
   const [trackedDiff, setTrackedDiff] = useState({ defensive: [], aggressive: [] })
@@ -1620,7 +1621,7 @@ function AdminPanel() {
   }
 
   const handleUpdateAllStocks = async () => {
-    if (!confirm(`Alle Watchlist-Aktien aktualisieren? Das speichert BX-Trender Daten für ALLE Modi (Defensiv, Aggressiv, Quant, Ditz & Trader). Das kann mehrere Minuten dauern.`)) {
+    if (!confirm(`Alle Watchlist-Aktien aktualisieren?${forceUpdate ? ' (FORCE — alle werden aktualisiert)' : ' Bereits heute aktualisierte werden übersprungen.'}`)) {
       return
     }
 
@@ -1630,6 +1631,7 @@ function AdminPanel() {
     let total = 0
     let successCount = 0
     let errorCount = 0
+    let skippedCount = 0
 
     try {
       // Get all stocks from watchlist
@@ -1645,13 +1647,31 @@ function AdminPanel() {
       }
 
       const stocks = data.stocks
+      const lastUpdates = data.last_updates || {}
       total = stocks.length
+      const todayStr = new Date().toISOString().slice(0, 10)
 
       setUpdateProgress({ current: 0, total, status: 'Verarbeite Aktien...' })
 
       // Process each stock
       for (let i = 0; i < stocks.length; i++) {
         const stock = stocks[i]
+
+        // Skip if already updated today (unless force)
+        if (!forceUpdate && lastUpdates[stock.symbol]) {
+          const updatedDate = lastUpdates[stock.symbol].slice(0, 10)
+          if (updatedDate === todayStr) {
+            skippedCount++
+            setUpdateProgress({
+              current: i + 1,
+              total,
+              status: `${stock.symbol} übersprungen (heute bereits aktualisiert)`,
+              currentStock: `${stock.symbol} — skipped`
+            })
+            continue
+          }
+        }
+
         setUpdateProgress({
           current: i,
           total,
@@ -1675,7 +1695,7 @@ function AdminPanel() {
       setUpdateProgress({
         current: total,
         total,
-        status: `Fertig! ${successCount} erfolgreich, ${errorCount} fehlgeschlagen`,
+        status: `Fertig! ${successCount} aktualisiert${skippedCount > 0 ? `, ${skippedCount} übersprungen` : ''}${errorCount > 0 ? `, ${errorCount} fehlgeschlagen` : ''}`,
         currentStock: null
       })
     } catch (err) {
@@ -1810,6 +1830,11 @@ function AdminPanel() {
                         </>
                       )}
                     </button>
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input type="checkbox" checked={forceUpdate} onChange={e => setForceUpdate(e.target.checked)}
+                        className="w-4 h-4 rounded border-dark-500 bg-dark-700 text-orange-500 focus:ring-orange-500/50" />
+                      <span className={`text-sm font-medium ${forceUpdate ? 'text-orange-400' : 'text-gray-400'}`}>Force?</span>
+                    </label>
                   </div>
                   {updateProgress && (
                     <div className="mt-4 p-3 bg-dark-800 rounded-lg">

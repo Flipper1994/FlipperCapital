@@ -744,9 +744,6 @@ function Performance({ token }) {
                       <span className={`text-sm font-medium whitespace-nowrap ${st.riskReward >= 1 ? 'text-green-400' : 'text-orange-400'}`}>
                         R/R {st.riskReward === Infinity ? '∞' : st.riskReward.toFixed(2)}
                       </span>
-                      <span className={`text-sm font-medium whitespace-nowrap ${st.totalReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        Σ {st.totalReturn >= 0 ? '+' : ''}{st.totalReturn.toFixed(1)}%
-                      </span>
                       <span className={`text-sm whitespace-nowrap ${st.avgReturn >= 0 ? 'text-green-400/70' : 'text-red-400/70'}`}>
                         Ø {st.avgReturn >= 0 ? '+' : ''}{st.avgReturn.toFixed(2)}%
                       </span>

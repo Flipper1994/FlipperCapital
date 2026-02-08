@@ -4443,10 +4443,29 @@ func updateAllWatchlistStocks(c *gin.Context) {
 	var stocks []Stock
 	db.Order("symbol asc").Find(&stocks)
 
+	// Get last performance update per symbol (newest across all 5 mode tables)
+	type SymUpdate struct {
+		Symbol    string
+		UpdatedAt time.Time
+	}
+	lastUpdates := make(map[string]time.Time)
+
+	tables := []string{"stock_performances", "aggressive_stock_performances", "quant_stock_performances", "ditz_stock_performances", "trader_stock_performances"}
+	for _, table := range tables {
+		var rows []SymUpdate
+		db.Table(table).Select("symbol, updated_at").Find(&rows)
+		for _, r := range rows {
+			if existing, ok := lastUpdates[r.Symbol]; !ok || r.UpdatedAt.After(existing) {
+				lastUpdates[r.Symbol] = r.UpdatedAt
+			}
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"mode":   mode,
-		"stocks": stocks,
-		"total":  len(stocks),
+		"mode":         mode,
+		"stocks":       stocks,
+		"total":        len(stocks),
+		"last_updates": lastUpdates,
 	})
 }
 
