@@ -5544,6 +5544,11 @@ func runFlipperUpdateInternal(triggeredBy string) {
 			continue
 		}
 
+		if stockPerf.Signal == "NO_DATA" {
+			addLog("SKIP", fmt.Sprintf("%s: Nicht genug Daten für Berechnung - überspringe", pos.Symbol))
+			continue
+		}
+
 		if stockPerf.Signal == "SELL" || stockPerf.Signal == "WAIT" {
 			addLog("KORREKTUR", fmt.Sprintf("%s: Signal ist jetzt %s, aber Position vorhanden - schließe Position", pos.Symbol, stockPerf.Signal))
 
@@ -8300,6 +8305,11 @@ func runLutzUpdateInternal(triggeredBy string) {
 			continue
 		}
 
+		if stockPerf.Signal == "NO_DATA" {
+			addLog("SKIP", fmt.Sprintf("%s: Nicht genug Daten für Berechnung - überspringe", pos.Symbol))
+			continue
+		}
+
 		if stockPerf.Signal == "SELL" || stockPerf.Signal == "WAIT" {
 			addLog("KORREKTUR", fmt.Sprintf("%s: Signal ist jetzt %s, aber Position vorhanden - schließe Position", pos.Symbol, stockPerf.Signal))
 
@@ -9724,6 +9734,11 @@ func runQuantUpdateInternal(triggeredBy string) {
 				lastBuyTrade = &serverTrades[i]
 				break
 			}
+		}
+
+		if stockPerf.Signal == "NO_DATA" {
+			addLog("SKIP", fmt.Sprintf("%s: Nicht genug Daten für Berechnung - überspringe", pos.Symbol))
+			continue
 		}
 
 		if stockPerf.Signal == "SELL" || stockPerf.Signal == "WAIT" {
@@ -12380,7 +12395,7 @@ func calculateBXtrenderServer(ohlcv []OHLCV, isAggressive bool, config BXtrender
 	minLen += shortL3 + 10
 
 	if len(ohlcv) < minLen {
-		return BXtrenderResult{Signal: "WAIT", Bars: 0}
+		return BXtrenderResult{Signal: "NO_DATA", Bars: 0}
 	}
 
 	// Extract close prices
@@ -12583,7 +12598,7 @@ func calculateBXtrenderQuantServer(ohlcv []OHLCV, config BXtrenderQuantConfig, n
 	minLen += shortL3 + 10
 
 	if len(ohlcv) < minLen {
-		return BXtrenderResult{Signal: "WAIT", Bars: 0}
+		return BXtrenderResult{Signal: "NO_DATA", Bars: 0}
 	}
 
 	// Extract close prices
@@ -12887,6 +12902,9 @@ func convertServerTradesToTradeData(serverTrades []ServerTrade, currentPrice flo
 }
 
 func savePerformanceServer(symbol, name string, metrics MetricsResult, result BXtrenderResult, currentPrice float64, marketCap int64, isAggressive bool) {
+	if result.Signal == "NO_DATA" {
+		return // Don't overwrite existing data with no-data result
+	}
 	tradeData := convertServerTradesToTradeData(result.Trades, currentPrice)
 	tradesJSON, _ := json.Marshal(tradeData)
 
@@ -12993,6 +13011,9 @@ func savePerformanceServer(symbol, name string, metrics MetricsResult, result BX
 
 // saveQuantPerformanceServer saves performance data for quant mode
 func saveQuantPerformanceServer(symbol, name string, metrics MetricsResult, result BXtrenderResult, currentPrice float64, marketCap int64) {
+	if result.Signal == "NO_DATA" {
+		return
+	}
 	tradeData := convertServerTradesToTradeData(result.Trades, currentPrice)
 	tradesJSON, _ := json.Marshal(tradeData)
 	newSignalSince := calcSignalSince(result)
@@ -13371,6 +13392,11 @@ func runDitzUpdateInternal(triggeredBy string) {
 				lastBuyTrade = &serverTrades[i]
 				break
 			}
+		}
+
+		if stockPerf.Signal == "NO_DATA" {
+			addLog("SKIP", fmt.Sprintf("%s: Nicht genug Daten für Berechnung - überspringe", pos.Symbol))
+			continue
 		}
 
 		if stockPerf.Signal == "SELL" || stockPerf.Signal == "WAIT" {
@@ -15429,6 +15455,11 @@ func runTraderUpdateInternal(triggeredBy string) {
 			}
 		}
 
+		if stockPerf.Signal == "NO_DATA" {
+			addLog("SKIP", fmt.Sprintf("%s: Nicht genug Daten für Berechnung - überspringe", pos.Symbol))
+			continue
+		}
+
 		if stockPerf.Signal == "SELL" || stockPerf.Signal == "WAIT" {
 			// BXTrender says no position should be open - but we have one
 			addLog("KORREKTUR", fmt.Sprintf("%s: Signal ist jetzt %s, aber Position vorhanden - schließe Position", pos.Symbol, stockPerf.Signal))
@@ -17241,7 +17272,7 @@ func calculateBXtrenderDitzServer(ohlcv []OHLCV, config BXtrenderDitzConfig, nex
 	minLen += shortL3 + 10
 
 	if len(ohlcv) < minLen {
-		return BXtrenderResult{Signal: "WAIT", Bars: 0}
+		return BXtrenderResult{Signal: "NO_DATA", Bars: 0}
 	}
 
 	// Extract close prices
@@ -17407,6 +17438,9 @@ func calculateBXtrenderDitzServer(ohlcv []OHLCV, config BXtrenderDitzConfig, nex
 }
 
 func saveDitzPerformanceServer(symbol, name string, metrics MetricsResult, result BXtrenderResult, currentPrice float64, marketCap int64) {
+	if result.Signal == "NO_DATA" {
+		return
+	}
 	tradeData := convertServerTradesToTradeData(result.Trades, currentPrice)
 	tradesJSON, _ := json.Marshal(tradeData)
 	newSignalSince := calcSignalSince(result)
@@ -17495,7 +17529,7 @@ func calculateBXtrenderTraderServer(ohlcv []OHLCV, config BXtrenderTraderConfig,
 	minLen += shortL3 + 10
 
 	if len(ohlcv) < minLen {
-		return BXtrenderResult{Signal: "WAIT", Bars: 0}
+		return BXtrenderResult{Signal: "NO_DATA", Bars: 0}
 	}
 
 	// Extract close prices
@@ -17648,6 +17682,9 @@ func calculateBXtrenderTraderServer(ohlcv []OHLCV, config BXtrenderTraderConfig,
 
 // saveTraderPerformanceServer saves performance data for trader mode (server-side batch)
 func saveTraderPerformanceServer(symbol, name string, metrics MetricsResult, result BXtrenderResult, currentPrice float64, marketCap int64) {
+	if result.Signal == "NO_DATA" {
+		return
+	}
 	tradeData := convertServerTradesToTradeData(result.Trades, currentPrice)
 	tradesJSON, _ := json.Marshal(tradeData)
 	newSignalSince := calcSignalSince(result)

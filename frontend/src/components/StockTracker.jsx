@@ -237,15 +237,6 @@ function StockTracker() {
   })
 
   const sortedStocks = [...filteredStocks].sort((a, b) => {
-    // Default: sort by signal priority first, then by the selected field
-    if (sortField === 'updated_at' && sortDir === 'desc') {
-      // Default view: sort by signal priority
-      const priorityDiff = signalPriority[a.monthSignal] - signalPriority[b.monthSignal]
-      if (priorityDiff !== 0) return priorityDiff
-      // Then by symbol
-      return a.symbol.localeCompare(b.symbol)
-    }
-
     let aVal = a[sortField]
     let bVal = b[sortField]
 
@@ -280,6 +271,8 @@ function StockTracker() {
         return 'bg-red-500/20 text-red-400 border-red-500/30'
       case 'WAIT':
         return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
+      case 'NO_DATA':
+        return 'bg-gray-500/20 text-gray-400 border-gray-500/30'
       default:
         return 'bg-gray-500/20 text-gray-400 border-gray-500/30'
     }

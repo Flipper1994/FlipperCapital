@@ -997,7 +997,7 @@ export function calculateMetrics(trades) {
 // or based on trade history (for aggressive mode)
 // IMPORTANT: Signal is based on PREVIOUS MONTH (last completed bar), not current month
 export function calculateSignal(shortData, isAggressive = false, trades = []) {
-  if (shortData.length < 4) return { signal: 'WAIT', bars: 0 }
+  if (shortData.length < 4) return { signal: 'NO_DATA', bars: 0 }
 
   // Unified HOLD/WAIT logic based on trade history (all modes)
   const hasOpenPosition = trades.some(t => t.isOpen)
@@ -1047,6 +1047,7 @@ export async function savePerformanceToBackend(symbol, name, metrics, trades, sh
   try {
     // Pass trades to calculateSignal for aggressive mode (signal based on trade history)
     const { signal, bars } = calculateSignal(shortData, isAggressive, trades)
+    if (signal === 'NO_DATA') return
     const endpoint = isAggressive ? '/api/performance/aggressive' : '/api/performance'
 
     const res = await fetch(endpoint, {
@@ -1083,6 +1084,7 @@ export async function saveQuantPerformanceToBackend(symbol, name, metrics, trade
   try {
     // Calculate signal for Quant mode: based on alignment of both indicators
     const { signal, bars } = calculateQuantSignal(shortData, longData, trades)
+    if (signal === 'NO_DATA') return
 
     const res = await fetch('/api/performance/quant', {
       method: 'POST',
@@ -1115,7 +1117,7 @@ export async function saveQuantPerformanceToBackend(symbol, name, metrics, trade
 
 // Calculate signal for Ditz mode — unified HOLD/WAIT based on trade history
 export function calculateDitzSignal(signalData, trades) {
-  if (!signalData || signalData.length < 3) return { signal: 'WAIT', bars: 0 }
+  if (!signalData || signalData.length < 3) return { signal: 'NO_DATA', bars: 0 }
 
   const hasOpenPosition = trades && trades.some(t => t.isOpen)
 
@@ -1160,6 +1162,7 @@ export function calculateDitzSignal(signalData, trades) {
 export async function saveDitzPerformanceToBackend(symbol, name, metrics, trades, signalData, currentPrice, marketCap = 0) {
   try {
     const { signal, bars } = calculateDitzSignal(signalData, trades)
+    if (signal === 'NO_DATA') return
 
     const res = await fetch('/api/performance/ditz', {
       method: 'POST',
@@ -1199,6 +1202,7 @@ export function calculateTraderSignal(signalData, trades) {
 export async function saveTraderPerformanceToBackend(symbol, name, metrics, trades, signalData, currentPrice, marketCap = 0) {
   try {
     const { signal, bars } = calculateTraderSignal(signalData, trades)
+    if (signal === 'NO_DATA') return
 
     const res = await fetch('/api/performance/trader', {
       method: 'POST',
@@ -1232,7 +1236,7 @@ export async function saveTraderPerformanceToBackend(symbol, name, metrics, trad
 // Calculate signal for Quant mode — unified HOLD/WAIT based on trade history
 export function calculateQuantSignal(shortData, longData, trades) {
   if (!shortData || shortData.length < 2 || !longData || longData.length < 2) {
-    return { signal: 'WAIT', bars: 0 }
+    return { signal: 'NO_DATA', bars: 0 }
   }
 
   const hasOpenPosition = trades && trades.some(t => t.isOpen)

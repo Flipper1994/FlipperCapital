@@ -163,6 +163,7 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock, o
       case 'HOLD': return 'bg-blue-500/20 text-blue-400'
       case 'SELL': return 'bg-red-500/20 text-red-400'
       case 'WAIT': return 'bg-yellow-500/20 text-yellow-400'
+      case 'NO_DATA': return 'bg-gray-500/20 text-gray-400'
       default: return 'bg-gray-500/20 text-gray-400'
     }
   }
