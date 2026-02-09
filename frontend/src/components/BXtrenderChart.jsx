@@ -398,7 +398,18 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
           )}
         </div>
         <div className="hidden md:flex items-center gap-3 text-xs">
-          {(isQuant || isDitz || isTrader) ? (
+          {isTrader ? (
+            <>
+              <div className="flex items-center gap-1">
+                <div className="w-2 h-2 bg-lime-400 rounded-sm"></div>
+                <span className="text-gray-400">Signal steigend</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <div className="w-2 h-2 bg-red-500 rounded-sm"></div>
+                <span className="text-gray-400">Signal fallend</span>
+              </div>
+            </>
+          ) : (isQuant || isDitz) ? (
             <>
               <div className="flex items-center gap-1">
                 <div className="w-2 h-2 bg-lime-400 rounded-sm"></div>

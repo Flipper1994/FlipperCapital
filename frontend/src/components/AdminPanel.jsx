@@ -171,6 +171,10 @@ function AdminPanel() {
   const [allowlistFilter, setAllowlistFilter] = useState('')
   const [allowlistMessage, setAllowlistMessage] = useState(null)
 
+  // Bot filter config state
+  const [botFilterConfigs, setBotFilterConfigs] = useState({})
+  const [botFilterSaving, setBotFilterSaving] = useState(null)
+
   const fetchAllowlist = async () => {
     setAllowlistLoading(true)
     try {
@@ -224,7 +228,63 @@ function AdminPanel() {
     if (activeTab === 'allowlist' && Object.keys(allowlistData).length === 0) {
       fetchAllowlist()
     }
+    if (activeTab === 'botfilter' && Object.keys(botFilterConfigs).length === 0) {
+      fetchBotFilterConfigs()
+    }
   }, [activeTab])
+
+  const fetchBotFilterConfigs = async () => {
+    try {
+      const res = await fetch('/api/admin/bot-filter-config', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setBotFilterConfigs(data)
+      }
+    } catch (err) {
+      console.error('Failed to fetch bot filter configs:', err)
+    }
+  }
+
+  const saveBotFilterConfig = async (botName) => {
+    setBotFilterSaving(botName)
+    try {
+      const config = botFilterConfigs[botName] || {}
+      const body = {
+        bot_name: botName,
+        enabled: config.enabled || false,
+        min_winrate: config.min_winrate !== '' && config.min_winrate != null ? parseFloat(config.min_winrate) : null,
+        max_winrate: config.max_winrate !== '' && config.max_winrate != null ? parseFloat(config.max_winrate) : null,
+        min_rr: config.min_rr !== '' && config.min_rr != null ? parseFloat(config.min_rr) : null,
+        max_rr: config.max_rr !== '' && config.max_rr != null ? parseFloat(config.max_rr) : null,
+        min_avg_return: config.min_avg_return !== '' && config.min_avg_return != null ? parseFloat(config.min_avg_return) : null,
+        max_avg_return: config.max_avg_return !== '' && config.max_avg_return != null ? parseFloat(config.max_avg_return) : null,
+        min_market_cap: config.min_market_cap !== '' && config.min_market_cap != null ? parseFloat(config.min_market_cap) : null,
+      }
+      const res = await fetch('/api/admin/bot-filter-config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify(body)
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setBotFilterConfigs(prev => ({ ...prev, [botName]: data }))
+        alert(`${botName} Filter gespeichert!`)
+      }
+    } catch (err) {
+      console.error('Failed to save bot filter config:', err)
+      alert('Fehler beim Speichern')
+    }
+    setBotFilterSaving(null)
+  }
+
+  const updateBotFilterValue = (botName, field, value) => {
+    setBotFilterConfigs(prev => ({
+      ...prev,
+      [botName]: { ...(prev[botName] || { bot_name: botName }), [field]: value }
+    }))
+  }
 
   useEffect(() => {
     if (isAdmin) {
@@ -1789,6 +1849,7 @@ function AdminPanel() {
             { key: 'quant', label: 'Quant' },
             { key: 'ditz', label: 'Ditz' },
             { key: 'trader', label: 'Trader' },
+            { key: 'botfilter', label: 'Bot Filter' },
             { key: 'allowlist', label: 'Aktien Listen' }
           ].map(tab => (
             <button
@@ -4442,6 +4503,11 @@ function AdminPanel() {
                                   {trade.action}
                                 </span>
                                 {trade.is_stop_loss && <span className="ml-1 px-1.5 py-0.5 bg-red-500/20 text-red-400 text-[10px] rounded font-medium">SL</span>}
+                                {trade.is_filter_blocked && (
+                                  <span className="ml-1 px-1.5 py-0.5 bg-yellow-500/20 text-yellow-400 text-[10px] rounded font-medium cursor-help" title={trade.filter_block_reason}>
+                                    FILTER
+                                  </span>
+                                )}
                               </td>
                               <td className="p-2 text-sm text-gray-300 text-right">{trade.quantity?.toFixed(4)}</td>
                               <td className="p-2 text-sm text-gray-300 text-right">{formatPrice(trade.price)}</td>
@@ -5056,6 +5122,7 @@ function AdminPanel() {
                         })().map((trade) => (
                           <tr key={trade.id} className={`border-b border-dark-700/50 hover:bg-dark-700/30 ${
                             trade.is_deleted ? 'opacity-50' : ''
+                          } ${trade.is_filter_blocked ? 'opacity-60 bg-yellow-500/5' : ''
                           } ${trade.is_live && !trade.is_deleted ? 'bg-green-500/5' : ''} ${
                             botTab === 'flipper' && !trade.is_read && !trade.is_deleted ? 'bg-blue-500/5 border-l-2 border-l-blue-500' : ''
                           } ${
@@ -5149,6 +5216,11 @@ function AdminPanel() {
                                     {trade.action}
                                   </span>
                                   {trade.is_stop_loss && <span className="ml-1 px-1.5 py-0.5 bg-red-500/20 text-red-400 text-[10px] rounded font-medium">SL</span>}
+                                  {trade.is_filter_blocked && (
+                                    <span className="ml-1 px-1.5 py-0.5 bg-yellow-500/20 text-yellow-400 text-[10px] rounded font-medium cursor-help" title={trade.filter_block_reason}>
+                                      FILTER
+                                    </span>
+                                  )}
                                 </td>
                                 <td className={`p-3 text-right ${trade.is_deleted ? 'text-gray-500 line-through' : 'text-white'}`}>{trade.quantity}</td>
                                 <td className={`p-3 text-right ${trade.is_deleted ? 'text-gray-500 line-through' : 'text-white'}`}>{formatPrice(trade.price, trade.symbol)}</td>
@@ -6074,6 +6146,112 @@ function AdminPanel() {
                     </button>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* Bot Filter Tab */}
+            {activeTab === 'botfilter' && (
+              <div className="space-y-6">
+                <div>
+                  <h3 className="text-lg font-medium text-white mb-1">Bot Performance Filter</h3>
+                  <p className="text-sm text-gray-400">
+                    Konfiguriere Filter pro Bot. Wenn aktiv, werden BUY-Signale blockiert wenn die Aktie die Kriterien nicht erfüllt. Blockierte Trades werden trotzdem aufgezeichnet.
+                  </p>
+                </div>
+
+                {[
+                  { name: 'flipper', label: 'FlipperBot (Defensiv)', color: 'blue' },
+                  { name: 'lutz', label: 'Lutz (Aggressiv)', color: 'orange' },
+                  { name: 'quant', label: 'Quant', color: 'violet' },
+                  { name: 'ditz', label: 'Ditz', color: 'cyan' },
+                  { name: 'trader', label: 'Trader', color: 'emerald' }
+                ].map(bot => {
+                  const config = botFilterConfigs[bot.name] || {}
+                  return (
+                    <div key={bot.name} className="p-4 bg-dark-700 border border-dark-500 rounded-xl">
+                      <div className="flex items-center justify-between mb-4">
+                        <h4 className="text-md font-medium text-white">{bot.label}</h4>
+                        <button
+                          onClick={() => updateBotFilterValue(bot.name, 'enabled', !config.enabled)}
+                          className={`px-4 py-1.5 rounded font-bold text-sm transition-colors ${
+                            config.enabled ? 'bg-green-500 text-white' : 'bg-dark-600 text-gray-400'
+                          }`}
+                        >
+                          {config.enabled ? 'AKTIV' : 'INAKTIV'}
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                        <div className="bg-dark-800 rounded-lg p-3">
+                          <label className="text-xs text-gray-400 block mb-1">Min WinRate (%)</label>
+                          <input type="number" step="1" placeholder="-"
+                            value={config.min_winrate ?? ''}
+                            onChange={e => updateBotFilterValue(bot.name, 'min_winrate', e.target.value === '' ? null : e.target.value)}
+                            className="w-full bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-white text-sm"
+                          />
+                        </div>
+                        <div className="bg-dark-800 rounded-lg p-3">
+                          <label className="text-xs text-gray-400 block mb-1">Max WinRate (%)</label>
+                          <input type="number" step="1" placeholder="-"
+                            value={config.max_winrate ?? ''}
+                            onChange={e => updateBotFilterValue(bot.name, 'max_winrate', e.target.value === '' ? null : e.target.value)}
+                            className="w-full bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-white text-sm"
+                          />
+                        </div>
+                        <div className="bg-dark-800 rounded-lg p-3">
+                          <label className="text-xs text-gray-400 block mb-1">Min R/R</label>
+                          <input type="number" step="0.1" placeholder="-"
+                            value={config.min_rr ?? ''}
+                            onChange={e => updateBotFilterValue(bot.name, 'min_rr', e.target.value === '' ? null : e.target.value)}
+                            className="w-full bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-white text-sm"
+                          />
+                        </div>
+                        <div className="bg-dark-800 rounded-lg p-3">
+                          <label className="text-xs text-gray-400 block mb-1">Max R/R</label>
+                          <input type="number" step="0.1" placeholder="-"
+                            value={config.max_rr ?? ''}
+                            onChange={e => updateBotFilterValue(bot.name, 'max_rr', e.target.value === '' ? null : e.target.value)}
+                            className="w-full bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-white text-sm"
+                          />
+                        </div>
+                        <div className="bg-dark-800 rounded-lg p-3">
+                          <label className="text-xs text-gray-400 block mb-1">Min Ø Rendite (%)</label>
+                          <input type="number" step="0.1" placeholder="-"
+                            value={config.min_avg_return ?? ''}
+                            onChange={e => updateBotFilterValue(bot.name, 'min_avg_return', e.target.value === '' ? null : e.target.value)}
+                            className="w-full bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-white text-sm"
+                          />
+                        </div>
+                        <div className="bg-dark-800 rounded-lg p-3">
+                          <label className="text-xs text-gray-400 block mb-1">Max Ø Rendite (%)</label>
+                          <input type="number" step="0.1" placeholder="-"
+                            value={config.max_avg_return ?? ''}
+                            onChange={e => updateBotFilterValue(bot.name, 'max_avg_return', e.target.value === '' ? null : e.target.value)}
+                            className="w-full bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-white text-sm"
+                          />
+                        </div>
+                        <div className="bg-dark-800 rounded-lg p-3 col-span-2">
+                          <label className="text-xs text-gray-400 block mb-1">Min MarketCap (Mrd)</label>
+                          <input type="number" step="0.1" placeholder="-"
+                            value={config.min_market_cap ?? ''}
+                            onChange={e => updateBotFilterValue(bot.name, 'min_market_cap', e.target.value === '' ? null : e.target.value)}
+                            className="w-full bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-white text-sm"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex justify-end">
+                        <button
+                          onClick={() => saveBotFilterConfig(bot.name)}
+                          disabled={botFilterSaving === bot.name}
+                          className="px-5 py-2 bg-blue-500 hover:bg-blue-400 text-white rounded-lg font-medium text-sm disabled:opacity-50"
+                        >
+                          {botFilterSaving === bot.name ? 'Speichern...' : 'Speichern'}
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             )}
 

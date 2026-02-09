@@ -64,7 +64,16 @@ export default function StockDetailOverlay({ symbol, name, mode, onClose }) {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         return res.json()
       })
-      .then(d => { setData(d); setLoading(false) })
+      .then(d => {
+        // API returns { performance: {...}, trades: [...] } — flatten for display
+        const perf = d.performance || {}
+        setData({
+          ...perf,
+          trades: d.trades || [],
+          monthSignal: perf.signal,
+        })
+        setLoading(false)
+      })
       .catch(err => { setError(err.message); setLoading(false) })
   }, [symbol, mode])
 

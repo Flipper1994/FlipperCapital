@@ -602,12 +602,22 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
       }
     }
 
-    // Quant coloring: Both positive = green shades, both negative = red shades, mixed = gray
+    // Coloring logic
     let shortColor, longColor
     const bothPositive = shortVal > 0 && longVal > 0
     const bothNegative = shortVal < 0 && longVal < 0
 
-    if (bothPositive) {
+    if (mode === 'trader') {
+      // Trader mode: coloring based on signal line direction
+      const sigRising = sigVal > sigPrev
+      if (sigRising) {
+        shortColor = shortVal > shortPrev ? '#00FF00' : '#228B22'
+        longColor = longVal > longPrev ? '#00FF00' : '#228B22'
+      } else {
+        shortColor = shortVal > shortPrev ? '#FF0000' : '#8B0000'
+        longColor = longVal > longPrev ? '#FF0000' : '#8B0000'
+      }
+    } else if (bothPositive) {
       // Both positive - green gradient
       shortColor = shortVal > shortPrev ? '#00FF00' : '#228B22'
       longColor = longVal > longPrev ? '#00FF00' : '#228B22'
@@ -632,12 +642,21 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
 
     let entrySignal, exitSignal
 
-    if (mode === 'ditz' || mode === 'trader') {
-      // Ditz/Trader mode: both indicators must be positive (same as backend)
+    if (mode === 'trader') {
+      // Trader mode: based on T3 signal line direction changes
+      const signalRising = sigVal > sigPrev
+      const signalRisingPrev = sigPrev > (i >= 2 ? signalLine[i - 2] : sigPrev)
+
+      // BUY when signal line turns from falling to rising (Red→Green)
+      entrySignal = !inPosition && signalRising && !signalRisingPrev
+      // SELL when signal line turns from rising to falling (Green→Red) OR TSL
+      exitSignal = inPosition && ((!signalRising && signalRisingPrev) || tslTriggered)
+    } else if (mode === 'ditz') {
+      // Ditz mode: both indicators must be positive
       const bothPositivePrev = shortPrev > 0 && longPrev > 0
 
-      // BUY when both turn positive; Trader mode: no MA filter
-      entrySignal = !inPosition && bothPositive && (!bothPositivePrev || !inPosition) && (mode === 'trader' ? true : maFilterLong)
+      // BUY when both turn positive
+      entrySignal = !inPosition && bothPositive && (!bothPositivePrev || !inPosition) && maFilterLong
       // SELL when both negative OR trailing stop loss
       exitSignal = inPosition && (bothNegative || tslTriggered)
     } else {
@@ -782,9 +801,17 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
     const maConditionMet = !maFilterOn || lastPrice > lastMA
 
     let shouldBuy = false
-    if (mode === 'ditz' || mode === 'trader') {
-      // Both oscillators must be positive (matching backend logic)
-      shouldBuy = shortTermXtrender[lastIdx] > 0 && longTermXtrender[lastIdx] > 0 && (mode === 'trader' ? true : maConditionMet)
+    if (mode === 'trader') {
+      // Signal line turning from falling to rising (Red→Green) at last bar
+      const sigLast = signalLine[lastIdx]
+      const sigPrev = lastIdx >= 1 ? signalLine[lastIdx - 1] : sigLast
+      const sigPrevPrev = lastIdx >= 2 ? signalLine[lastIdx - 2] : sigPrev
+      const sigRising = sigLast > sigPrev
+      const sigRisingPrev = sigPrev > sigPrevPrev
+      shouldBuy = sigRising && !sigRisingPrev
+    } else if (mode === 'ditz') {
+      // Both oscillators must be positive
+      shouldBuy = shortTermXtrender[lastIdx] > 0 && longTermXtrender[lastIdx] > 0 && maConditionMet
     } else {
       shouldBuy = shortTermXtrender[lastIdx] > 0 && longTermXtrender[lastIdx] > 0 && maConditionMet
     }
@@ -816,11 +843,19 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
       let entryIdx = -1
       for (let j = searchStart; j < lastIdx; j++) {
         let signalFound = false
-        if (mode === 'ditz' || mode === 'trader') {
-          // Both oscillators must be positive (matching backend logic)
+        if (mode === 'trader') {
+          // Signal line turning from falling to rising
+          const sigJ = signalLine[j]
+          const sigJPrev = j >= 1 ? signalLine[j - 1] : sigJ
+          const sigJPrevPrev = j >= 2 ? signalLine[j - 2] : sigJPrev
+          const rising = sigJ > sigJPrev
+          const risingPrev = sigJPrev > sigJPrevPrev
+          signalFound = rising && !risingPrev
+        } else if (mode === 'ditz') {
+          // Both oscillators must be positive
           const bothPos = shortTermXtrender[j] > 0 && longTermXtrender[j] > 0
           const bothPosPrev = shortTermXtrender[j - 1] > 0 && longTermXtrender[j - 1] > 0
-          const maCond = mode === 'trader' ? true : (!maFilterOn || closes[j] > (ma ? ma[j] : 0))
+          const maCond = !maFilterOn || closes[j] > (ma ? ma[j] : 0)
           signalFound = bothPos && !bothPosPrev && maCond
         } else {
           const bothPos = shortTermXtrender[j] > 0 && longTermXtrender[j] > 0
