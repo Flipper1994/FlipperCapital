@@ -5848,6 +5848,13 @@ func flipperBotBackfill(c *gin.Context) {
 			continue
 		}
 
+		// Check if bot already has an open position for this stock
+		var existingBotPos FlipperBotPosition
+		if db.Where("symbol = ? AND is_closed = ?", stock.Symbol, false).First(&existingBotPos).Error == nil {
+			addLog("SKIP", fmt.Sprintf("%s: Bot hat bereits offene Position — übersprungen", stock.Symbol))
+			continue
+		}
+
 		// Parse the historical trades from TradesJSON
 		var historicalTrades []TradeData
 		if err := json.Unmarshal([]byte(stock.TradesJSON), &historicalTrades); err != nil {
@@ -5855,18 +5862,18 @@ func flipperBotBackfill(c *gin.Context) {
 			continue
 		}
 
-		// Check if there's already an open position from BEFORE the backfill start date
+		// Check if there's already an open position from BEFORE or AT the backfill start date
 		// If so, the stock is in HOLD status and we should not open a new position
 		hasOpenPositionBefore := false
 		for _, t := range historicalTrades {
 			entryT := time.Unix(t.EntryDate, 0)
-			if t.IsOpen && entryT.Before(fromDate) {
+			if t.IsOpen && !entryT.After(fromDate) {
 				hasOpenPositionBefore = true
 				break
 			}
 		}
 		if hasOpenPositionBefore {
-			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor Startdatum (HOLD) — übersprungen", stock.Symbol))
+			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor/am Startdatum (HOLD) — übersprungen", stock.Symbol))
 			continue
 		}
 
@@ -6076,6 +6083,13 @@ func lutzBackfill(c *gin.Context) {
 			continue
 		}
 
+		// Check if bot already has an open position for this stock
+		var existingBotPos LutzPosition
+		if db.Where("symbol = ? AND is_closed = ?", stock.Symbol, false).First(&existingBotPos).Error == nil {
+			addLog("SKIP", fmt.Sprintf("%s: Bot hat bereits offene Position — übersprungen", stock.Symbol))
+			continue
+		}
+
 		// Parse the historical trades from TradesJSON
 		var historicalTrades []TradeData
 		if err := json.Unmarshal([]byte(stock.TradesJSON), &historicalTrades); err != nil {
@@ -6083,17 +6097,17 @@ func lutzBackfill(c *gin.Context) {
 			continue
 		}
 
-		// Check if there's already an open position from BEFORE the backfill start date
+		// Check if there's already an open position from BEFORE or AT the backfill start date
 		hasOpenPositionBefore := false
 		for _, t := range historicalTrades {
 			entryT := time.Unix(t.EntryDate, 0)
-			if t.IsOpen && entryT.Before(fromDate) {
+			if t.IsOpen && !entryT.After(fromDate) {
 				hasOpenPositionBefore = true
 				break
 			}
 		}
 		if hasOpenPositionBefore {
-			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor Startdatum (HOLD) — übersprungen", stock.Symbol))
+			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor/am Startdatum (HOLD) — übersprungen", stock.Symbol))
 			continue
 		}
 
@@ -10406,23 +10420,30 @@ func quantBackfill(c *gin.Context) {
 			continue
 		}
 
+		// Check if bot already has an open position for this stock
+		var existingBotPos QuantPosition
+		if db.Where("symbol = ? AND is_closed = ?", stock.Symbol, false).First(&existingBotPos).Error == nil {
+			addLog("SKIP", fmt.Sprintf("%s: Bot hat bereits offene Position — übersprungen", stock.Symbol))
+			continue
+		}
+
 		var historicalTrades []TradeData
 		if err := json.Unmarshal([]byte(stock.TradesJSON), &historicalTrades); err != nil {
 			addLog("ERROR", fmt.Sprintf("%s: Fehler beim Parsen der Trades: %v", stock.Symbol, err))
 			continue
 		}
 
-		// Check if there's already an open position from BEFORE the backfill start date
+		// Check if there's already an open position from BEFORE or AT the backfill start date
 		hasOpenPositionBefore := false
 		for _, t := range historicalTrades {
 			entryT := time.Unix(t.EntryDate, 0)
-			if t.IsOpen && entryT.Before(fromDate) {
+			if t.IsOpen && !entryT.After(fromDate) {
 				hasOpenPositionBefore = true
 				break
 			}
 		}
 		if hasOpenPositionBefore {
-			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor Startdatum (HOLD) — übersprungen", stock.Symbol))
+			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor/am Startdatum (HOLD) — übersprungen", stock.Symbol))
 			continue
 		}
 
@@ -14061,23 +14082,30 @@ func ditzBackfill(c *gin.Context) {
 			continue
 		}
 
+		// Check if bot already has an open position for this stock
+		var existingBotPos DitzPosition
+		if db.Where("symbol = ? AND is_closed = ?", stock.Symbol, false).First(&existingBotPos).Error == nil {
+			addLog("SKIP", fmt.Sprintf("%s: Bot hat bereits offene Position — übersprungen", stock.Symbol))
+			continue
+		}
+
 		var historicalTrades []TradeData
 		if err := json.Unmarshal([]byte(stock.TradesJSON), &historicalTrades); err != nil {
 			addLog("ERROR", fmt.Sprintf("%s: Fehler beim Parsen der Trades: %v", stock.Symbol, err))
 			continue
 		}
 
-		// Check if there's already an open position from BEFORE the backfill start date
+		// Check if there's already an open position from BEFORE or AT the backfill start date
 		hasOpenPositionBefore := false
 		for _, t := range historicalTrades {
 			entryT := time.Unix(t.EntryDate, 0)
-			if t.IsOpen && entryT.Before(fromDate) {
+			if t.IsOpen && !entryT.After(fromDate) {
 				hasOpenPositionBefore = true
 				break
 			}
 		}
 		if hasOpenPositionBefore {
-			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor Startdatum (HOLD) — übersprungen", stock.Symbol))
+			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor/am Startdatum (HOLD) — übersprungen", stock.Symbol))
 			continue
 		}
 
@@ -16122,23 +16150,30 @@ func traderBackfill(c *gin.Context) {
 			continue
 		}
 
+		// Check if bot already has an open position for this stock
+		var existingBotPos TraderPosition
+		if db.Where("symbol = ? AND is_closed = ?", stock.Symbol, false).First(&existingBotPos).Error == nil {
+			addLog("SKIP", fmt.Sprintf("%s: Bot hat bereits offene Position — übersprungen", stock.Symbol))
+			continue
+		}
+
 		var historicalTrades []TradeData
 		if err := json.Unmarshal([]byte(stock.TradesJSON), &historicalTrades); err != nil {
 			addLog("ERROR", fmt.Sprintf("%s: Fehler beim Parsen der Trades: %v", stock.Symbol, err))
 			continue
 		}
 
-		// Check if there's already an open position from BEFORE the backfill start date
+		// Check if there's already an open position from BEFORE or AT the backfill start date
 		hasOpenPositionBefore := false
 		for _, t := range historicalTrades {
 			entryT := time.Unix(t.EntryDate, 0)
-			if t.IsOpen && entryT.Before(fromDate) {
+			if t.IsOpen && !entryT.After(fromDate) {
 				hasOpenPositionBefore = true
 				break
 			}
 		}
 		if hasOpenPositionBefore {
-			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor Startdatum (HOLD) — übersprungen", stock.Symbol))
+			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor/am Startdatum (HOLD) — übersprungen", stock.Symbol))
 			continue
 		}
 
