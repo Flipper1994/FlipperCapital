@@ -5867,13 +5867,13 @@ func flipperBotBackfill(c *gin.Context) {
 		hasOpenPositionBefore := false
 		for _, t := range historicalTrades {
 			entryT := time.Unix(t.EntryDate, 0)
-			if t.IsOpen && !entryT.After(fromDate) {
+			if t.IsOpen && entryT.Before(fromDate) {
 				hasOpenPositionBefore = true
 				break
 			}
 		}
 		if hasOpenPositionBefore {
-			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor/am Startdatum (HOLD) — übersprungen", stock.Symbol))
+			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor Startdatum (HOLD) — übersprungen", stock.Symbol))
 			continue
 		}
 
@@ -6101,13 +6101,13 @@ func lutzBackfill(c *gin.Context) {
 		hasOpenPositionBefore := false
 		for _, t := range historicalTrades {
 			entryT := time.Unix(t.EntryDate, 0)
-			if t.IsOpen && !entryT.After(fromDate) {
+			if t.IsOpen && entryT.Before(fromDate) {
 				hasOpenPositionBefore = true
 				break
 			}
 		}
 		if hasOpenPositionBefore {
-			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor/am Startdatum (HOLD) — übersprungen", stock.Symbol))
+			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor Startdatum (HOLD) — übersprungen", stock.Symbol))
 			continue
 		}
 
@@ -10437,13 +10437,13 @@ func quantBackfill(c *gin.Context) {
 		hasOpenPositionBefore := false
 		for _, t := range historicalTrades {
 			entryT := time.Unix(t.EntryDate, 0)
-			if t.IsOpen && !entryT.After(fromDate) {
+			if t.IsOpen && entryT.Before(fromDate) {
 				hasOpenPositionBefore = true
 				break
 			}
 		}
 		if hasOpenPositionBefore {
-			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor/am Startdatum (HOLD) — übersprungen", stock.Symbol))
+			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor Startdatum (HOLD) — übersprungen", stock.Symbol))
 			continue
 		}
 
@@ -14099,13 +14099,13 @@ func ditzBackfill(c *gin.Context) {
 		hasOpenPositionBefore := false
 		for _, t := range historicalTrades {
 			entryT := time.Unix(t.EntryDate, 0)
-			if t.IsOpen && !entryT.After(fromDate) {
+			if t.IsOpen && entryT.Before(fromDate) {
 				hasOpenPositionBefore = true
 				break
 			}
 		}
 		if hasOpenPositionBefore {
-			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor/am Startdatum (HOLD) — übersprungen", stock.Symbol))
+			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor Startdatum (HOLD) — übersprungen", stock.Symbol))
 			continue
 		}
 
@@ -16167,13 +16167,13 @@ func traderBackfill(c *gin.Context) {
 		hasOpenPositionBefore := false
 		for _, t := range historicalTrades {
 			entryT := time.Unix(t.EntryDate, 0)
-			if t.IsOpen && !entryT.After(fromDate) {
+			if t.IsOpen && entryT.Before(fromDate) {
 				hasOpenPositionBefore = true
 				break
 			}
 		}
 		if hasOpenPositionBefore {
-			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor/am Startdatum (HOLD) — übersprungen", stock.Symbol))
+			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor Startdatum (HOLD) — übersprungen", stock.Symbol))
 			continue
 		}
 

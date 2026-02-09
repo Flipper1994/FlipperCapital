@@ -252,6 +252,19 @@ function BXtrenderChart({ symbol, stockName = '', timeframe = 'M', onTradesUpdat
 
         chartRef.current = chart
 
+        // Wenn nextOpen-Marker existieren, Serien um einen Datenpunkt erweitern
+        // damit lightweight-charts den Marker auf einem eigenen Bar anzeigt
+        if (nextOpen && markers.some(m => m.time === nextOpen.time)) {
+          const lastShort = short[short.length - 1]
+          const lastLong = long[long.length - 1]
+          const lastSignal = signal[signal.length - 1]
+          if (lastShort && lastShort.time !== nextOpen.time) {
+            short.push({ time: nextOpen.time, value: 0, color: '#333333' })
+            long.push({ time: nextOpen.time, value: lastLong ? lastLong.value : 0, color: '#333333' })
+            signal.push({ time: nextOpen.time, value: lastSignal ? lastSignal.value : 0, color: '#333333' })
+          }
+        }
+
         // Add short-term histogram (main oscillator)
         const histogramSeries = chart.addHistogramSeries({
           priceFormat: { type: 'price', precision: 2 },
