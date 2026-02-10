@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { createChart } from 'lightweight-charts'
 
-function PortfolioChart({ userId, token, height = 300, botType = null, title = "Portfolio Performance", extraParams = '' }) {
+function PortfolioChart({ token, height = 300, botType = null, title = "Portfolio Performance", userId = null, extraParams = '' }) {
   const chartContainerRef = useRef(null)
   const chartRef = useRef(null)
+  const seriesRef = useRef({ live: null, sim: null })
   const [period, setPeriod] = useState('1m')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [hasLive, setHasLive] = useState(false)
+  const [hasSim, setHasSim] = useState(false)
 
   const periodLabels = {
     '1w': 'Woche',
@@ -21,7 +24,6 @@ function PortfolioChart({ userId, token, height = 300, botType = null, title = "
   useEffect(() => {
     if (!chartContainerRef.current) return
 
-    // Create chart
     const chart = createChart(chartContainerRef.current, {
       layout: {
         background: { type: 'solid', color: '#12121a' },
@@ -51,7 +53,6 @@ function PortfolioChart({ userId, token, height = 300, botType = null, title = "
 
     chartRef.current = chart
 
-    // Handle resize
     const handleResize = () => {
       if (chartContainerRef.current && chart) {
         chart.applyOptions({ width: chartContainerRef.current.clientWidth })
@@ -73,64 +74,140 @@ function PortfolioChart({ userId, token, height = 300, botType = null, title = "
       setError(null)
 
       try {
-        let endpoint
-        if (botType) {
-          endpoint = `/api/${botType}/history?period=${period}${extraParams ? '&' + extraParams : ''}`
-        } else if (userId) {
-          endpoint = `/api/portfolios/history/${userId}?period=${period}`
+        const chart = chartRef.current
+
+        // Remove old series
+        if (seriesRef.current.live) {
+          try { chart.removeSeries(seriesRef.current.live) } catch (e) {}
+          seriesRef.current.live = null
+        }
+        if (seriesRef.current.sim) {
+          try { chart.removeSeries(seriesRef.current.sim) } catch (e) {}
+          seriesRef.current.sim = null
+        }
+
+        // For bot charts: fetch both live + simulation in parallel (unless extraParams forces single mode)
+        if (botType && !extraParams) {
+          const [liveRes, simRes] = await Promise.all([
+            fetch(`/api/${botType}/history?period=${period}&live=true`, {
+              headers: { 'Authorization': `Bearer ${token}` }
+            }),
+            fetch(`/api/${botType}/history?period=${period}&live=false`, {
+              headers: { 'Authorization': `Bearer ${token}` }
+            })
+          ])
+
+          const liveData = liveRes.ok ? await liveRes.json() : []
+          const simData = simRes.ok ? await simRes.json() : []
+
+          const hasLiveData = liveData && liveData.length > 0
+          const hasSimData = simData && simData.length > 0
+          setHasLive(hasLiveData)
+          setHasSim(hasSimData)
+
+          if (!hasLiveData && !hasSimData) {
+            setError('Keine Daten verfügbar')
+            setLoading(false)
+            return
+          }
+
+          // Simulation line (violet) — render first so live is on top
+          if (hasSimData) {
+            const simSeries = chart.addLineSeries({
+              color: '#8b5cf6',
+              lineWidth: 2,
+              lastValueVisible: false,
+              priceLineVisible: false,
+              priceFormat: {
+                type: 'custom',
+                formatter: (price) => price.toFixed(2) + '%',
+                minMove: 0.01,
+              },
+            })
+            simSeries.setData(simData.map(p => ({ time: p.time, value: p.pct })))
+            seriesRef.current.sim = simSeries
+          }
+
+          // Live line (green)
+          if (hasLiveData) {
+            const liveSeries = chart.addLineSeries({
+              color: '#22c55e',
+              lineWidth: 2,
+              lastValueVisible: false,
+              priceLineVisible: false,
+              priceFormat: {
+                type: 'custom',
+                formatter: (price) => price.toFixed(2) + '%',
+                minMove: 0.01,
+              },
+            })
+            liveSeries.setData(liveData.map(p => ({ time: p.time, value: p.pct })))
+            seriesRef.current.live = liveSeries
+          }
+
+          // Baseline at 0%
+          const baseSeries = seriesRef.current.live || seriesRef.current.sim
+          if (baseSeries) {
+            baseSeries.createPriceLine({
+              price: 0,
+              color: '#4b5563',
+              lineWidth: 1,
+              lineStyle: 2,
+              axisLabelVisible: true,
+              title: '0%',
+            })
+          }
         } else {
-          endpoint = `/api/portfolio/history?period=${period}`
+          // Single line mode: user portfolio OR bot with extraParams (AdminPanel)
+          let endpoint
+          if (botType && extraParams) {
+            endpoint = `/api/${botType}/history?period=${period}&${extraParams}`
+          } else if (userId) {
+            endpoint = `/api/portfolios/history/${userId}?period=${period}`
+          } else {
+            endpoint = `/api/portfolio/history?period=${period}`
+          }
+
+          const res = await fetch(endpoint, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          })
+          if (!res.ok) throw new Error('Failed to fetch data')
+          const data = await res.json()
+
+          if (!data || data.length === 0) {
+            setError('Keine Daten verfügbar')
+            setLoading(false)
+            return
+          }
+
+          setHasLive(true)
+          setHasSim(false)
+
+          const series = chart.addLineSeries({
+            color: '#6366f1',
+            lineWidth: 2,
+            lastValueVisible: false,
+            priceLineVisible: false,
+            priceFormat: {
+              type: 'custom',
+              formatter: (price) => price.toFixed(2) + '%',
+              minMove: 0.01,
+            },
+          })
+          series.setData(data.map(p => ({ time: p.time, value: p.pct })))
+          seriesRef.current.live = series
+
+          series.createPriceLine({
+            price: 0,
+            color: '#4b5563',
+            lineWidth: 1,
+            lineStyle: 2,
+            axisLabelVisible: true,
+            title: '0%',
+          })
         }
 
-        const res = await fetch(endpoint, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        })
-
-        if (!res.ok) throw new Error('Failed to fetch data')
-
-        const data = await res.json()
-
-        if (!data || data.length === 0) {
-          setError('Keine Daten verfügbar')
-          setLoading(false)
-          return
-        }
-
-        // Clear existing series
-        chartRef.current.timeScale().fitContent()
-
-        // Remove old series if any
-        const series = chartRef.current.addAreaSeries({
-          lineColor: '#6366f1',
-          topColor: 'rgba(99, 102, 241, 0.4)',
-          bottomColor: 'rgba(99, 102, 241, 0.0)',
-          lineWidth: 2,
-          priceFormat: {
-            type: 'custom',
-            formatter: (price) => price.toFixed(2) + '%',
-            minMove: 0.01,
-          },
-        })
-
-        // Format data for chart - use percentage change
-        const chartData = data.map(point => ({
-          time: point.time,
-          value: point.pct
-        }))
-
-        series.setData(chartData)
-
-        // Add baseline at 0%
-        series.createPriceLine({
-          price: 0,
-          color: '#4b5563',
-          lineWidth: 1,
-          lineStyle: 2,
-          axisLabelVisible: true,
-          title: '0%',
-        })
-
-        chartRef.current.timeScale().fitContent()
+        chart.timeScale().fitContent()
       } catch (err) {
         console.error('Error fetching portfolio history:', err)
         setError('Fehler beim Laden der Daten')
@@ -180,8 +257,25 @@ function PortfolioChart({ userId, token, height = 300, botType = null, title = "
       </div>
 
       {/* Legend */}
-      <div className="p-3 border-t border-dark-600 text-xs text-gray-500 text-center">
-        Performance in % seit Kauf (gleichgewichtete Positionen)
+      <div className="p-3 border-t border-dark-600 flex items-center justify-center gap-6 text-xs text-gray-400">
+        {botType ? (
+          <>
+            {hasLive && (
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-0.5 bg-green-500 rounded-full inline-block"></span>
+                Live
+              </div>
+            )}
+            {hasSim && (
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-0.5 bg-violet-500 rounded-full inline-block"></span>
+                Simulation
+              </div>
+            )}
+          </>
+        ) : (
+          <span>Performance in % seit Kauf</span>
+        )}
       </div>
     </div>
   )

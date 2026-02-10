@@ -303,7 +303,6 @@ function FlipperBotLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
           <PortfolioChart
             token={token}
             botType="flipperbot"
-            extraParams={isLive ? "live=true" : "live=false"}
             height={250}
             title="FlipperBot Performance"
           />

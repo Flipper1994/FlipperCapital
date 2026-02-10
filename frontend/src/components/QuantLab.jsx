@@ -302,7 +302,6 @@ function QuantLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
           <PortfolioChart
             token={token}
             botType="quant"
-            extraParams={isLive ? "live=true" : "live=false"}
             height={250}
             title="Quant Performance"
           />

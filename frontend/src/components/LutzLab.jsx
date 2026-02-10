@@ -302,7 +302,6 @@ function LutzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
           <PortfolioChart
             token={token}
             botType="lutz"
-            extraParams={isLive ? "live=true" : "live=false"}
             height={250}
             title="Lutz Performance"
           />

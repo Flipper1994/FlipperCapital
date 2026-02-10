@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { createChart } from 'lightweight-charts'
-import { useNavigate } from 'react-router-dom'
 import { useCurrency } from '../context/CurrencyContext'
 
 const MODES = [
@@ -91,7 +90,6 @@ function SortTH({ field, sort, onSort, children, right }) {
 }
 
 function Performance({ token }) {
-  const navigate = useNavigate()
   const { formatPrice, currencySymbol } = useCurrency()
 
   const [trades, setTrades] = useState([])
@@ -121,12 +119,10 @@ function Performance({ token }) {
   const [optLocked, setOptLocked] = useState({})
   const [filterSymbols, setFilterSymbols] = useState(null) // null = kein Filter, Set = nur diese Symbole
 
-  useEffect(() => { if (!token) navigate('/') }, [token, navigate])
-
   useEffect(() => {
-    if (!token) return
     setLoading(true)
-    fetch('/api/performance/history', { headers: { 'Authorization': `Bearer ${token}` } })
+    const headers = token ? { 'Authorization': `Bearer ${token}` } : {}
+    fetch('/api/performance/history', { headers })
       .then(r => r.json())
       .then(d => setTrades(Array.isArray(d) ? d : []))
       .catch(() => {})
@@ -867,7 +863,8 @@ function Performance({ token }) {
                                 {sortSimTrades(sim.trades, getSimSort(mc.key)).map((t, i) => (
                                   <tr key={i} className="hover:bg-dark-700/30 transition-colors">
                                     <td className="px-2 py-1.5">
-                                      <span className="font-medium text-white">{t.symbol}</span>
+                                      <div className="font-medium text-white truncate max-w-[120px]">{t.name || t.symbol}</div>
+                                      <div className="text-xs text-gray-500">{t.symbol}</div>
                                     </td>
                                     <td className="px-2 py-1.5 text-gray-300">{fmtDate(t.entryDate)}</td>
                                     <td className="px-2 py-1.5 text-right text-gray-300">{formatPrice(t.entryPrice, t.symbol)}</td>
@@ -912,7 +909,7 @@ function Performance({ token }) {
                             <table className="w-full text-sm">
                               <thead className="bg-dark-700 sticky top-0 text-gray-400 z-10">
                                 <tr>
-                                  <SortTH field="symbol" sort={getTradeSort(mc.key)} onSort={s => doSetTradeSort(mc.key, s)}>Symbol</SortTH>
+                                  <SortTH field="symbol" sort={getTradeSort(mc.key)} onSort={s => doSetTradeSort(mc.key, s)}>Aktie</SortTH>
                                   <SortTH field="entry_date" sort={getTradeSort(mc.key)} onSort={s => doSetTradeSort(mc.key, s)}>BUY</SortTH>
                                   <th className="px-2 py-2 text-right font-medium">Einstieg</th>
                                   <th className="px-2 py-2 font-medium">SELL / OPEN</th>
@@ -924,8 +921,8 @@ function Performance({ token }) {
                                 {sortBasicTrades(data.trades, getTradeSort(mc.key)).map((t, i) => (
                                   <tr key={i} className="hover:bg-dark-700/30 transition-colors">
                                     <td className="px-2 py-1.5">
-                                      <div className="font-medium text-white">{t.symbol}</div>
-                                      <div className="text-xs text-gray-500 truncate max-w-[80px]">{t.name}</div>
+                                      <div className="font-medium text-white truncate max-w-[120px]">{t.name || t.symbol}</div>
+                                      <div className="text-xs text-gray-500">{t.symbol}</div>
                                     </td>
                                     <td className="px-2 py-1.5">
                                       <span className="px-1.5 py-0.5 text-xs rounded bg-green-500/20 text-green-400 font-medium">BUY</span>

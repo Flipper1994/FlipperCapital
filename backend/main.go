@@ -1203,7 +1203,7 @@ func main() {
 		api.POST("/trader/manual-trade", authMiddleware(), adminOnly(), createManualTraderTrade)
 
 		// Performance page - combined view of both bots
-		api.GET("/performance/history", authMiddleware(), getPerformanceHistory)
+		api.GET("/performance/history", optionalAuthMiddleware(), getPerformanceHistory)
 	}
 
 	// Start the daily stock update scheduler
@@ -6097,20 +6097,6 @@ func lutzBackfill(c *gin.Context) {
 			continue
 		}
 
-		// Check if there's already an open position from BEFORE or AT the backfill start date
-		hasOpenPositionBefore := false
-		for _, t := range historicalTrades {
-			entryT := time.Unix(t.EntryDate, 0)
-			if t.IsOpen && entryT.Before(fromDate) {
-				hasOpenPositionBefore = true
-				break
-			}
-		}
-		if hasOpenPositionBefore {
-			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor Startdatum (HOLD) — übersprungen", stock.Symbol))
-			continue
-		}
-
 		for _, trade := range historicalTrades {
 			// Convert entryDate from seconds to time
 			entryTime := time.Unix(trade.EntryDate, 0)
@@ -6787,84 +6773,92 @@ func getLutzHistory(c *gin.Context) {
 
 // calculateBotHistory calculates historical performance for a bot
 func calculateBotHistory(botType string, period string) []map[string]interface{} {
-	// Get positions based on bot type
-	var symbols []string
-	var positionData []struct {
-		Symbol   string
-		Quantity float64
-		AvgPrice float64
-		BuyDate  time.Time
+	type posInfo struct {
+		Symbol     string
+		Quantity   float64
+		AvgPrice   float64
+		BuyDate    time.Time
+		SellDate   *time.Time
+		IsClosed   bool
+		ProfitLoss float64
 	}
 
+	var allPositions []posInfo
+
+	// Load ALL positions (open + closed) for the bot
 	if botType == "flipperbot-live" || botType == "flipperbot-sim" {
 		isLive := botType == "flipperbot-live"
 		var positions []FlipperBotPosition
-		db.Where("is_pending = ? AND is_live = ? AND is_closed = ?", false, isLive, false).Find(&positions)
+		db.Where("is_pending = ? AND is_live = ?", false, isLive).Find(&positions)
 		for _, p := range positions {
-			symbols = append(symbols, p.Symbol)
-			positionData = append(positionData, struct {
-				Symbol   string
-				Quantity float64
-				AvgPrice float64
-				BuyDate  time.Time
-			}{p.Symbol, p.Quantity, p.AvgPrice, p.BuyDate})
+			pl := 0.0
+			if p.ProfitLoss != nil {
+				pl = *p.ProfitLoss
+			}
+			allPositions = append(allPositions, posInfo{p.Symbol, p.Quantity, p.AvgPrice, p.BuyDate, p.SellDate, p.IsClosed, pl})
 		}
 	} else if botType == "quant-live" || botType == "quant-sim" {
 		isLive := botType == "quant-live"
 		var positions []QuantPosition
-		db.Where("is_pending = ? AND is_live = ? AND is_closed = ?", false, isLive, false).Find(&positions)
+		db.Where("is_pending = ? AND is_live = ?", false, isLive).Find(&positions)
 		for _, p := range positions {
-			symbols = append(symbols, p.Symbol)
-			positionData = append(positionData, struct {
-				Symbol   string
-				Quantity float64
-				AvgPrice float64
-				BuyDate  time.Time
-			}{p.Symbol, p.Quantity, p.AvgPrice, p.BuyDate})
+			pl := 0.0
+			if p.ProfitLoss != nil {
+				pl = *p.ProfitLoss
+			}
+			allPositions = append(allPositions, posInfo{p.Symbol, p.Quantity, p.AvgPrice, p.BuyDate, p.SellDate, p.IsClosed, pl})
 		}
 	} else if botType == "ditz-live" || botType == "ditz-sim" {
 		isLive := botType == "ditz-live"
 		var positions []DitzPosition
-		db.Where("is_pending = ? AND is_live = ? AND is_closed = ?", false, isLive, false).Find(&positions)
+		db.Where("is_pending = ? AND is_live = ?", false, isLive).Find(&positions)
 		for _, p := range positions {
-			symbols = append(symbols, p.Symbol)
-			positionData = append(positionData, struct {
-				Symbol   string
-				Quantity float64
-				AvgPrice float64
-				BuyDate  time.Time
-			}{p.Symbol, p.Quantity, p.AvgPrice, p.BuyDate})
+			pl := 0.0
+			if p.ProfitLoss != nil {
+				pl = *p.ProfitLoss
+			}
+			allPositions = append(allPositions, posInfo{p.Symbol, p.Quantity, p.AvgPrice, p.BuyDate, p.SellDate, p.IsClosed, pl})
 		}
 	} else if botType == "trader-live" || botType == "trader-sim" {
 		isLive := botType == "trader-live"
 		var positions []TraderPosition
-		db.Where("is_pending = ? AND is_live = ? AND is_closed = ?", false, isLive, false).Find(&positions)
+		db.Where("is_pending = ? AND is_live = ?", false, isLive).Find(&positions)
 		for _, p := range positions {
-			symbols = append(symbols, p.Symbol)
-			positionData = append(positionData, struct {
-				Symbol   string
-				Quantity float64
-				AvgPrice float64
-				BuyDate  time.Time
-			}{p.Symbol, p.Quantity, p.AvgPrice, p.BuyDate})
+			pl := 0.0
+			if p.ProfitLoss != nil {
+				pl = *p.ProfitLoss
+			}
+			allPositions = append(allPositions, posInfo{p.Symbol, p.Quantity, p.AvgPrice, p.BuyDate, p.SellDate, p.IsClosed, pl})
 		}
 	} else if botType == "lutz-live" || botType == "lutz-sim" {
 		isLive := botType == "lutz-live"
 		var positions []LutzPosition
-		db.Where("is_pending = ? AND is_live = ? AND is_closed = ?", false, isLive, false).Find(&positions)
+		db.Where("is_pending = ? AND is_live = ?", false, isLive).Find(&positions)
 		for _, p := range positions {
-			symbols = append(symbols, p.Symbol)
-			positionData = append(positionData, struct {
-				Symbol   string
-				Quantity float64
-				AvgPrice float64
-				BuyDate  time.Time
-			}{p.Symbol, p.Quantity, p.AvgPrice, p.BuyDate})
+			pl := 0.0
+			if p.ProfitLoss != nil {
+				pl = *p.ProfitLoss
+			}
+			allPositions = append(allPositions, posInfo{p.Symbol, p.Quantity, p.AvgPrice, p.BuyDate, p.SellDate, p.IsClosed, pl})
 		}
 	}
 
-	if len(symbols) == 0 {
+	if len(allPositions) == 0 {
 		return []map[string]interface{}{}
+	}
+
+	// Collect unique symbols and find earliest BuyDate
+	symbolSet := make(map[string]bool)
+	var earliestBuy time.Time
+	for _, p := range allPositions {
+		symbolSet[p.Symbol] = true
+		if earliestBuy.IsZero() || p.BuyDate.Before(earliestBuy) {
+			earliestBuy = p.BuyDate
+		}
+	}
+	var symbols []string
+	for sym := range symbolSet {
+		symbols = append(symbols, sym)
 	}
 
 	// Map period to Yahoo Finance range
@@ -6937,67 +6931,74 @@ func calculateBotHistory(botType string, period string) []map[string]interface{}
 		return []map[string]interface{}{}
 	}
 
-	// Only include positions that existed BEFORE the period start
-	periodStart := allTimes[0]
-	var activePositions []struct {
-		Symbol   string
-		Quantity float64
-		AvgPrice float64
-		BuyDate  time.Time
+	// Filter timestamps: only from earliest BuyDate onwards
+	earliestUnix := earliestBuy.Unix()
+	var filteredTimes []int64
+	for _, t := range allTimes {
+		if t >= earliestUnix {
+			filteredTimes = append(filteredTimes, t)
+		}
 	}
-	for _, p := range positionData {
-		if p.BuyDate.IsZero() || p.BuyDate.Unix() <= periodStart {
-			activePositions = append(activePositions, p)
+	if len(filteredTimes) == 0 {
+		filteredTimes = allTimes // fallback: use all if no match
+	}
+
+	// Pre-fill last known prices from OHLCV data
+	lastPrices := make(map[string]float64)
+	for sym, data := range symbolData {
+		for _, candle := range data {
+			if candle.Time <= filteredTimes[0] {
+				lastPrices[sym] = candle.Close
+			}
+		}
+	}
+	// Also seed with avgPrice for positions without OHLCV data at start
+	for _, p := range allPositions {
+		if _, ok := lastPrices[p.Symbol]; !ok {
+			lastPrices[p.Symbol] = p.AvgPrice
 		}
 	}
 
-	// Fallback: if no positions existed before the period, use all
-	if len(activePositions) == 0 {
-		activePositions = positionData
-	}
-
-	// Track last known prices
-	lastPrices := make(map[string]float64)
 	result := make([]map[string]interface{}, 0)
 
-	// Pre-fill with first available price so ALL active positions contribute from the start
-	for _, p := range activePositions {
-		if data, ok := symbolData[p.Symbol]; ok && len(data) > 0 {
-			lastPrices[p.Symbol] = data[0].Close
-		}
-	}
-
-	for _, t := range allTimes {
-		prices := timeValues[t]
-
-		for symbol, price := range prices {
-			lastPrices[symbol] = price
-		}
-
-		var portfolioValue float64
-		for _, p := range activePositions {
-			if price, ok := lastPrices[p.Symbol]; ok {
-				portfolioValue += price * p.Quantity
+	for _, t := range filteredTimes {
+		// Update prices
+		if prices, ok := timeValues[t]; ok {
+			for sym, price := range prices {
+				lastPrices[sym] = price
 			}
 		}
 
-		if portfolioValue > 0 {
+		var unrealized float64
+		var realized float64
+		var invested float64
+
+		for _, p := range allPositions {
+			if p.BuyDate.Unix() > t {
+				continue // not yet opened
+			}
+
+			cost := p.AvgPrice * p.Quantity
+
+			if p.IsClosed && p.SellDate != nil && p.SellDate.Unix() <= t {
+				// Closed by this time — count realized P&L
+				invested += cost
+				realized += p.ProfitLoss
+			} else {
+				// Still open at this time
+				invested += cost
+				if price, ok := lastPrices[p.Symbol]; ok {
+					unrealized += (price - p.AvgPrice) * p.Quantity
+				}
+			}
+		}
+
+		if invested > 0 {
+			pct := ((unrealized + realized) / invested) * 100
 			result = append(result, map[string]interface{}{
-				"time":  t,
-				"value": portfolioValue,
-				"pct":   0.0,
+				"time": t,
+				"pct":  pct,
 			})
-		}
-	}
-
-	// Normalize pct: first data point = 0%, all others relative to it
-	if len(result) > 0 {
-		baseValue := result[0]["value"].(float64)
-		for i := range result {
-			val := result[i]["value"].(float64)
-			if baseValue > 0 {
-				result[i]["pct"] = ((val - baseValue) / baseValue) * 100
-			}
 		}
 	}
 
@@ -9435,16 +9436,20 @@ func getLutzPending(c *gin.Context) {
 
 	for _, stock := range trackedStocks {
 		if stock.Signal == "BUY" && !positionSymbols[stock.Symbol] {
-			// Check if we already have a buy trade without subsequent sell
-			var existingBuy LutzTrade
-			alreadyBought := db.Where("symbol = ? AND action = ?", stock.Symbol, "BUY").
-				Order("signal_date desc").First(&existingBuy).Error == nil
+			// Check 1: Soft-deleted BUY without subsequent SELL blocks re-entry
+			var deletedBuy LutzTrade
+			if err := db.Where("symbol = ? AND action = ? AND is_deleted = ?", stock.Symbol, "BUY", true).Order("signal_date desc").First(&deletedBuy).Error; err == nil {
+				var sellAfterDeleted LutzTrade
+				if err := db.Where("symbol = ? AND action = ? AND is_deleted = ? AND signal_date > ?", stock.Symbol, "SELL", false, deletedBuy.SignalDate).First(&sellAfterDeleted).Error; err != nil {
+					continue // Soft-deleted BUY without sell — skip
+				}
+			}
 
-			if alreadyBought {
-				var lastSell LutzTrade
-				hasSoldAfter := db.Where("symbol = ? AND action = ? AND signal_date > ?",
-					stock.Symbol, "SELL", existingBuy.SignalDate).First(&lastSell).Error == nil
-				if !hasSoldAfter {
+			// Check 2: Active BUY (not deleted, not filter-blocked) without subsequent SELL blocks re-entry
+			var existingBuy LutzTrade
+			if err := db.Where("symbol = ? AND action = ? AND is_deleted = ? AND is_filter_blocked = ?", stock.Symbol, "BUY", false, false).Order("signal_date desc").First(&existingBuy).Error; err == nil {
+				var sellAfter LutzTrade
+				if err := db.Where("symbol = ? AND action = ? AND is_deleted = ? AND signal_date > ?", stock.Symbol, "SELL", false, existingBuy.SignalDate).First(&sellAfter).Error; err != nil {
 					continue // Already bought, skip
 				}
 			}

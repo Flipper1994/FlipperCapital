@@ -302,7 +302,6 @@ function DitzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
           <PortfolioChart
             token={token}
             botType="ditz"
-            extraParams={isLive ? "live=true" : "live=false"}
             height={250}
             title="Ditz Performance"
           />

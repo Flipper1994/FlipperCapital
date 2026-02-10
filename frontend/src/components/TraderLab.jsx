@@ -302,7 +302,6 @@ function TraderLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
           <PortfolioChart
             token={token}
             botType="trader"
-            extraParams={isLive ? "live=true" : "live=false"}
             height={250}
             title="Trader Performance"
           />
