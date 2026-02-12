@@ -193,16 +193,75 @@ function AdminPanel() {
     setAllowlistLoading(false)
   }
 
+  const toggleAllBots = async (symbol) => {
+    const bots = ['flipper', 'lutz', 'quant', 'ditz', 'trader']
+    // Check current state: if ALL that have entries are allowed → block all, otherwise → allow all
+    const entries = bots.map(bot => {
+      const botEntries = allowlistData[bot] || []
+      return { bot, entry: botEntries.find(e => e.symbol === symbol) }
+    }).filter(b => b.entry)
+    if (entries.length === 0) return
+    const allAllowed = entries.every(b => b.entry.allowed)
+    const newAllowed = !allAllowed
+
+    let retroactiveScan = false
+    if (allAllowed) {
+      retroactiveScan = confirm(`${symbol} für ALLE Bots verbieten.\n\nSollen Trades rückwirkend gescannt und als gelöscht markiert werden?`)
+    }
+
+    const messages = []
+    for (const { bot } of entries) {
+      try {
+        const res = await fetch('/api/admin/bot-allowlist', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ bot_name: bot, symbol, allowed: newAllowed, retroactive_scan: retroactiveScan })
+        })
+        if (res.ok) {
+          const data = await res.json()
+          if (data.retroactive_deleted > 0) messages.push(`${bot}: ${data.retroactive_deleted} Trades gelöscht`)
+          if (data.closed_position) messages.push(`${bot}: Position geschlossen`)
+        }
+      } catch { /* ignore */ }
+    }
+
+    // Update local state for all bots at once
+    setAllowlistData(prev => {
+      const updated = { ...prev }
+      for (const { bot } of entries) {
+        if (updated[bot]) {
+          updated[bot] = updated[bot].map(entry =>
+            entry.symbol === symbol ? { ...entry, allowed: newAllowed } : entry
+          )
+        }
+      }
+      return updated
+    })
+
+    if (messages.length > 0) {
+      setAllowlistMessage(`${symbol}: ${messages.join(', ')}`)
+      setTimeout(() => setAllowlistMessage(null), 6000)
+    }
+  }
+
   const toggleAllowlist = async (botName, symbol, currentAllowed) => {
+    let retroactiveScan = false
+    if (currentAllowed) {
+      // Banning — ask about retroactive scan
+      retroactiveScan = confirm(`${symbol} für ${botName} verbieten.\n\nSollen Trades rückwirkend gescannt und als gelöscht markiert werden?`)
+    }
     try {
       const res = await fetch('/api/admin/bot-allowlist', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ bot_name: botName, symbol, allowed: !currentAllowed })
+        body: JSON.stringify({ bot_name: botName, symbol, allowed: !currentAllowed, retroactive_scan: retroactiveScan })
       })
       if (res.ok) {
         const data = await res.json()
-        if (data.closed_position) {
+        if (data.retroactive_deleted > 0) {
+          setAllowlistMessage(`${symbol} bei ${botName} verboten — ${data.retroactive_deleted} Trades rückwirkend gelöscht`)
+          setTimeout(() => setAllowlistMessage(null), 6000)
+        } else if (data.closed_position) {
           setAllowlistMessage(`Position ${symbol} bei ${botName} wurde geschlossen`)
           setTimeout(() => setAllowlistMessage(null), 4000)
         }
@@ -1523,6 +1582,88 @@ function AdminPanel() {
     } finally {
       setBackfilling(false)
     }
+  }
+
+  const handleBackfillAll = async () => {
+    if (!backfillDate) {
+      alert('Bitte ein Datum auswählen')
+      return
+    }
+    const allBots = [
+      { api: 'flipperbot', name: 'FlipperBot' },
+      { api: 'lutz', name: 'Lutz' },
+      { api: 'quant', name: 'Quant' },
+      { api: 'ditz', name: 'Ditz' },
+      { api: 'trader', name: 'Trader' },
+    ]
+    if (!confirm(`Backfill für ALLE 5 Bots ab ${backfillDate} bis heute durchführen?`)) return
+    setBackfilling(true)
+    setBackfillResult(null)
+
+    let totalTrades = 0
+    let totalPositions = 0
+    const errors = []
+
+    for (let i = 0; i < allBots.length; i++) {
+      const bot = allBots[i]
+      setBackfillProgress({ current: 0, total: 0, symbol: '', message: `${bot.name} (${i + 1}/5) wird gestartet...` })
+      try {
+        const res = await fetch(`/api/${bot.api}/backfill`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ until_date: backfillDate })
+        })
+        if (!res.ok) {
+          const text = await res.text()
+          let error = 'Fehler'
+          try { error = JSON.parse(text).error || error } catch {}
+          errors.push(`${bot.name}: ${error}`)
+          continue
+        }
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop()
+          for (const line of lines) {
+            if (!line.trim()) continue
+            try {
+              const event = JSON.parse(line)
+              if (event.type === 'progress') {
+                setBackfillProgress({ current: event.current, total: event.total, symbol: event.symbol, message: `${bot.name} (${i + 1}/5): ${event.message || event.symbol}` })
+              } else if (event.type === 'done') {
+                totalTrades += event.trades_created || 0
+                totalPositions += event.positions_created || 0
+              }
+            } catch {}
+          }
+        }
+        if (buffer.trim()) {
+          try {
+            const event = JSON.parse(buffer)
+            if (event.type === 'done') {
+              totalTrades += event.trades_created || 0
+              totalPositions += event.positions_created || 0
+            }
+          } catch {}
+        }
+      } catch (err) {
+        errors.push(`${bot.name}: ${err.message}`)
+      }
+    }
+
+    setBackfillProgress(null)
+    if (errors.length > 0) {
+      setBackfillResult({ success: false, error: errors.join('; ') })
+    } else {
+      setBackfillResult({ success: true, data: { trades_created: totalTrades, positions_created: totalPositions } })
+    }
+    fetchBotData()
+    setBackfilling(false)
   }
 
   const handleAcceptTrade = async (bot, tradeId) => {
@@ -5701,6 +5842,25 @@ function AdminPanel() {
                             </>
                           )}
                         </button>
+                        <button
+                          onClick={handleBackfillAll}
+                          disabled={backfilling || !backfillDate}
+                          className="px-4 py-2 text-white rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 whitespace-nowrap bg-gradient-to-r from-purple-500 via-violet-500 to-emerald-500 hover:from-purple-400 hover:via-violet-400 hover:to-emerald-400"
+                        >
+                          {backfilling ? (
+                            <>
+                              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                              Alle...
+                            </>
+                          ) : (
+                            <>
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                              </svg>
+                              Alle Bots
+                            </>
+                          )}
+                        </button>
                       </div>
                       {backfillProgress && (
                         <div className="mt-3 p-3 bg-dark-800 rounded-lg">
@@ -6523,6 +6683,7 @@ function AdminPanel() {
                           {['flipper', 'lutz', 'quant', 'ditz', 'trader'].map(bot => (
                             <th key={bot} className="text-center py-2 px-3 text-gray-400 font-medium capitalize">{bot}</th>
                           ))}
+                          <th className="text-center py-2 px-3 text-gray-400 font-medium">Alle</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -6572,6 +6733,41 @@ function AdminPanel() {
                                   </td>
                                 )
                               })}
+                              {(() => {
+                                const bots = ['flipper', 'lutz', 'quant', 'ditz', 'trader']
+                                const entries = bots.map(bot => {
+                                  const botEntries = allowlistData[bot] || []
+                                  return botEntries.find(e => e.symbol === symbol)
+                                }).filter(Boolean)
+                                if (entries.length === 0) return <td className="text-center py-2 px-3"><span className="text-gray-600">-</span></td>
+                                const allAllowed = entries.every(e => e.allowed)
+                                const allBlocked = entries.every(e => !e.allowed)
+                                return (
+                                  <td className="text-center py-2 px-3">
+                                    <button
+                                      onClick={() => toggleAllBots(symbol)}
+                                      className={`w-8 h-8 rounded-lg flex items-center justify-center mx-auto transition-colors ${
+                                        allAllowed
+                                          ? 'bg-green-500/20 text-green-400 hover:bg-red-500/20 hover:text-red-400'
+                                          : allBlocked
+                                            ? 'bg-red-500/20 text-red-400 hover:bg-green-500/20 hover:text-green-400'
+                                            : 'bg-yellow-500/20 text-yellow-400 hover:bg-green-500/20 hover:text-green-400'
+                                      }`}
+                                      title={allAllowed ? 'Alle Bots deaktivieren' : 'Alle Bots aktivieren'}
+                                    >
+                                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={
+                                          allAllowed
+                                            ? 'M5 13l4 4L19 7'
+                                            : allBlocked
+                                              ? 'M6 18L18 6M6 6l12 12'
+                                              : 'M20 12H4'
+                                        } />
+                                      </svg>
+                                    </button>
+                                  </td>
+                                )
+                              })()}
                             </tr>
                           ))
                         })()}

@@ -3771,6 +3771,10 @@ func isFirstOfMonth() bool {
 	return time.Now().Day() == 1
 }
 
+func isStockDataStale(updatedAt time.Time) bool {
+	return time.Since(updatedAt).Hours() > 48
+}
+
 // getWarmupEndDate checks if a stock needs warmup filtering based on its trade history.
 // It only fetches OHLCV from Yahoo if the stock might be affected (first trade is recent).
 // Returns 0 if no warmup filtering needed, math.MaxInt64 if ALL bars are warmup.
@@ -5046,6 +5050,16 @@ func ensureQuantUser() {
 	}
 }
 
+func getBlockedSymbolsForBot(botName string) []string {
+	var entries []BotStockAllowlist
+	db.Where("bot_name = ? AND allowed = ?", botName, false).Find(&entries)
+	symbols := make([]string, len(entries))
+	for i, e := range entries {
+		symbols[i] = e.Symbol
+	}
+	return symbols
+}
+
 func isStockAllowedForBot(botName, symbol string) bool {
 	var entry BotStockAllowlist
 	if err := db.Where("bot_name = ? AND symbol = ?", botName, symbol).First(&entry).Error; err != nil {
@@ -5296,9 +5310,10 @@ func getBotAllowlist(c *gin.Context) {
 
 func updateBotAllowlist(c *gin.Context) {
 	var req struct {
-		BotName string `json:"bot_name" binding:"required"`
-		Symbol  string `json:"symbol" binding:"required"`
-		Allowed bool   `json:"allowed"`
+		BotName         string `json:"bot_name" binding:"required"`
+		Symbol          string `json:"symbol" binding:"required"`
+		Allowed         bool   `json:"allowed"`
+		RetroactiveScan bool   `json:"retroactive_scan"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "bot_name and symbol required"})
@@ -5322,11 +5337,54 @@ func updateBotAllowlist(c *gin.Context) {
 	}
 
 	closedPosition := false
+	retroactiveDeleted := 0
+
 	if !req.Allowed {
-		closedPosition = closePositionForBot(req.BotName, req.Symbol)
+		if req.RetroactiveScan {
+			// Retroactive scan: soft-delete all trades + remove all positions
+			retroactiveDeleted = retroactiveDeleteForBot(req.BotName, req.Symbol)
+		} else {
+			closedPosition = closePositionForBot(req.BotName, req.Symbol)
+		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Updated", "closed_position": closedPosition})
+	c.JSON(http.StatusOK, gin.H{
+		"message":              "Updated",
+		"closed_position":      closedPosition,
+		"retroactive_deleted":  retroactiveDeleted,
+	})
+}
+
+func retroactiveDeleteForBot(botName, symbol string) int {
+	var count int64
+	switch botName {
+	case "flipper":
+		db.Model(&FlipperBotTrade{}).Where("symbol = ? AND is_deleted = ?", symbol, false).Count(&count)
+		db.Model(&FlipperBotTrade{}).Where("symbol = ?", symbol).Update("is_deleted", true)
+		db.Where("symbol = ?", symbol).Delete(&FlipperBotPosition{})
+		db.Where("user_id = ? AND symbol = ?", FLIPPERBOT_USER_ID, symbol).Delete(&PortfolioPosition{})
+	case "lutz":
+		db.Model(&LutzTrade{}).Where("symbol = ? AND is_deleted = ?", symbol, false).Count(&count)
+		db.Model(&LutzTrade{}).Where("symbol = ?", symbol).Update("is_deleted", true)
+		db.Where("symbol = ?", symbol).Delete(&LutzPosition{})
+		db.Where("user_id = ? AND symbol = ?", LUTZ_USER_ID, symbol).Delete(&PortfolioPosition{})
+	case "quant":
+		db.Model(&QuantTrade{}).Where("symbol = ? AND is_deleted = ?", symbol, false).Count(&count)
+		db.Model(&QuantTrade{}).Where("symbol = ?", symbol).Update("is_deleted", true)
+		db.Where("symbol = ?", symbol).Delete(&QuantPosition{})
+		db.Where("user_id = ? AND symbol = ?", QUANT_USER_ID, symbol).Delete(&PortfolioPosition{})
+	case "ditz":
+		db.Model(&DitzTrade{}).Where("symbol = ? AND is_deleted = ?", symbol, false).Count(&count)
+		db.Model(&DitzTrade{}).Where("symbol = ?", symbol).Update("is_deleted", true)
+		db.Where("symbol = ?", symbol).Delete(&DitzPosition{})
+		db.Where("user_id = ? AND symbol = ?", DITZ_USER_ID, symbol).Delete(&PortfolioPosition{})
+	case "trader":
+		db.Model(&TraderTrade{}).Where("symbol = ? AND is_deleted = ?", symbol, false).Count(&count)
+		db.Model(&TraderTrade{}).Where("symbol = ?", symbol).Update("is_deleted", true)
+		db.Where("symbol = ?", symbol).Delete(&TraderPosition{})
+		db.Where("user_id = ? AND symbol = ?", TRADER_USER_ID, symbol).Delete(&PortfolioPosition{})
+	}
+	return int(count)
 }
 
 func getBotFilterConfig(c *gin.Context) {
@@ -5833,6 +5891,11 @@ func runFlipperUpdateInternal(triggeredBy string) {
 			continue
 		}
 
+		if isStockDataStale(stockPerf.UpdatedAt) {
+			addLog("SKIP", fmt.Sprintf("%s: Daten älter als 48h (letztes Update: %s) - überspringe", pos.Symbol, stockPerf.UpdatedAt.Format("02.01.2006 15:04")))
+			continue
+		}
+
 		if stockPerf.Signal == "SELL" || stockPerf.Signal == "WAIT" {
 			addLog("KORREKTUR", fmt.Sprintf("%s: Signal ist jetzt %s, aber Position vorhanden - schließe Position", pos.Symbol, stockPerf.Signal))
 
@@ -5874,6 +5937,9 @@ func runFlipperUpdateInternal(triggeredBy string) {
 	// Phase 2: Process new signals (BUY/SELL)
 	for _, stock := range perfData {
 		if !isStockAllowedForBot("flipper", stock.Symbol) {
+			continue
+		}
+		if isStockDataStale(stock.UpdatedAt) {
 			continue
 		}
 		if stock.Signal == "BUY" {
@@ -6634,7 +6700,11 @@ func acceptLutzTrade(c *gin.Context) {
 
 func getFlipperBotPortfolio(c *gin.Context) {
 	var positions []FlipperBotPosition
-	db.Where("is_pending = ? AND is_closed = ?", false, false).Order("buy_date desc").Find(&positions)
+	q := db.Where("is_pending = ? AND is_closed = ?", false, false)
+	if blocked := getBlockedSymbolsForBot("flipper"); len(blocked) > 0 {
+		q = q.Where("symbol NOT IN ?", blocked)
+	}
+	q.Order("buy_date desc").Find(&positions)
 
 	// Fetch current quotes
 	symbols := make([]string, len(positions))
@@ -6730,7 +6800,11 @@ func getFlipperBotPortfolio(c *gin.Context) {
 
 func getFlipperBotActions(c *gin.Context) {
 	var trades []FlipperBotTrade
-	db.Where("is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", false, false, false).Order("signal_date desc, executed_at desc").Limit(50).Find(&trades)
+	q := db.Where("is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", false, false, false)
+	if blocked := getBlockedSymbolsForBot("flipper"); len(blocked) > 0 {
+		q = q.Where("symbol NOT IN ?", blocked)
+	}
+	q.Order("signal_date desc, executed_at desc").Limit(50).Find(&trades)
 	c.JSON(http.StatusOK, trades)
 }
 
@@ -6741,11 +6815,21 @@ func getFlipperBotActionsAll(c *gin.Context) {
 }
 
 func getFlipperBotPerformance(c *gin.Context) {
+	blocked := getBlockedSymbolsForBot("flipper")
+
 	var sellTrades []FlipperBotTrade
-	db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false, false).Find(&sellTrades)
+	sq := db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false, false)
+	if len(blocked) > 0 {
+		sq = sq.Where("symbol NOT IN ?", blocked)
+	}
+	sq.Find(&sellTrades)
 
 	var buyTrades []FlipperBotTrade
-	db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "BUY", false, false, false).Find(&buyTrades)
+	bq := db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "BUY", false, false, false)
+	if len(blocked) > 0 {
+		bq = bq.Where("symbol NOT IN ?", blocked)
+	}
+	bq.Find(&buyTrades)
 
 	wins := 0
 	losses := 0
@@ -7594,7 +7678,11 @@ func syncFlipperBot(c *gin.Context) {
 // getFlipperBotCompletedTrades returns completed trades (BUY + SELL pairs)
 func getFlipperBotCompletedTrades(c *gin.Context) {
 	var trades []FlipperBotTrade
-	db.Where("action = ? AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false).Order("signal_date desc").Find(&trades)
+	q := db.Where("action = ? AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false)
+	if blocked := getBlockedSymbolsForBot("flipper"); len(blocked) > 0 {
+		q = q.Where("symbol NOT IN ?", blocked)
+	}
+	q.Order("signal_date desc").Find(&trades)
 
 	type CompletedTrade struct {
 		Symbol        string    `json:"symbol"`
@@ -8719,6 +8807,11 @@ func runLutzUpdateInternal(triggeredBy string) {
 			continue
 		}
 
+		if isStockDataStale(stockPerf.UpdatedAt) {
+			addLog("SKIP", fmt.Sprintf("%s: Daten älter als 48h (letztes Update: %s) - überspringe", pos.Symbol, stockPerf.UpdatedAt.Format("02.01.2006 15:04")))
+			continue
+		}
+
 		if stockPerf.Signal == "SELL" || stockPerf.Signal == "WAIT" {
 			addLog("KORREKTUR", fmt.Sprintf("%s: Signal ist jetzt %s, aber Position vorhanden - schließe Position", pos.Symbol, stockPerf.Signal))
 
@@ -8760,6 +8853,9 @@ func runLutzUpdateInternal(triggeredBy string) {
 	// Phase 2: Process new signals (BUY/SELL)
 	for _, stock := range perfData {
 		if !isStockAllowedForBot("lutz", stock.Symbol) {
+			continue
+		}
+		if isStockDataStale(stock.UpdatedAt) {
 			continue
 		}
 		if stock.Signal == "BUY" {
@@ -8961,7 +9057,11 @@ func lutzUpdate(c *gin.Context) {
 
 func getLutzPortfolio(c *gin.Context) {
 	var positions []LutzPosition
-	db.Where("is_pending = ? AND is_closed = ?", false, false).Order("buy_date desc").Find(&positions)
+	q := db.Where("is_pending = ? AND is_closed = ?", false, false)
+	if blocked := getBlockedSymbolsForBot("lutz"); len(blocked) > 0 {
+		q = q.Where("symbol NOT IN ?", blocked)
+	}
+	q.Order("buy_date desc").Find(&positions)
 
 	symbols := make([]string, len(positions))
 	for i, p := range positions {
@@ -9050,7 +9150,11 @@ func getLutzPortfolio(c *gin.Context) {
 
 func getLutzActions(c *gin.Context) {
 	var trades []LutzTrade
-	db.Where("is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", false, false, false).Order("signal_date desc").Limit(50).Find(&trades)
+	q := db.Where("is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", false, false, false)
+	if blocked := getBlockedSymbolsForBot("lutz"); len(blocked) > 0 {
+		q = q.Where("symbol NOT IN ?", blocked)
+	}
+	q.Order("signal_date desc").Limit(50).Find(&trades)
 	c.JSON(http.StatusOK, trades)
 }
 
@@ -9061,11 +9165,21 @@ func getLutzActionsAll(c *gin.Context) {
 }
 
 func getLutzPerformance(c *gin.Context) {
+	blocked := getBlockedSymbolsForBot("lutz")
+
 	var sellTrades []LutzTrade
-	db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false, false).Find(&sellTrades)
+	sq := db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false, false)
+	if len(blocked) > 0 {
+		sq = sq.Where("symbol NOT IN ?", blocked)
+	}
+	sq.Find(&sellTrades)
 
 	var buyTrades []LutzTrade
-	db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "BUY", false, false, false).Find(&buyTrades)
+	bq := db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "BUY", false, false, false)
+	if len(blocked) > 0 {
+		bq = bq.Where("symbol NOT IN ?", blocked)
+	}
+	bq.Find(&buyTrades)
 
 	wins := 0
 	losses := 0
@@ -9517,7 +9631,11 @@ func syncLutz(c *gin.Context) {
 // getLutzCompletedTrades returns completed trades (BUY + SELL pairs)
 func getLutzCompletedTrades(c *gin.Context) {
 	var trades []LutzTrade
-	db.Where("action = ? AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false).Order("signal_date desc").Find(&trades)
+	q := db.Where("action = ? AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false)
+	if blocked := getBlockedSymbolsForBot("lutz"); len(blocked) > 0 {
+		q = q.Where("symbol NOT IN ?", blocked)
+	}
+	q.Order("signal_date desc").Find(&trades)
 
 	type CompletedTrade struct {
 		Symbol        string    `json:"symbol"`
@@ -10183,6 +10301,11 @@ func runQuantUpdateInternal(triggeredBy string) {
 			continue
 		}
 
+		if isStockDataStale(stockPerf.UpdatedAt) {
+			addLog("SKIP", fmt.Sprintf("%s: Daten älter als 48h (letztes Update: %s) - überspringe", pos.Symbol, stockPerf.UpdatedAt.Format("02.01.2006 15:04")))
+			continue
+		}
+
 		if stockPerf.Signal == "SELL" || stockPerf.Signal == "WAIT" {
 			// BXTrender says no position should be open - but we have one
 			// This means settings changed and the BUY signal no longer exists
@@ -10286,6 +10409,9 @@ func runQuantUpdateInternal(triggeredBy string) {
 	// Phase 2: Process new signals (BUY/SELL)
 	for _, stock := range perfData {
 		if !isStockAllowedForBot("quant", stock.Symbol) {
+			continue
+		}
+		if isStockDataStale(stock.UpdatedAt) {
 			continue
 		}
 		if stock.Signal == "BUY" {
@@ -10528,7 +10654,11 @@ func quantUpdate(c *gin.Context) {
 func getQuantPortfolio(c *gin.Context) {
 	// Return all open positions (live + simulated) - frontend filters by is_live
 	var positions []QuantPosition
-	db.Where("is_pending = ? AND is_closed = ?", false, false).Order("buy_date desc").Find(&positions)
+	q := db.Where("is_pending = ? AND is_closed = ?", false, false)
+	if blocked := getBlockedSymbolsForBot("quant"); len(blocked) > 0 {
+		q = q.Where("symbol NOT IN ?", blocked)
+	}
+	q.Order("buy_date desc").Find(&positions)
 
 	symbols := make([]string, len(positions))
 	for i, p := range positions {
@@ -10636,7 +10766,11 @@ func getQuantPortfolio(c *gin.Context) {
 func getQuantActions(c *gin.Context) {
 	// Return all trades (live + simulated) - frontend filters by is_live
 	var trades []QuantTrade
-	db.Where("is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", false, false, false).Order("signal_date desc").Limit(50).Find(&trades)
+	q := db.Where("is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", false, false, false)
+	if blocked := getBlockedSymbolsForBot("quant"); len(blocked) > 0 {
+		q = q.Where("symbol NOT IN ?", blocked)
+	}
+	q.Order("signal_date desc").Limit(50).Find(&trades)
 	c.JSON(http.StatusOK, trades)
 }
 
@@ -10649,11 +10783,21 @@ func getQuantActionsAll(c *gin.Context) {
 
 func getQuantPerformance(c *gin.Context) {
 	// Return all trades (live + simulated) - frontend filters by is_live
+	blocked := getBlockedSymbolsForBot("quant")
+
 	var sellTrades []QuantTrade
-	db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false, false).Find(&sellTrades)
+	sq := db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false, false)
+	if len(blocked) > 0 {
+		sq = sq.Where("symbol NOT IN ?", blocked)
+	}
+	sq.Find(&sellTrades)
 
 	var buyTrades []QuantTrade
-	db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "BUY", false, false, false).Find(&buyTrades)
+	bq := db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "BUY", false, false, false)
+	if len(blocked) > 0 {
+		bq = bq.Where("symbol NOT IN ?", blocked)
+	}
+	bq.Find(&buyTrades)
 
 	wins := 0
 	losses := 0
@@ -11051,7 +11195,11 @@ func quantBackfill(c *gin.Context) {
 
 func getQuantCompletedTrades(c *gin.Context) {
 	var trades []QuantTrade
-	db.Where("action = ? AND profit_loss IS NOT NULL AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false).Order("executed_at desc").Find(&trades)
+	q := db.Where("action = ? AND profit_loss IS NOT NULL AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false)
+	if blocked := getBlockedSymbolsForBot("quant"); len(blocked) > 0 {
+		q = q.Where("symbol NOT IN ?", blocked)
+	}
+	q.Order("executed_at desc").Find(&trades)
 
 	type CompletedTrade struct {
 		Symbol        string     `json:"symbol"`
@@ -13976,6 +14124,11 @@ func runDitzUpdateInternal(triggeredBy string) {
 			continue
 		}
 
+		if isStockDataStale(stockPerf.UpdatedAt) {
+			addLog("SKIP", fmt.Sprintf("%s: Daten älter als 48h (letztes Update: %s) - überspringe", pos.Symbol, stockPerf.UpdatedAt.Format("02.01.2006 15:04")))
+			continue
+		}
+
 		if stockPerf.Signal == "SELL" || stockPerf.Signal == "WAIT" {
 			// BXTrender says no position should be open - but we have one
 			addLog("KORREKTUR", fmt.Sprintf("%s: Signal ist jetzt %s, aber Position vorhanden - schließe Position", pos.Symbol, stockPerf.Signal))
@@ -14077,6 +14230,9 @@ func runDitzUpdateInternal(triggeredBy string) {
 	// Phase 2: Process new signals (BUY/SELL)
 	for _, stock := range perfData {
 		if !isStockAllowedForBot("ditz", stock.Symbol) {
+			continue
+		}
+		if isStockDataStale(stock.UpdatedAt) {
 			continue
 		}
 		if stock.Signal == "BUY" {
@@ -14319,7 +14475,11 @@ func ditzUpdate(c *gin.Context) {
 func getDitzPortfolio(c *gin.Context) {
 	// Return all open positions (live + simulated) - frontend filters by is_live
 	var positions []DitzPosition
-	db.Where("is_pending = ? AND is_closed = ?", false, false).Order("buy_date desc").Find(&positions)
+	q := db.Where("is_pending = ? AND is_closed = ?", false, false)
+	if blocked := getBlockedSymbolsForBot("ditz"); len(blocked) > 0 {
+		q = q.Where("symbol NOT IN ?", blocked)
+	}
+	q.Order("buy_date desc").Find(&positions)
 
 	symbols := make([]string, len(positions))
 	for i, p := range positions {
@@ -14427,7 +14587,11 @@ func getDitzPortfolio(c *gin.Context) {
 func getDitzActions(c *gin.Context) {
 	// Return all trades (live + simulated) - frontend filters by is_live
 	var trades []DitzTrade
-	db.Where("is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", false, false, false).Order("signal_date desc").Limit(50).Find(&trades)
+	q := db.Where("is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", false, false, false)
+	if blocked := getBlockedSymbolsForBot("ditz"); len(blocked) > 0 {
+		q = q.Where("symbol NOT IN ?", blocked)
+	}
+	q.Order("signal_date desc").Limit(50).Find(&trades)
 	c.JSON(http.StatusOK, trades)
 }
 
@@ -14440,11 +14604,21 @@ func getDitzActionsAll(c *gin.Context) {
 
 func getDitzPerformance(c *gin.Context) {
 	// Return all trades (live + simulated) - frontend filters by is_live
+	blocked := getBlockedSymbolsForBot("ditz")
+
 	var sellTrades []DitzTrade
-	db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false, false).Find(&sellTrades)
+	sq := db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false, false)
+	if len(blocked) > 0 {
+		sq = sq.Where("symbol NOT IN ?", blocked)
+	}
+	sq.Find(&sellTrades)
 
 	var buyTrades []DitzTrade
-	db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "BUY", false, false, false).Find(&buyTrades)
+	bq := db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "BUY", false, false, false)
+	if len(blocked) > 0 {
+		bq = bq.Where("symbol NOT IN ?", blocked)
+	}
+	bq.Find(&buyTrades)
 
 	wins := 0
 	losses := 0
@@ -14841,7 +15015,11 @@ func ditzBackfill(c *gin.Context) {
 
 func getDitzCompletedTrades(c *gin.Context) {
 	var trades []DitzTrade
-	db.Where("action = ? AND profit_loss IS NOT NULL AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false).Order("executed_at desc").Find(&trades)
+	q := db.Where("action = ? AND profit_loss IS NOT NULL AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false)
+	if blocked := getBlockedSymbolsForBot("ditz"); len(blocked) > 0 {
+		q = q.Where("symbol NOT IN ?", blocked)
+	}
+	q.Order("executed_at desc").Find(&trades)
 
 	type CompletedTrade struct {
 		Symbol        string     `json:"symbol"`
@@ -16098,6 +16276,11 @@ func runTraderUpdateInternal(triggeredBy string) {
 			continue
 		}
 
+		if isStockDataStale(stockPerf.UpdatedAt) {
+			addLog("SKIP", fmt.Sprintf("%s: Daten älter als 48h (letztes Update: %s) - überspringe", pos.Symbol, stockPerf.UpdatedAt.Format("02.01.2006 15:04")))
+			continue
+		}
+
 		if stockPerf.Signal == "SELL" || stockPerf.Signal == "WAIT" {
 			// BXTrender says no position should be open - but we have one
 			addLog("KORREKTUR", fmt.Sprintf("%s: Signal ist jetzt %s, aber Position vorhanden - schließe Position", pos.Symbol, stockPerf.Signal))
@@ -16199,6 +16382,9 @@ func runTraderUpdateInternal(triggeredBy string) {
 	// Phase 2: Process new signals (BUY/SELL)
 	for _, stock := range perfData {
 		if !isStockAllowedForBot("trader", stock.Symbol) {
+			continue
+		}
+		if isStockDataStale(stock.UpdatedAt) {
 			continue
 		}
 		if stock.Signal == "BUY" {
@@ -16441,7 +16627,11 @@ func traderUpdate(c *gin.Context) {
 func getTraderPortfolio(c *gin.Context) {
 	// Return all trades (live + simulated) - frontend filters by is_live
 	var positions []TraderPosition
-	db.Where("is_pending = ? AND is_closed = ?", false, false).Order("buy_date desc").Find(&positions)
+	q := db.Where("is_pending = ? AND is_closed = ?", false, false)
+	if blocked := getBlockedSymbolsForBot("trader"); len(blocked) > 0 {
+		q = q.Where("symbol NOT IN ?", blocked)
+	}
+	q.Order("buy_date desc").Find(&positions)
 
 	symbols := make([]string, len(positions))
 	for i, p := range positions {
@@ -16549,7 +16739,11 @@ func getTraderPortfolio(c *gin.Context) {
 func getTraderActions(c *gin.Context) {
 	// Return all trades (live + simulated) - frontend filters by is_live
 	var trades []TraderTrade
-	db.Where("is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", false, false, false).Order("signal_date desc").Limit(50).Find(&trades)
+	q := db.Where("is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", false, false, false)
+	if blocked := getBlockedSymbolsForBot("trader"); len(blocked) > 0 {
+		q = q.Where("symbol NOT IN ?", blocked)
+	}
+	q.Order("signal_date desc").Limit(50).Find(&trades)
 	c.JSON(http.StatusOK, trades)
 }
 
@@ -16562,11 +16756,21 @@ func getTraderActionsAll(c *gin.Context) {
 
 func getTraderPerformance(c *gin.Context) {
 	// Return all trades (live + simulated) - frontend filters by is_live
+	blocked := getBlockedSymbolsForBot("trader")
+
 	var sellTrades []TraderTrade
-	db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false, false).Find(&sellTrades)
+	sq := db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false, false)
+	if len(blocked) > 0 {
+		sq = sq.Where("symbol NOT IN ?", blocked)
+	}
+	sq.Find(&sellTrades)
 
 	var buyTrades []TraderTrade
-	db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "BUY", false, false, false).Find(&buyTrades)
+	bq := db.Where("action = ? AND is_pending = ? AND is_deleted = ? AND is_filter_blocked = ?", "BUY", false, false, false)
+	if len(blocked) > 0 {
+		bq = bq.Where("symbol NOT IN ?", blocked)
+	}
+	bq.Find(&buyTrades)
 
 	wins := 0
 	losses := 0
@@ -16963,7 +17167,11 @@ func traderBackfill(c *gin.Context) {
 
 func getTraderCompletedTrades(c *gin.Context) {
 	var trades []TraderTrade
-	db.Where("action = ? AND profit_loss IS NOT NULL AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false).Order("executed_at desc").Find(&trades)
+	q := db.Where("action = ? AND profit_loss IS NOT NULL AND is_deleted = ? AND is_filter_blocked = ?", "SELL", false, false)
+	if blocked := getBlockedSymbolsForBot("trader"); len(blocked) > 0 {
+		q = q.Where("symbol NOT IN ?", blocked)
+	}
+	q.Order("executed_at desc").Find(&trades)
 
 	type CompletedTrade struct {
 		Symbol        string     `json:"symbol"`
