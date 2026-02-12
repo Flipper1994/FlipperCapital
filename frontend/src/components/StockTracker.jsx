@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useCurrency } from '../context/CurrencyContext'
 import { useTradingMode } from '../context/TradingModeContext'
+import { useBlockedStocks } from '../hooks/useBlockedStocks'
+import BlockedBadge from './BlockedBadge'
 
 // Generate month options from current month going back
 function generateMonthOptions() {
@@ -66,6 +68,7 @@ function calculateSignalForMonth(trades, targetYear, targetMonth, isAggressive) 
 }
 
 function StockTracker() {
+  const blockedStocks = useBlockedStocks()
   const [stocks, setStocks] = useState([])
   const [loading, setLoading] = useState(true)
   const [sortField, setSortField] = useState('updated_at')
@@ -632,6 +635,7 @@ function StockTracker() {
                         onMouseEnter={() => fetchISIN(stock.symbol)}
                         onClick={(e) => handleCopyISIN(e, stock.symbol)}
                       >{stock.symbol}</div>
+                      <BlockedBadge symbol={stock.symbol} blockedStocks={blockedStocks} />
                       <div className="text-xs text-gray-500 truncate max-w-[180px]" title={`Market Cap: ${formatMarketCap(stock.market_cap)}`}>{stock.name}</div>
                     </div>
                     <span className={`px-2 py-1 text-xs font-bold rounded border ${getSignalStyle(stock.monthSignal)}`}>
@@ -758,6 +762,7 @@ function StockTracker() {
                               {isinCache[stock.symbol] === undefined ? 'ISIN laden...' : isinCache[stock.symbol] || 'Keine ISIN'}
                             </span>
                           </span>
+                          <BlockedBadge symbol={stock.symbol} blockedStocks={blockedStocks} />
                         </td>
                         <td className="px-2 py-1.5 text-gray-400 truncate max-w-[150px] relative group/name">
                           {stock.name}

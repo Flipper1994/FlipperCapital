@@ -1,10 +1,13 @@
 import { useState, useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { getCurrency, setCurrency, EXCHANGE_RATES } from '../utils/currency'
 import { useTradingMode } from '../context/TradingModeContext'
 
 function Header({ isLoggedIn, isAdmin, user, onLogout, sidebarOpen, setSidebarOpen }) {
+  const navigate = useNavigate()
   const [currency, setCurrencyState] = useState(getCurrency())
   const [showMoreCurrencies, setShowMoreCurrencies] = useState(false)
+  const [unreadCount, setUnreadCount] = useState(0)
   const dropdownRef = useRef(null)
   const allCurrencies = Object.keys(EXCHANGE_RATES)
   const primaryCurrencies = ['USD', 'EUR']
@@ -31,6 +34,25 @@ function Header({ isLoggedIn, isAdmin, user, onLogout, sidebarOpen, setSidebarOp
     window.addEventListener('currencyChanged', handleChange)
     return () => window.removeEventListener('currencyChanged', handleChange)
   }, [])
+
+  useEffect(() => {
+    if (!isLoggedIn) { setUnreadCount(0); return }
+    const token = localStorage.getItem('authToken')
+    const fetchCount = async () => {
+      try {
+        const res = await fetch('/api/notifications/unread-count', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+        if (res.ok) {
+          const data = await res.json()
+          setUnreadCount(data.count || 0)
+        }
+      } catch { /* ignore */ }
+    }
+    fetchCount()
+    const interval = setInterval(fetchCount, 60000)
+    return () => clearInterval(interval)
+  }, [isLoggedIn])
 
   const handleCurrencyChange = (curr) => {
     setCurrency(curr)
@@ -189,6 +211,20 @@ function Header({ isLoggedIn, isAdmin, user, onLogout, sidebarOpen, setSidebarOp
           </div>
           {isLoggedIn && (
             <div className="flex items-center gap-2 md:gap-3">
+              <button
+                onClick={() => navigate('/profile?tab=2')}
+                className="relative p-1.5 text-gray-300 hover:text-white transition-colors"
+                title="Benachrichtigungen"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                </svg>
+                {unreadCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] flex items-center justify-center px-1 bg-red-500 text-white text-[10px] font-bold rounded-full">
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                )}
+              </button>
               {isAdmin && (
                 <span className="hidden sm:inline-block px-2 md:px-3 py-1 bg-green-500/20 text-green-400 text-xs md:text-sm rounded-full backdrop-blur-sm">
                   Admin

@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { formatPrice, formatChange } from '../utils/currency'
 import { useTradingMode } from '../context/TradingModeContext'
+import { useBlockedStocks } from '../hooks/useBlockedStocks'
+import BlockedBadge from './BlockedBadge'
 
 function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock, onCategoryChange }) {
+  const blockedStocks = useBlockedStocks()
   const [query, setQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [searching, setSearching] = useState(false)
@@ -646,6 +649,7 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock, o
                                   </svg>
                                 )}
                                 <span className="font-semibold text-white text-sm">{stock.symbol}</span>
+                                <BlockedBadge symbol={stock.symbol} blockedStocks={blockedStocks} />
                                 {stock.market_cap > 0 && (
                                   <span className="text-[10px] text-gray-500">
                                     {stock.market_cap >= 1e12 ? `${(stock.market_cap / 1e12).toFixed(1)}T`

@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/cookiejar"
+	"sort"
 	"net/url"
 	"os"
 	"strconv"
@@ -22,15 +23,16 @@ import (
 )
 
 type User struct {
-	ID          uint      `json:"id" gorm:"primaryKey"`
-	Email       string    `json:"email" gorm:"uniqueIndex;not null"`
-	Username    string    `json:"username" gorm:"uniqueIndex;not null"`
-	Password    string    `json:"-" gorm:"not null"`
-	IsAdmin     bool      `json:"is_admin" gorm:"default:false"`
-	LoginCount  int       `json:"login_count" gorm:"default:0"`
-	LastActive  time.Time `json:"last_active"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID               uint      `json:"id" gorm:"primaryKey"`
+	Email            string    `json:"email" gorm:"uniqueIndex;not null"`
+	Username         string    `json:"username" gorm:"uniqueIndex;not null"`
+	Password         string    `json:"-" gorm:"not null"`
+	IsAdmin          bool      `json:"is_admin" gorm:"default:false"`
+	VisibleInRanking bool      `json:"visible_in_ranking" gorm:"default:true"`
+	LoginCount       int       `json:"login_count" gorm:"default:0"`
+	LastActive       time.Time `json:"last_active"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // ActivityLog tracks user activities
@@ -42,6 +44,19 @@ type ActivityLog struct {
 	Details   string    `json:"details"`             // JSON with extra info
 	IPAddress string    `json:"ip_address" gorm:"index"`
 	UserAgent string    `json:"user_agent"`
+	CreatedAt time.Time `json:"created_at" gorm:"index"`
+}
+
+// UserNotification stores signal change notifications per user
+type UserNotification struct {
+	ID        uint      `json:"id" gorm:"primaryKey"`
+	UserID    uint      `json:"user_id" gorm:"index;not null"`
+	Symbol    string    `json:"symbol" gorm:"not null"`
+	Name      string    `json:"name"`
+	Mode      string    `json:"mode" gorm:"not null"`
+	OldSignal string    `json:"old_signal" gorm:"not null"`
+	NewSignal string    `json:"new_signal" gorm:"not null"`
+	IsRead    bool      `json:"is_read" gorm:"default:false;index"`
 	CreatedAt time.Time `json:"created_at" gorm:"index"`
 }
 
@@ -694,6 +709,25 @@ type BotFilterConfig struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+type SignalListFilterConfig struct {
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	MinWinrate   *float64  `json:"min_winrate"`
+	MaxWinrate   *float64  `json:"max_winrate"`
+	MinRR        *float64  `json:"min_rr"`
+	MaxRR        *float64  `json:"max_rr"`
+	MinAvgReturn *float64  `json:"min_avg_return"`
+	MaxAvgReturn *float64  `json:"max_avg_return"`
+	MinMarketCap *float64  `json:"min_market_cap"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type SignalListVisibility struct {
+	ID      uint   `gorm:"primaryKey" json:"id"`
+	Symbol  string `gorm:"uniqueIndex:idx_signal_vis_sym_month;not null" json:"symbol"`
+	Month   string `gorm:"uniqueIndex:idx_signal_vis_sym_month;not null" json:"month"` // "2026-02"
+	Visible bool   `gorm:"default:true" json:"visible"`
+}
+
 var db *gorm.DB
 var latestPriceCache sync.Map // key: symbol (string), value: float64
 var sessions = make(map[string]Session) // Legacy in-memory cache, DB is source of truth
@@ -842,7 +876,10 @@ func main() {
 	db.Exec("DROP INDEX IF EXISTS idx_flipper_bot_positions_symbol")
 	db.Exec("DROP INDEX IF EXISTS idx_lutz_positions_symbol")
 
-	db.AutoMigrate(&User{}, &Stock{}, &Category{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{}, &DBSession{}, &BotLog{}, &BotTodo{}, &BXtrenderConfig{}, &BXtrenderQuantConfig{}, &QuantStockPerformance{}, &QuantTrade{}, &QuantPosition{}, &BXtrenderDitzConfig{}, &DitzStockPerformance{}, &DitzTrade{}, &DitzPosition{}, &BXtrenderTraderConfig{}, &TraderStockPerformance{}, &TraderTrade{}, &TraderPosition{}, &SystemSetting{}, &BotStockAllowlist{}, &BotFilterConfig{})
+	db.AutoMigrate(&User{}, &Stock{}, &Category{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{}, &DBSession{}, &BotLog{}, &BotTodo{}, &BXtrenderConfig{}, &BXtrenderQuantConfig{}, &QuantStockPerformance{}, &QuantTrade{}, &QuantPosition{}, &BXtrenderDitzConfig{}, &DitzStockPerformance{}, &DitzTrade{}, &DitzPosition{}, &BXtrenderTraderConfig{}, &TraderStockPerformance{}, &TraderTrade{}, &TraderPosition{}, &SystemSetting{}, &BotStockAllowlist{}, &BotFilterConfig{}, &SignalListFilterConfig{}, &SignalListVisibility{}, &UserNotification{})
+
+	// Ensure existing users are visible in ranking (new column defaults to false in SQLite)
+	db.Exec("UPDATE users SET visible_in_ranking = 1 WHERE visible_in_ranking = 0 OR visible_in_ranking IS NULL")
 
 	// Ensure "Sonstiges" category exists
 	ensureSonstigesCategory()
@@ -932,6 +969,17 @@ func main() {
 		api.POST("/logout", logout)
 		api.GET("/verify", verifyToken)
 		api.GET("/me", authMiddleware(), getCurrentUser)
+		api.PUT("/user/ranking-visibility", authMiddleware(), updateRankingVisibility)
+		api.GET("/bot-blocked-stocks", authMiddleware(), getBlockedStocksForUser)
+
+		// Profile & Notification routes
+		api.GET("/profile", authMiddleware(), getProfile)
+		api.PUT("/profile/password", authMiddleware(), changePassword)
+		api.GET("/profile/activity", authMiddleware(), getProfileActivity)
+		api.GET("/notifications", authMiddleware(), getNotifications)
+		api.GET("/notifications/unread-count", authMiddleware(), getUnreadNotificationCount)
+		api.PUT("/notifications/:id/read", authMiddleware(), markNotificationRead)
+		api.PUT("/notifications/read-all", authMiddleware(), markAllNotificationsRead)
 
 		// Stock routes
 		api.GET("/stocks", getStocks)
@@ -1034,6 +1082,7 @@ func main() {
 		api.GET("/flipperbot/actions", authMiddleware(), getFlipperBotActions)
 		api.GET("/flipperbot/performance", authMiddleware(), getFlipperBotPerformance)
 		api.POST("/flipperbot/reset", authMiddleware(), adminOnly(), resetFlipperBot)
+		api.POST("/bots/reset-all", authMiddleware(), adminOnly(), resetAllBots)
 		api.PUT("/flipperbot/position/:id", authMiddleware(), adminOnly(), updateFlipperBotPosition)
 		api.PUT("/flipperbot/trade/:id", authMiddleware(), adminOnly(), updateFlipperBotTrade)
 		api.DELETE("/flipperbot/trade/:id", authMiddleware(), adminOnly(), deleteFlipperBotTrade)
@@ -1204,6 +1253,12 @@ func main() {
 
 		// Performance page - combined view of both bots
 		api.GET("/performance/history", optionalAuthMiddleware(), getPerformanceHistory)
+
+		// Signal Liste routes
+		api.GET("/signal-list", optionalAuthMiddleware(), getSignalList)
+		api.GET("/signal-list/filter-config", getSignalListFilterConfig)
+		api.PUT("/admin/signal-list/filter-config", authMiddleware(), adminOnly(), updateSignalListFilterConfig)
+		api.PUT("/admin/signal-list/visibility", authMiddleware(), adminOnly(), toggleSignalListVisibility)
 	}
 
 	// Start the daily stock update scheduler
@@ -1375,7 +1430,7 @@ func verifyToken(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"valid": true,
-		"user":  gin.H{"id": user.ID, "email": user.Email, "username": user.Username, "is_admin": user.IsAdmin},
+		"user":  gin.H{"id": user.ID, "email": user.Email, "username": user.Username, "is_admin": user.IsAdmin, "visible_in_ranking": user.VisibleInRanking},
 	})
 }
 
@@ -1386,7 +1441,162 @@ func getCurrentUser(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"id": user.ID, "email": user.Email, "username": user.Username, "is_admin": user.IsAdmin})
+	c.JSON(http.StatusOK, gin.H{"id": user.ID, "email": user.Email, "username": user.Username, "is_admin": user.IsAdmin, "visible_in_ranking": user.VisibleInRanking})
+}
+
+func updateRankingVisibility(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	var req struct {
+		Visible bool `json:"visible"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+	db.Model(&User{}).Where("id = ?", userID).Update("visible_in_ranking", req.Visible)
+	c.JSON(http.StatusOK, gin.H{"visible_in_ranking": req.Visible})
+}
+
+func getProfile(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	var user User
+	if err := db.First(&user, userID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	// Portfolio stats
+	var openPositions int64
+	db.Model(&PortfolioPosition{}).Where("user_id = ?", userID).Count(&openPositions)
+
+	var trades []PortfolioTradeHistory
+	db.Where("user_id = ?", userID).Find(&trades)
+
+	closedTrades := len(trades)
+	var wins int
+	var bestTrade, worstTrade float64
+	for _, t := range trades {
+		if t.ProfitLossPct > 0 {
+			wins++
+		}
+		if t.ProfitLossPct > bestTrade {
+			bestTrade = t.ProfitLossPct
+		}
+		if t.ProfitLossPct < worstTrade {
+			worstTrade = t.ProfitLossPct
+		}
+	}
+	var winRate float64
+	if closedTrades > 0 {
+		winRate = float64(wins) / float64(closedTrades) * 100
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"username":           user.Username,
+		"email":              user.Email,
+		"created_at":         user.CreatedAt,
+		"login_count":        user.LoginCount,
+		"last_active":        user.LastActive,
+		"visible_in_ranking": user.VisibleInRanking,
+		"is_admin":           user.IsAdmin,
+		"portfolio_stats": gin.H{
+			"open_positions": openPositions,
+			"closed_trades":  closedTrades,
+			"win_rate":       winRate,
+			"best_trade":     bestTrade,
+			"worst_trade":    worstTrade,
+		},
+	})
+}
+
+func changePassword(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	var req struct {
+		OldPassword     string `json:"old_password"`
+		NewPassword     string `json:"new_password"`
+		ConfirmPassword string `json:"confirm_password"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Ungültige Anfrage"})
+		return
+	}
+	if len(req.NewPassword) < 6 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Neues Passwort muss mindestens 6 Zeichen lang sein"})
+		return
+	}
+	if req.NewPassword != req.ConfirmPassword {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Passwörter stimmen nicht überein"})
+		return
+	}
+
+	var user User
+	if err := db.First(&user, userID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User nicht gefunden"})
+		return
+	}
+	if !checkPassword(req.OldPassword, user.Password) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Altes Passwort ist falsch"})
+		return
+	}
+
+	hashed, err := hashPassword(req.NewPassword)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Fehler beim Hashen"})
+		return
+	}
+	db.Model(&user).Update("password", hashed)
+
+	logUserActivity(user.ID, user.Username, "password_change", "Passwort geändert", c.ClientIP(), c.GetHeader("User-Agent"))
+	c.JSON(http.StatusOK, gin.H{"message": "Passwort erfolgreich geändert"})
+}
+
+func getProfileActivity(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	var logs []ActivityLog
+	db.Where("user_id = ?", userID).Order("created_at desc").Limit(50).Find(&logs)
+	c.JSON(http.StatusOK, logs)
+}
+
+func getNotifications(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	var notifications []UserNotification
+	db.Where("user_id = ?", userID).Order("created_at desc").Limit(100).Find(&notifications)
+	c.JSON(http.StatusOK, notifications)
+}
+
+func getUnreadNotificationCount(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	var count int64
+	db.Model(&UserNotification{}).Where("user_id = ? AND is_read = ?", userID, false).Count(&count)
+	c.JSON(http.StatusOK, gin.H{"count": count})
+}
+
+func markNotificationRead(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	id := c.Param("id")
+	result := db.Model(&UserNotification{}).Where("id = ? AND user_id = ?", id, userID).Update("is_read", true)
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Benachrichtigung nicht gefunden"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "OK"})
+}
+
+func markAllNotificationsRead(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	db.Model(&UserNotification{}).Where("user_id = ? AND is_read = ?", userID, false).Update("is_read", true)
+	c.JSON(http.StatusOK, gin.H{"message": "OK"})
+}
+
+func getBlockedStocksForUser(c *gin.Context) {
+	var entries []BotStockAllowlist
+	db.Where("allowed = ?", false).Find(&entries)
+
+	blocked := make(map[string][]string)
+	for _, e := range entries {
+		blocked[e.Symbol] = append(blocked[e.Symbol], e.BotName)
+	}
+	c.JSON(http.StatusOK, blocked)
 }
 
 func authMiddleware() gin.HandlerFunc {
@@ -2872,9 +3082,14 @@ func getHistoricalPrice(symbol string, period string) float64 {
 
 // Get all portfolios for comparison (public view)
 func getAllPortfoliosForComparison(c *gin.Context) {
-	// Get all users with positions
+	// Get all users with positions — filter by ranking visibility (admin sees all)
+	isAdmin, _ := c.Get("isAdmin")
 	var users []User
-	db.Find(&users)
+	if isAdmin != nil && isAdmin.(bool) {
+		db.Find(&users)
+	} else {
+		db.Where("visible_in_ranking = ?", true).Find(&users)
+	}
 
 	type PositionSummary struct {
 		Symbol         string  `json:"symbol"`
@@ -2889,11 +3104,12 @@ func getAllPortfoliosForComparison(c *gin.Context) {
 	}
 
 	type PortfolioSummary struct {
-		UserID         uint              `json:"user_id"`
-		Username       string            `json:"username"`
-		Positions      []PositionSummary `json:"positions"`
-		TotalReturnPct float64           `json:"total_return_pct"`
-		PositionCount  int               `json:"position_count"`
+		UserID           uint              `json:"user_id"`
+		Username         string            `json:"username"`
+		Positions        []PositionSummary `json:"positions"`
+		TotalReturnPct   float64           `json:"total_return_pct"`
+		PositionCount    int               `json:"position_count"`
+		VisibleInRanking bool              `json:"visible_in_ranking"`
 	}
 
 	var portfolios []PortfolioSummary
@@ -3005,11 +3221,12 @@ func getAllPortfoliosForComparison(c *gin.Context) {
 		}
 
 		portfolios = append(portfolios, PortfolioSummary{
-			UserID:         user.ID,
-			Username:       user.Username,
-			Positions:      posSummaries,
-			TotalReturnPct: weightedReturn,
-			PositionCount:  len(positions),
+			UserID:           user.ID,
+			Username:         user.Username,
+			Positions:        posSummaries,
+			TotalReturnPct:   weightedReturn,
+			PositionCount:    len(positions),
+			VisibleInRanking: user.VisibleInRanking,
 		})
 	}
 
@@ -3065,15 +3282,21 @@ func getAllPortfoliosHistory(c *gin.Context) {
 		startTime = now.AddDate(0, -1, 0)
 	}
 
-	// Get all users with positions
+	// Get all users with positions — filter by ranking visibility (admin sees all)
+	isAdmin, _ := c.Get("isAdmin")
 	var users []User
-	db.Find(&users)
+	if isAdmin != nil && isAdmin.(bool) {
+		db.Find(&users)
+	} else {
+		db.Where("visible_in_ranking = ?", true).Find(&users)
+	}
 
 	type PortfolioHistory struct {
-		UserID          uint                     `json:"user_id"`
-		Username        string                   `json:"username"`
-		History         []map[string]interface{} `json:"history"`
-		PeriodReturnPct float64                  `json:"period_return_pct"`
+		UserID           uint                     `json:"user_id"`
+		Username         string                   `json:"username"`
+		History          []map[string]interface{} `json:"history"`
+		PeriodReturnPct  float64                  `json:"period_return_pct"`
+		VisibleInRanking bool                     `json:"visible_in_ranking"`
 	}
 
 	var result []PortfolioHistory
@@ -3112,8 +3335,14 @@ func getAllPortfoliosHistory(c *gin.Context) {
 			closedGain := 0.0
 			closedInvested := 0.0
 			for _, t := range closedTrades {
-				closedGain += t.ProfitLoss
-				closedInvested += t.BuyPrice * t.Quantity
+				cur := t.Currency
+				if cur == "" {
+					cur = "EUR"
+				}
+				buyUSD := convertToUSD(t.BuyPrice, cur)
+				sellUSD := convertToUSD(t.SellPrice, cur)
+				closedGain += (sellUSD - buyUSD) * t.Quantity
+				closedInvested += buyUSD * t.Quantity
 			}
 
 			periodReturn := openReturnPct
@@ -3128,10 +3357,11 @@ func getAllPortfoliosHistory(c *gin.Context) {
 			if len(history) > 0 || len(closedTrades) > 0 {
 				resultMu.Lock()
 				result = append(result, PortfolioHistory{
-					UserID:          u.ID,
-					Username:        u.Username,
-					History:         history,
-					PeriodReturnPct: periodReturn,
+					UserID:           u.ID,
+					Username:         u.Username,
+					History:          history,
+					PeriodReturnPct:  periodReturn,
+					VisibleInRanking: u.VisibleInRanking,
 				})
 				resultMu.Unlock()
 			}
@@ -3279,12 +3509,12 @@ func calculatePortfolioHistoryForUser(userID uint, period string) []map[string]i
 			}
 
 			// Base price: if position existed before chart start, use first chart price
-			// Otherwise use the purchase price (AvgPrice)
-			bp := pos.AvgPrice
+			// Otherwise use the purchase price (AvgPrice) — all normalized to USD
+			bp := convertToUSD(pos.AvgPrice, currency)
 			if pos.PurchaseDate == nil || pos.PurchaseDate.Unix() <= allTimes[0] {
 				// Position pre-dates the chart → base is first available price in chart
 				if data, ok := symbolData[pos.Symbol]; ok && len(data) > 0 {
-					bp = convertStockPrice(data[0].Close, pos.Symbol, currency)
+					bp = convertStockPrice(data[0].Close, pos.Symbol, "USD")
 				}
 			}
 
@@ -3309,33 +3539,25 @@ func calculatePortfolioHistoryForUser(userID uint, period string) []map[string]i
 			continue
 		}
 
-		// Calculate portfolio value at this time
+		// Calculate portfolio value at this time — all in USD for consistency
 		var portfolioValue float64
 		if hasQuantities {
 			for _, e := range activeEntries {
 				if price, ok := lastPrices[e.pos.Symbol]; ok {
-					currency := e.pos.Currency
-					if currency == "" {
-						currency = "EUR"
-					}
-					priceInUserCurrency := convertStockPrice(price, e.pos.Symbol, currency)
+					priceUSD := convertStockPrice(price, e.pos.Symbol, "USD")
 					qty := 1.0
 					if e.pos.Quantity != nil {
 						qty = *e.pos.Quantity
 					}
-					portfolioValue += priceInUserCurrency * qty
+					portfolioValue += priceUSD * qty
 				}
 			}
 		} else {
 			for _, e := range activeEntries {
 				if price, ok := lastPrices[e.pos.Symbol]; ok {
-					currency := e.pos.Currency
-					if currency == "" {
-						currency = "EUR"
-					}
-					priceInUserCurrency := convertStockPrice(price, e.pos.Symbol, currency)
+					priceUSD := convertStockPrice(price, e.pos.Symbol, "USD")
 					if e.basePrice > 0 {
-						portfolioValue += 1000 * (priceInUserCurrency / e.basePrice)
+						portfolioValue += 1000 * (priceUSD / e.basePrice)
 					}
 				}
 			}
@@ -3346,13 +3568,14 @@ func calculatePortfolioHistoryForUser(userID uint, period string) []map[string]i
 		}
 
 		// Detect when new positions join: rebase to prevent fake jump
-		if len(activeEntries) != prevActiveCount {
+		// Only rebase when positions INCREASE (not when sold/removed)
+		if len(activeEntries) > prevActiveCount && prevActiveCount > 0 {
 			if len(result) > 0 {
 				prevPct = result[len(result)-1]["pct"].(float64)
 			}
 			baseValue = portfolioValue
-			prevActiveCount = len(activeEntries)
 		}
+		prevActiveCount = len(activeEntries)
 
 		// Set initial base if first data point
 		if baseValue == 0 {
@@ -3542,6 +3765,44 @@ func adjustToTradingDay(date time.Time) time.Time {
 func isWeekend(date time.Time) bool {
 	weekday := date.Weekday()
 	return weekday == time.Saturday || weekday == time.Sunday
+}
+
+func isFirstOfMonth() bool {
+	return time.Now().Day() == 1
+}
+
+// getWarmupEndDate checks if a stock needs warmup filtering based on its trade history.
+// It only fetches OHLCV from Yahoo if the stock might be affected (first trade is recent).
+// Returns 0 if no warmup filtering needed, math.MaxInt64 if ALL bars are warmup.
+func getWarmupEndDate(symbol string, minBars int, trades []TradeData) int64 {
+	if len(trades) == 0 {
+		return 0
+	}
+	// Quick check: if the earliest trade is old enough, the stock definitely has enough data.
+	// minBars months before the first trade = data must have started well before that.
+	// If first trade is before 2019, the stock has 7+ years of monthly data (84+ bars) — no warmup issue.
+	earliestTrade := trades[0].EntryDate
+	for _, t := range trades[1:] {
+		if t.EntryDate < earliestTrade {
+			earliestTrade = t.EntryDate
+		}
+	}
+	warmupMonths := int64(minBars + 12) // minBars + 1 year safety margin
+	cutoff := time.Now().AddDate(0, -int(warmupMonths), 0).Unix()
+	if earliestTrade < cutoff {
+		// First trade is old enough — stock definitely had enough data, skip API call
+		return 0
+	}
+
+	// Stock might be new — fetch OHLCV to check actual bar count
+	ohlcv, err := fetchHistoricalDataServer(symbol)
+	if err != nil || len(ohlcv) == 0 {
+		return 0
+	}
+	if len(ohlcv) < minBars {
+		return math.MaxInt64
+	}
+	return ohlcv[minBars-1].Time
 }
 
 // Stock Performance Tracker handlers
@@ -4806,25 +5067,25 @@ func checkBotFilterConfig(botName string, winRate, riskReward, avgReturn float64
 
 	var reasons []string
 
-	if config.MinWinrate != nil && *config.MinWinrate != 0 && winRate < *config.MinWinrate {
+	if config.MinWinrate != nil && winRate < *config.MinWinrate {
 		reasons = append(reasons, fmt.Sprintf("WinRate %.1f%% < Min %.1f%%", winRate, *config.MinWinrate))
 	}
-	if config.MaxWinrate != nil && *config.MaxWinrate != 0 && winRate > *config.MaxWinrate {
+	if config.MaxWinrate != nil && winRate > *config.MaxWinrate {
 		reasons = append(reasons, fmt.Sprintf("WinRate %.1f%% > Max %.1f%%", winRate, *config.MaxWinrate))
 	}
-	if config.MinRR != nil && *config.MinRR != 0 && riskReward < *config.MinRR {
+	if config.MinRR != nil && riskReward < *config.MinRR {
 		reasons = append(reasons, fmt.Sprintf("R/R %.2f < Min %.2f", riskReward, *config.MinRR))
 	}
-	if config.MaxRR != nil && *config.MaxRR != 0 && riskReward > *config.MaxRR {
+	if config.MaxRR != nil && riskReward > *config.MaxRR {
 		reasons = append(reasons, fmt.Sprintf("R/R %.2f > Max %.2f", riskReward, *config.MaxRR))
 	}
-	if config.MinAvgReturn != nil && *config.MinAvgReturn != 0 && avgReturn < *config.MinAvgReturn {
+	if config.MinAvgReturn != nil && avgReturn < *config.MinAvgReturn {
 		reasons = append(reasons, fmt.Sprintf("AvgReturn %.1f%% < Min %.1f%%", avgReturn, *config.MinAvgReturn))
 	}
-	if config.MaxAvgReturn != nil && *config.MaxAvgReturn != 0 && avgReturn > *config.MaxAvgReturn {
+	if config.MaxAvgReturn != nil && avgReturn > *config.MaxAvgReturn {
 		reasons = append(reasons, fmt.Sprintf("AvgReturn %.1f%% > Max %.1f%%", avgReturn, *config.MaxAvgReturn))
 	}
-	if config.MinMarketCap != nil && *config.MinMarketCap != 0 {
+	if config.MinMarketCap != nil {
 		minCapValue := *config.MinMarketCap * 1e9
 		if float64(marketCap) < minCapValue {
 			mcapBillions := float64(marketCap) / 1e9
@@ -5099,23 +5360,41 @@ func updateBotFilterConfig(c *gin.Context) {
 		return
 	}
 
+	// Auto-enable filter when any filter value is set
+	hasAnyFilter := req.MinWinrate != nil || req.MaxWinrate != nil ||
+		req.MinRR != nil || req.MaxRR != nil ||
+		req.MinAvgReturn != nil || req.MaxAvgReturn != nil ||
+		req.MinMarketCap != nil
+	if hasAnyFilter {
+		req.Enabled = true
+	}
+
 	var config BotFilterConfig
 	result := db.Where("bot_name = ?", req.BotName).First(&config)
 	if result.Error != nil {
+		// CREATE: no existing config for this bot
 		req.UpdatedAt = time.Now()
-		db.Create(&req)
+		if err := db.Create(&req).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create config"})
+			return
+		}
 		c.JSON(http.StatusOK, req)
 	} else {
-		config.MinWinrate = req.MinWinrate
-		config.MaxWinrate = req.MaxWinrate
-		config.MinRR = req.MinRR
-		config.MaxRR = req.MaxRR
-		config.MinAvgReturn = req.MinAvgReturn
-		config.MaxAvgReturn = req.MaxAvgReturn
-		config.MinMarketCap = req.MinMarketCap
-		config.Enabled = req.Enabled
-		config.UpdatedAt = time.Now()
-		db.Save(&config)
+		// UPDATE: use explicit map to ensure NULL values are written correctly
+		updates := map[string]interface{}{
+			"min_winrate":    req.MinWinrate,
+			"max_winrate":    req.MaxWinrate,
+			"min_rr":         req.MinRR,
+			"max_rr":         req.MaxRR,
+			"min_avg_return": req.MinAvgReturn,
+			"max_avg_return": req.MaxAvgReturn,
+			"min_market_cap": req.MinMarketCap,
+			"enabled":        req.Enabled,
+			"updated_at":     time.Now(),
+		}
+		db.Model(&config).Updates(updates)
+		// Reload from DB to return the actual saved values
+		db.Where("bot_name = ?", req.BotName).First(&config)
 		c.JSON(http.StatusOK, config)
 	}
 }
@@ -5504,6 +5783,11 @@ func checkTraderStopLoss() {
 func runFlipperUpdateInternal(triggeredBy string) {
 	checkFlipperStopLoss()
 
+	// Only process signals on the 1st of the month to match calculated trade history
+	if !isFirstOfMonth() {
+		return
+	}
+
 	now := time.Now()
 	sessionID := uuid.New().String()
 
@@ -5821,23 +6105,32 @@ func flipperBotBackfill(c *gin.Context) {
 
 	addLog("INFO", fmt.Sprintf("Backfill gestartet ab %s bis heute", req.UntilDate))
 
+	// Set up streaming response for progress updates
+	c.Header("Content-Type", "application/x-ndjson")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("X-Accel-Buffering", "no")
+	sendProgress := func(current, total int, symbol, message string) {
+		line, _ := json.Marshal(gin.H{"type": "progress", "current": current, "total": total, "symbol": symbol, "message": message})
+		c.Writer.Write(append(line, '\n'))
+		c.Writer.Flush()
+	}
+
 	// Get all tracked stocks with their performance data
 	var trackedStocks []StockPerformance
 	db.Find(&trackedStocks)
 
 	if len(trackedStocks) == 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "No tracked stocks found",
-			"trades_created": 0,
-			"logs": logs,
-		})
+		line, _ := json.Marshal(gin.H{"type": "done", "trades_created": 0, "positions_created": 0, "logs": logs})
+		c.Writer.Write(append(line, '\n'))
+		c.Writer.Flush()
 		return
 	}
 
 	var tradesCreated int
 	var positionsCreated int
 
-	for _, stock := range trackedStocks {
+	for stockIdx, stock := range trackedStocks {
+		sendProgress(stockIdx+1, len(trackedStocks), stock.Symbol, fmt.Sprintf("Verarbeite %s (%d/%d)", stock.Symbol, stockIdx+1, len(trackedStocks)))
 		if stock.TradesJSON == "" {
 			continue
 		}
@@ -5845,6 +6138,12 @@ func flipperBotBackfill(c *gin.Context) {
 		// Check allowlist
 		if !isStockAllowedForBot("flipper", stock.Symbol) {
 			addLog("SKIP", fmt.Sprintf("%s: Nicht in Allowlist — übersprungen", stock.Symbol))
+			continue
+		}
+
+		// Check bot filter config
+		if filterBlocked, filterReason := checkBotFilterConfig("flipper", stock.WinRate, stock.RiskReward, stock.AvgReturn, stock.MarketCap); filterBlocked {
+			addLog("FILTER", fmt.Sprintf("%s: Übersprungen durch Filter (%s)", stock.Symbol, filterReason))
 			continue
 		}
 
@@ -5876,6 +6175,9 @@ func flipperBotBackfill(c *gin.Context) {
 			addLog("SKIP", fmt.Sprintf("%s: Offene Position vor Startdatum (HOLD) — übersprungen", stock.Symbol))
 			continue
 		}
+
+		// Warmup detection: check if indicator has enough data for stable signals
+		warmupEnd := getWarmupEndDate(stock.Symbol, 45, historicalTrades)
 
 		for _, trade := range historicalTrades {
 			// Convert entryDate from seconds to time (timestamps are in seconds, not milliseconds)
@@ -5914,6 +6216,9 @@ func flipperBotBackfill(c *gin.Context) {
 				continue
 			}
 
+			// Check if trade is in warmup period (indicator not yet stable)
+			isWarmup := warmupEnd > 0 && trade.EntryDate <= warmupEnd
+
 			// Create BUY trade
 			buyTrade := FlipperBotTrade{
 				Symbol:     stock.Symbol,
@@ -5923,10 +6228,15 @@ func flipperBotBackfill(c *gin.Context) {
 				Price:      trade.EntryPrice,
 				SignalDate: entryTime,
 				ExecutedAt: now,
+				IsDeleted:  isWarmup,
 			}
 			db.Create(&buyTrade)
 			tradesCreated++
-			addLog("ACTION", fmt.Sprintf("%s: BUY erstellt @ $%.2f am %s", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
+			if isWarmup {
+				addLog("WARMUP", fmt.Sprintf("%s: BUY @ $%.2f am %s — Indikator nicht eingeschwungen (45 Bars nötig)", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
+			} else {
+				addLog("ACTION", fmt.Sprintf("%s: BUY erstellt @ $%.2f am %s", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
+			}
 
 			// Handle exit (SELL) if exists and is not in the future
 			if trade.ExitDate != nil && trade.ExitPrice != nil {
@@ -5948,12 +6258,15 @@ func flipperBotBackfill(c *gin.Context) {
 						ExecutedAt:    now,
 						ProfitLoss:    &profitLoss,
 						ProfitLossPct: &profitLossPct,
+						IsDeleted:     isWarmup,
 					}
 					db.Create(&sellTrade)
 					tradesCreated++
-					addLog("ACTION", fmt.Sprintf("%s: SELL erstellt @ $%.2f am %s (%.2f%%)", stock.Symbol, *trade.ExitPrice, exitTime.Format("2006-01-02"), profitLossPct))
-				} else {
-					// Exit is in the future - create open position
+					if !isWarmup {
+						addLog("ACTION", fmt.Sprintf("%s: SELL erstellt @ $%.2f am %s (%.2f%%)", stock.Symbol, *trade.ExitPrice, exitTime.Format("2006-01-02"), profitLossPct))
+					}
+				} else if !isWarmup {
+					// Exit is in the future - create open position (skip for warmup trades)
 					var existingPos FlipperBotPosition
 					if db.Where("symbol = ?", stock.Symbol).First(&existingPos).Error != nil {
 						newPos := FlipperBotPosition{
@@ -5981,8 +6294,8 @@ func flipperBotBackfill(c *gin.Context) {
 						addLog("ACTION", fmt.Sprintf("%s: Position erstellt (offen)", stock.Symbol))
 					}
 				}
-			} else if trade.IsOpen {
-				// Trade is open with no exit - create position
+			} else if trade.IsOpen && !isWarmup {
+				// Trade is open with no exit - create position (skip for warmup trades)
 				var existingPos FlipperBotPosition
 				if db.Where("symbol = ?", stock.Symbol).First(&existingPos).Error != nil {
 					newPos := FlipperBotPosition{
@@ -6015,13 +6328,9 @@ func flipperBotBackfill(c *gin.Context) {
 
 	addLog("INFO", fmt.Sprintf("Backfill abgeschlossen: %d Trades, %d Positionen erstellt", tradesCreated, positionsCreated))
 
-	c.JSON(http.StatusOK, gin.H{
-		"message":           "Backfill completed",
-		"trades_created":    tradesCreated,
-		"positions_created": positionsCreated,
-		"until_date":        req.UntilDate,
-		"logs":              logs,
-	})
+	line, _ := json.Marshal(gin.H{"type": "done", "trades_created": tradesCreated, "positions_created": positionsCreated, "until_date": req.UntilDate, "logs": logs})
+	c.Writer.Write(append(line, '\n'))
+	c.Writer.Flush()
 }
 
 // lutzBackfill allows admin to create retroactive trades for Lutz (aggressive mode) from a specified date until today
@@ -6056,23 +6365,32 @@ func lutzBackfill(c *gin.Context) {
 
 	addLog("INFO", fmt.Sprintf("Lutz Backfill gestartet ab %s bis heute", req.UntilDate))
 
+	// Set up streaming response for progress updates
+	c.Header("Content-Type", "application/x-ndjson")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("X-Accel-Buffering", "no")
+	sendProgress := func(current, total int, symbol, message string) {
+		line, _ := json.Marshal(gin.H{"type": "progress", "current": current, "total": total, "symbol": symbol, "message": message})
+		c.Writer.Write(append(line, '\n'))
+		c.Writer.Flush()
+	}
+
 	// Get all tracked stocks with their aggressive performance data
 	var trackedStocks []AggressiveStockPerformance
 	db.Find(&trackedStocks)
 
 	if len(trackedStocks) == 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"message":        "No tracked stocks found",
-			"trades_created": 0,
-			"logs":           logs,
-		})
+		line, _ := json.Marshal(gin.H{"type": "done", "trades_created": 0, "positions_created": 0, "logs": logs})
+		c.Writer.Write(append(line, '\n'))
+		c.Writer.Flush()
 		return
 	}
 
 	var tradesCreated int
 	var positionsCreated int
 
-	for _, stock := range trackedStocks {
+	for stockIdx, stock := range trackedStocks {
+		sendProgress(stockIdx+1, len(trackedStocks), stock.Symbol, fmt.Sprintf("Verarbeite %s (%d/%d)", stock.Symbol, stockIdx+1, len(trackedStocks)))
 		if stock.TradesJSON == "" {
 			continue
 		}
@@ -6080,6 +6398,12 @@ func lutzBackfill(c *gin.Context) {
 		// Check allowlist
 		if !isStockAllowedForBot("lutz", stock.Symbol) {
 			addLog("SKIP", fmt.Sprintf("%s: Nicht in Allowlist — übersprungen", stock.Symbol))
+			continue
+		}
+
+		// Check bot filter config
+		if filterBlocked, filterReason := checkBotFilterConfig("lutz", stock.WinRate, stock.RiskReward, stock.AvgReturn, stock.MarketCap); filterBlocked {
+			addLog("FILTER", fmt.Sprintf("%s: Übersprungen durch Filter (%s)", stock.Symbol, filterReason))
 			continue
 		}
 
@@ -6096,6 +6420,9 @@ func lutzBackfill(c *gin.Context) {
 			addLog("ERROR", fmt.Sprintf("%s: Fehler beim Parsen der Trades: %v", stock.Symbol, err))
 			continue
 		}
+
+		// Warmup detection: check if indicator has enough data for stable signals
+		warmupEnd := getWarmupEndDate(stock.Symbol, 45, historicalTrades)
 
 		for _, trade := range historicalTrades {
 			// Convert entryDate from seconds to time
@@ -6134,6 +6461,9 @@ func lutzBackfill(c *gin.Context) {
 				continue
 			}
 
+			// Check if trade is in warmup period (indicator not yet stable)
+			isWarmup := warmupEnd > 0 && trade.EntryDate <= warmupEnd
+
 			// Create BUY trade
 			buyTrade := LutzTrade{
 				Symbol:     stock.Symbol,
@@ -6143,10 +6473,15 @@ func lutzBackfill(c *gin.Context) {
 				Price:      trade.EntryPrice,
 				SignalDate: entryTime,
 				ExecutedAt: now,
+				IsDeleted:  isWarmup,
 			}
 			db.Create(&buyTrade)
 			tradesCreated++
-			addLog("ACTION", fmt.Sprintf("%s: BUY erstellt @ $%.2f am %s", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
+			if isWarmup {
+				addLog("WARMUP", fmt.Sprintf("%s: BUY @ $%.2f am %s — Indikator nicht eingeschwungen (45 Bars nötig)", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
+			} else {
+				addLog("ACTION", fmt.Sprintf("%s: BUY erstellt @ $%.2f am %s", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
+			}
 
 			// Handle exit (SELL) if exists and is not in the future
 			if trade.ExitDate != nil && trade.ExitPrice != nil {
@@ -6168,12 +6503,15 @@ func lutzBackfill(c *gin.Context) {
 						ExecutedAt:    now,
 						ProfitLoss:    &profitLoss,
 						ProfitLossPct: &profitLossPct,
+						IsDeleted:     isWarmup,
 					}
 					db.Create(&sellTrade)
 					tradesCreated++
-					addLog("ACTION", fmt.Sprintf("%s: SELL erstellt @ $%.2f am %s (%.2f%%)", stock.Symbol, *trade.ExitPrice, exitTime.Format("2006-01-02"), profitLossPct))
-				} else {
-					// Exit is in the future - create open position
+					if !isWarmup {
+						addLog("ACTION", fmt.Sprintf("%s: SELL erstellt @ $%.2f am %s (%.2f%%)", stock.Symbol, *trade.ExitPrice, exitTime.Format("2006-01-02"), profitLossPct))
+					}
+				} else if !isWarmup {
+					// Exit is in the future - create open position (skip for warmup trades)
 					var existingPos LutzPosition
 					if db.Where("symbol = ?", stock.Symbol).First(&existingPos).Error != nil {
 						newPos := LutzPosition{
@@ -6201,8 +6539,8 @@ func lutzBackfill(c *gin.Context) {
 						addLog("ACTION", fmt.Sprintf("%s: Position erstellt (offen)", stock.Symbol))
 					}
 				}
-			} else if trade.IsOpen {
-				// Trade is open with no exit - create position
+			} else if trade.IsOpen && !isWarmup {
+				// Trade is open with no exit - create position (skip for warmup trades)
 				var existingPos LutzPosition
 				if db.Where("symbol = ?", stock.Symbol).First(&existingPos).Error != nil {
 					newPos := LutzPosition{
@@ -6235,13 +6573,9 @@ func lutzBackfill(c *gin.Context) {
 
 	addLog("INFO", fmt.Sprintf("Lutz Backfill abgeschlossen: %d Trades, %d Positionen erstellt", tradesCreated, positionsCreated))
 
-	c.JSON(http.StatusOK, gin.H{
-		"message":           "Backfill completed",
-		"trades_created":    tradesCreated,
-		"positions_created": positionsCreated,
-		"until_date":        req.UntilDate,
-		"logs":              logs,
-	})
+	line, _ := json.Marshal(gin.H{"type": "done", "trades_created": tradesCreated, "positions_created": positionsCreated, "until_date": req.UntilDate, "logs": logs})
+	c.Writer.Write(append(line, '\n'))
+	c.Writer.Flush()
 }
 
 // getFlipperBotPendingTrades returns all FlipperBot trades that are pending admin approval
@@ -6309,6 +6643,16 @@ func getFlipperBotPortfolio(c *gin.Context) {
 	}
 	quotes := fetchQuotes(symbols)
 
+	// Fetch market caps from stocks table
+	marketCaps := make(map[string]int64)
+	if len(symbols) > 0 {
+		var mcStocks []Stock
+		db.Select("symbol, market_cap").Where("symbol IN ? AND market_cap > 0", symbols).Find(&mcStocks)
+		for _, s := range mcStocks {
+			marketCaps[s.Symbol] = s.MarketCap
+		}
+	}
+
 	type PositionWithQuote struct {
 		ID            uint      `json:"id"`
 		Symbol        string    `json:"symbol"`
@@ -6324,6 +6668,7 @@ func getFlipperBotPortfolio(c *gin.Context) {
 		CurrentValue  float64   `json:"current_value"`
 		InvestedValue float64   `json:"invested_value"`
 		IsLive        bool      `json:"is_live"`
+		MarketCap     int64     `json:"market_cap"`
 	}
 
 	result := make([]PositionWithQuote, len(positions))
@@ -6362,6 +6707,7 @@ func getFlipperBotPortfolio(c *gin.Context) {
 			CurrentValue:  currentValue,
 			InvestedValue: investedValue,
 			IsLive:        pos.IsLive,
+			MarketCap:     marketCaps[pos.Symbol],
 		}
 	}
 
@@ -6506,6 +6852,16 @@ func getFlipperBotSimulatedPortfolio(c *gin.Context) {
 	}
 	quotes := fetchQuotes(symbols)
 
+	// Fetch market caps from stocks table
+	marketCaps := make(map[string]int64)
+	if len(symbols) > 0 {
+		var mcStocks []Stock
+		db.Select("symbol, market_cap").Where("symbol IN ? AND market_cap > 0", symbols).Find(&mcStocks)
+		for _, s := range mcStocks {
+			marketCaps[s.Symbol] = s.MarketCap
+		}
+	}
+
 	type PositionWithQuote struct {
 		ID             uint      `json:"id"`
 		Symbol         string    `json:"symbol"`
@@ -6521,6 +6877,7 @@ func getFlipperBotSimulatedPortfolio(c *gin.Context) {
 		TotalReturnPct float64   `json:"total_return_pct"`
 		CurrentValue   float64   `json:"current_value"`
 		IsLive         bool      `json:"is_live"`
+		MarketCap      int64     `json:"market_cap"`
 	}
 
 	result := make([]PositionWithQuote, 0)
@@ -6558,6 +6915,7 @@ func getFlipperBotSimulatedPortfolio(c *gin.Context) {
 			TotalReturnPct: posReturnPct,
 			CurrentValue:   posValue,
 			IsLive:         pos.IsLive,
+			MarketCap:      marketCaps[pos.Symbol],
 		})
 	}
 
@@ -7014,6 +7372,37 @@ func resetFlipperBot(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "FlipperBot reset completed",
 	})
+}
+
+func resetAllBots(c *gin.Context) {
+	// FlipperBot
+	db.Where("1 = 1").Delete(&FlipperBotTrade{})
+	db.Where("1 = 1").Delete(&FlipperBotPosition{})
+	db.Where("user_id = ?", FLIPPERBOT_USER_ID).Delete(&PortfolioPosition{})
+	// Lutz
+	db.Where("1 = 1").Delete(&LutzTrade{})
+	db.Where("1 = 1").Delete(&LutzPosition{})
+	db.Where("user_id = ?", LUTZ_USER_ID).Delete(&PortfolioPosition{})
+	// Quant
+	db.Where("1 = 1").Delete(&QuantTrade{})
+	db.Where("1 = 1").Delete(&QuantPosition{})
+	db.Where("user_id = ?", QUANT_USER_ID).Delete(&PortfolioPosition{})
+	db.Where("bot = ?", "quant").Delete(&BotTodo{})
+	db.Where("bot = ?", "quant").Delete(&BotLog{})
+	// Ditz
+	db.Where("1 = 1").Delete(&DitzTrade{})
+	db.Where("1 = 1").Delete(&DitzPosition{})
+	db.Where("user_id = ?", DITZ_USER_ID).Delete(&PortfolioPosition{})
+	db.Where("bot = ?", "ditz").Delete(&BotTodo{})
+	db.Where("bot = ?", "ditz").Delete(&BotLog{})
+	// Trader
+	db.Where("1 = 1").Delete(&TraderTrade{})
+	db.Where("1 = 1").Delete(&TraderPosition{})
+	db.Where("user_id = ?", TRADER_USER_ID).Delete(&PortfolioPosition{})
+	db.Where("bot = ?", "trader").Delete(&BotTodo{})
+	db.Where("bot = ?", "trader").Delete(&BotLog{})
+
+	c.JSON(http.StatusOK, gin.H{"message": "All bots reset completed"})
 }
 
 // fixFlipperBotDB fixes corrupt data in the database
@@ -8280,6 +8669,11 @@ func saveBotTodo(bot, todoType, symbol, name string, quantity, avgPrice, price f
 func runLutzUpdateInternal(triggeredBy string) {
 	checkLutzStopLoss()
 
+	// Only process signals on the 1st of the month to match calculated trade history
+	if !isFirstOfMonth() {
+		return
+	}
+
 	now := time.Now()
 	sessionID := uuid.New().String()
 
@@ -8575,6 +8969,16 @@ func getLutzPortfolio(c *gin.Context) {
 	}
 	quotes := fetchQuotes(symbols)
 
+	// Fetch market caps from stocks table
+	marketCaps := make(map[string]int64)
+	if len(symbols) > 0 {
+		var mcStocks []Stock
+		db.Select("symbol, market_cap").Where("symbol IN ? AND market_cap > 0", symbols).Find(&mcStocks)
+		for _, s := range mcStocks {
+			marketCaps[s.Symbol] = s.MarketCap
+		}
+	}
+
 	type PositionWithQuote struct {
 		ID             uint      `json:"id"`
 		Symbol         string    `json:"symbol"`
@@ -8589,6 +8993,7 @@ func getLutzPortfolio(c *gin.Context) {
 		TotalReturnPct float64   `json:"total_return_pct"`
 		CurrentValue   float64   `json:"current_value"`
 		IsLive         bool      `json:"is_live"`
+		MarketCap      int64     `json:"market_cap"`
 	}
 
 	result := make([]PositionWithQuote, 0)
@@ -8625,6 +9030,7 @@ func getLutzPortfolio(c *gin.Context) {
 			TotalReturnPct: posReturnPct,
 			CurrentValue:   posValue,
 			IsLive:         pos.IsLive,
+			MarketCap:      marketCaps[pos.Symbol],
 		})
 	}
 
@@ -8761,6 +9167,16 @@ func getLutzSimulatedPortfolio(c *gin.Context) {
 	}
 	quotes := fetchQuotes(symbols)
 
+	// Fetch market caps from stocks table
+	marketCaps := make(map[string]int64)
+	if len(symbols) > 0 {
+		var mcStocks []Stock
+		db.Select("symbol, market_cap").Where("symbol IN ? AND market_cap > 0", symbols).Find(&mcStocks)
+		for _, s := range mcStocks {
+			marketCaps[s.Symbol] = s.MarketCap
+		}
+	}
+
 	type PositionWithQuote struct {
 		ID             uint      `json:"id"`
 		Symbol         string    `json:"symbol"`
@@ -8776,6 +9192,7 @@ func getLutzSimulatedPortfolio(c *gin.Context) {
 		TotalReturnPct float64   `json:"total_return_pct"`
 		CurrentValue   float64   `json:"current_value"`
 		IsLive         bool      `json:"is_live"`
+		MarketCap      int64     `json:"market_cap"`
 	}
 
 	result := make([]PositionWithQuote, 0)
@@ -8813,6 +9230,7 @@ func getLutzSimulatedPortfolio(c *gin.Context) {
 			TotalReturnPct: posReturnPct,
 			CurrentValue:   posValue,
 			IsLive:         pos.IsLive,
+			MarketCap:      marketCaps[pos.Symbol],
 		})
 	}
 
@@ -9695,6 +10113,11 @@ func updateStockCategory(c *gin.Context) {
 func runQuantUpdateInternal(triggeredBy string) {
 	checkQuantStopLoss()
 
+	// Only process signals on the 1st of the month to match calculated trade history
+	if !isFirstOfMonth() {
+		return
+	}
+
 	now := time.Now()
 	sessionID := uuid.New().String()
 
@@ -10113,6 +10536,16 @@ func getQuantPortfolio(c *gin.Context) {
 	}
 	quotes := fetchQuotes(symbols)
 
+	// Fetch market caps from stocks table
+	marketCaps := make(map[string]int64)
+	if len(symbols) > 0 {
+		var mcStocks []Stock
+		db.Select("symbol, market_cap").Where("symbol IN ? AND market_cap > 0", symbols).Find(&mcStocks)
+		for _, s := range mcStocks {
+			marketCaps[s.Symbol] = s.MarketCap
+		}
+	}
+
 	type PositionWithQuote struct {
 		ID             uint      `json:"id"`
 		Symbol         string    `json:"symbol"`
@@ -10127,6 +10560,7 @@ func getQuantPortfolio(c *gin.Context) {
 		TotalReturnPct float64   `json:"total_return_pct"`
 		CurrentValue   float64   `json:"current_value"`
 		IsLive         bool      `json:"is_live"`
+		MarketCap      int64     `json:"market_cap"`
 	}
 
 	result := make([]PositionWithQuote, 0)
@@ -10163,6 +10597,7 @@ func getQuantPortfolio(c *gin.Context) {
 			TotalReturnPct: posReturnPct,
 			CurrentValue:   posValue,
 			IsLive:         pos.IsLive,
+			MarketCap:      marketCaps[pos.Symbol],
 		})
 	}
 
@@ -10398,23 +10833,32 @@ func quantBackfill(c *gin.Context) {
 
 	addLog("INFO", fmt.Sprintf("Quant Backfill gestartet ab %s bis heute", req.UntilDate))
 
+	// Set up streaming response for progress updates
+	c.Header("Content-Type", "application/x-ndjson")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("X-Accel-Buffering", "no")
+	sendProgress := func(current, total int, symbol, message string) {
+		line, _ := json.Marshal(gin.H{"type": "progress", "current": current, "total": total, "symbol": symbol, "message": message})
+		c.Writer.Write(append(line, '\n'))
+		c.Writer.Flush()
+	}
+
 	// Get all tracked stocks with their quant performance data
 	var trackedStocks []QuantStockPerformance
 	db.Find(&trackedStocks)
 
 	if len(trackedStocks) == 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"message":        "No tracked stocks found",
-			"trades_created": 0,
-			"logs":           logs,
-		})
+		line, _ := json.Marshal(gin.H{"type": "done", "trades_created": 0, "positions_created": 0, "logs": logs})
+		c.Writer.Write(append(line, '\n'))
+		c.Writer.Flush()
 		return
 	}
 
 	var tradesCreated int
 	var positionsCreated int
 
-	for _, stock := range trackedStocks {
+	for stockIdx, stock := range trackedStocks {
+		sendProgress(stockIdx+1, len(trackedStocks), stock.Symbol, fmt.Sprintf("Verarbeite %s (%d/%d)", stock.Symbol, stockIdx+1, len(trackedStocks)))
 		if stock.TradesJSON == "" {
 			continue
 		}
@@ -10422,6 +10866,12 @@ func quantBackfill(c *gin.Context) {
 		// Check allowlist
 		if !isStockAllowedForBot("quant", stock.Symbol) {
 			addLog("SKIP", fmt.Sprintf("%s: Nicht in Allowlist — übersprungen", stock.Symbol))
+			continue
+		}
+
+		// Check bot filter config
+		if filterBlocked, filterReason := checkBotFilterConfig("quant", stock.WinRate, stock.RiskReward, stock.AvgReturn, stock.MarketCap); filterBlocked {
+			addLog("FILTER", fmt.Sprintf("%s: Übersprungen durch Filter (%s)", stock.Symbol, filterReason))
 			continue
 		}
 
@@ -10452,6 +10902,9 @@ func quantBackfill(c *gin.Context) {
 			continue
 		}
 
+		// Warmup detection: check if indicator has enough data for stable signals
+		warmupEnd := getWarmupEndDate(stock.Symbol, 225, historicalTrades)
+
 		for _, trade := range historicalTrades {
 			entryTime := time.Unix(trade.EntryDate, 0).UTC()
 			entryTime = time.Date(entryTime.Year(), entryTime.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -10481,6 +10934,9 @@ func quantBackfill(c *gin.Context) {
 			if qty <= 0 || trade.EntryPrice <= 0 {
 				continue
 			}
+			// Check if trade is in warmup period (indicator not yet stable)
+			isWarmup := warmupEnd > 0 && trade.EntryDate <= warmupEnd
+
 
 			buyTrade := QuantTrade{
 				Symbol:     stock.Symbol,
@@ -10491,10 +10947,15 @@ func quantBackfill(c *gin.Context) {
 				SignalDate: entryTime,
 				ExecutedAt: entryTime,
 				IsPending:  false,
+				IsDeleted:  isWarmup,
 			}
 			db.Create(&buyTrade)
 			tradesCreated++
-			addLog("ACTION", fmt.Sprintf("%s: BUY erstellt @ $%.2f am %s", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
+			if isWarmup {
+				addLog("WARMUP", fmt.Sprintf("%s: BUY @ $%.2f am %s — Indikator nicht eingeschwungen (225 Bars nötig)", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
+			} else {
+				addLog("ACTION", fmt.Sprintf("%s: BUY erstellt @ $%.2f am %s", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
+			}
 
 			if trade.ExitDate != nil && trade.ExitPrice != nil {
 				exitTime := time.Unix(*trade.ExitDate, 0).UTC()
@@ -10515,11 +10976,14 @@ func quantBackfill(c *gin.Context) {
 						IsPending:     false,
 						ProfitLoss:    &profitLoss,
 						ProfitLossPct: &profitLossPct,
+						IsDeleted:     isWarmup,
 					}
 					db.Create(&sellTrade)
 					tradesCreated++
-					addLog("ACTION", fmt.Sprintf("%s: SELL erstellt @ $%.2f am %s (%.2f%%)", stock.Symbol, *trade.ExitPrice, exitTime.Format("2006-01-02"), profitLossPct))
-				} else {
+					if !isWarmup {
+						addLog("ACTION", fmt.Sprintf("%s: SELL erstellt @ $%.2f am %s (%.2f%%)", stock.Symbol, *trade.ExitPrice, exitTime.Format("2006-01-02"), profitLossPct))
+					}
+				} else if !isWarmup {
 					var existingPos QuantPosition
 					if db.Where("symbol = ? AND is_closed = ?", stock.Symbol, false).First(&existingPos).Error != nil {
 						newPos := QuantPosition{
@@ -10547,7 +11011,7 @@ func quantBackfill(c *gin.Context) {
 						addLog("ACTION", fmt.Sprintf("%s: Position erstellt (offen)", stock.Symbol))
 					}
 				}
-			} else if trade.IsOpen {
+			} else if trade.IsOpen && !isWarmup {
 				var existingPos QuantPosition
 				if db.Where("symbol = ? AND is_closed = ?", stock.Symbol, false).First(&existingPos).Error != nil {
 					newPos := QuantPosition{
@@ -10580,13 +11044,9 @@ func quantBackfill(c *gin.Context) {
 
 	addLog("INFO", fmt.Sprintf("Quant Backfill abgeschlossen: %d Trades, %d Positionen erstellt", tradesCreated, positionsCreated))
 
-	c.JSON(http.StatusOK, gin.H{
-		"message":           "Backfill completed",
-		"trades_created":    tradesCreated,
-		"positions_created": positionsCreated,
-		"until_date":        req.UntilDate,
-		"logs":              logs,
-	})
+	line, _ := json.Marshal(gin.H{"type": "done", "trades_created": tradesCreated, "positions_created": positionsCreated, "until_date": req.UntilDate, "logs": logs})
+	c.Writer.Write(append(line, '\n'))
+	c.Writer.Flush()
 }
 
 func getQuantCompletedTrades(c *gin.Context) {
@@ -11353,6 +11813,16 @@ func getQuantSimulatedPortfolio(c *gin.Context) {
 	}
 	quotes := fetchQuotes(symbols)
 
+	// Fetch market caps from stocks table
+	marketCaps := make(map[string]int64)
+	if len(symbols) > 0 {
+		var mcStocks []Stock
+		db.Select("symbol, market_cap").Where("symbol IN ? AND market_cap > 0", symbols).Find(&mcStocks)
+		for _, s := range mcStocks {
+			marketCaps[s.Symbol] = s.MarketCap
+		}
+	}
+
 	type PositionWithQuote struct {
 		ID             uint      `json:"id"`
 		Symbol         string    `json:"symbol"`
@@ -11367,6 +11837,7 @@ func getQuantSimulatedPortfolio(c *gin.Context) {
 		TotalReturnPct float64   `json:"total_return_pct"`
 		CurrentValue   float64   `json:"current_value"`
 		IsLive         bool      `json:"is_live"`
+		MarketCap      int64     `json:"market_cap"`
 	}
 
 	result := make([]PositionWithQuote, 0)
@@ -11403,6 +11874,7 @@ func getQuantSimulatedPortfolio(c *gin.Context) {
 			TotalReturnPct: posReturnPct,
 			CurrentValue:   posValue,
 			IsLive:         pos.IsLive,
+			MarketCap:      marketCaps[pos.Symbol],
 		})
 	}
 
@@ -11748,6 +12220,9 @@ func setSchedulerTimeHandler(c *gin.Context) {
 func runFullStockUpdate(triggeredBy string) {
 	fmt.Printf("[FullUpdate] Starting full stock update triggered by: %s\n", triggeredBy)
 
+	// Capture signal snapshot BEFORE update for notification generation
+	preSignals := captureSignalSnapshot()
+
 	// Get all stocks from watchlist, largest market cap first
 	var stocks []Stock
 	db.Order("market_cap desc").Find(&stocks)
@@ -11879,6 +12354,75 @@ func runFullStockUpdate(triggeredBy string) {
 		runTraderUpdateInternal(triggeredBy)
 	}()
 	fmt.Println("[FullUpdate] Trader bot update completed")
+
+	// Generate signal change notifications for portfolio holders
+	generateSignalNotifications(preSignals)
+}
+
+func captureSignalSnapshot() map[string]string {
+	snapshot := map[string]string{}
+	type symbolSignal struct {
+		Symbol string
+		Signal string
+	}
+	tables := []struct {
+		model interface{}
+		mode  string
+	}{
+		{&StockPerformance{}, "Defensiv"},
+		{&AggressiveStockPerformance{}, "Aggressiv"},
+		{&QuantStockPerformance{}, "Quant"},
+		{&DitzStockPerformance{}, "Ditz"},
+		{&TraderStockPerformance{}, "Trader"},
+	}
+	for _, t := range tables {
+		var rows []symbolSignal
+		db.Model(t.model).Select("symbol, signal").Find(&rows)
+		for _, r := range rows {
+			snapshot[t.mode+"_"+r.Symbol] = r.Signal
+		}
+	}
+	return snapshot
+}
+
+func generateSignalNotifications(preSignals map[string]string) {
+	// Delete old notifications > 90 days
+	db.Where("created_at < ?", time.Now().AddDate(0, -3, 0)).Delete(&UserNotification{})
+
+	postSignals := captureSignalSnapshot()
+
+	// Load all users with portfolio positions
+	var positions []PortfolioPosition
+	db.Select("DISTINCT user_id, symbol, name").Find(&positions)
+	userSymbols := map[uint][]PortfolioPosition{}
+	for _, p := range positions {
+		userSymbols[p.UserID] = append(userSymbols[p.UserID], p)
+	}
+
+	modes := []string{"Defensiv", "Aggressiv", "Quant", "Ditz", "Trader"}
+	var notifications []UserNotification
+	for userID, poss := range userSymbols {
+		for _, pos := range poss {
+			for _, mode := range modes {
+				key := mode + "_" + pos.Symbol
+				oldSig, newSig := preSignals[key], postSignals[key]
+				if oldSig != "" && newSig != "" && oldSig != newSig {
+					notifications = append(notifications, UserNotification{
+						UserID:    userID,
+						Symbol:    pos.Symbol,
+						Name:      pos.Name,
+						Mode:      mode,
+						OldSignal: oldSig,
+						NewSignal: newSig,
+					})
+				}
+			}
+		}
+	}
+	if len(notifications) > 0 {
+		db.CreateInBatches(notifications, 100)
+		fmt.Printf("[FullUpdate] Created %d signal change notifications\n", len(notifications))
+	}
 }
 
 // processStockServer processes a single stock and saves performance data
@@ -12460,7 +13004,8 @@ func calculateBXtrenderServer(ohlcv []OHLCV, isAggressive bool, config BXtrender
 	lastBuySignalIdx := -1
 	lastSellSignalIdx := -1
 
-	for i := 1; i < len(ohlcv); i++ {
+	// Skip warmup period — indicators not stable before minLen bars
+	for i := minLen; i < len(ohlcv); i++ {
 		shortPrev := shortXtrender[i-1]
 		shortCurr := shortXtrender[i]
 
@@ -12671,7 +13216,8 @@ func calculateBXtrenderQuantServer(ohlcv []OHLCV, config BXtrenderQuantConfig, n
 	lastBuySignalIdx := -1
 	lastSellSignalIdx := -1
 
-	for i := 1; i < len(ohlcv); i++ {
+	// Skip warmup period — indicators not stable before minLen bars
+	for i := minLen; i < len(ohlcv); i++ {
 		shortPrev := shortXtrender[i-1]
 		shortCurr := shortXtrender[i]
 		longPrev := longXtrender[i-1]
@@ -13361,6 +13907,11 @@ func updateBXtrenderDitzConfig(c *gin.Context) {
 func runDitzUpdateInternal(triggeredBy string) {
 	checkDitzStopLoss()
 
+	// Only process signals on the 1st of the month to match calculated trade history
+	if !isFirstOfMonth() {
+		return
+	}
+
 	now := time.Now()
 	sessionID := uuid.New().String()
 
@@ -13776,6 +14327,16 @@ func getDitzPortfolio(c *gin.Context) {
 	}
 	quotes := fetchQuotes(symbols)
 
+	// Fetch market caps from stocks table
+	marketCaps := make(map[string]int64)
+	if len(symbols) > 0 {
+		var mcStocks []Stock
+		db.Select("symbol, market_cap").Where("symbol IN ? AND market_cap > 0", symbols).Find(&mcStocks)
+		for _, s := range mcStocks {
+			marketCaps[s.Symbol] = s.MarketCap
+		}
+	}
+
 	type PositionWithQuote struct {
 		ID             uint      `json:"id"`
 		Symbol         string    `json:"symbol"`
@@ -13790,6 +14351,7 @@ func getDitzPortfolio(c *gin.Context) {
 		TotalReturnPct float64   `json:"total_return_pct"`
 		CurrentValue   float64   `json:"current_value"`
 		IsLive         bool      `json:"is_live"`
+		MarketCap      int64     `json:"market_cap"`
 	}
 
 	result := make([]PositionWithQuote, 0)
@@ -13826,6 +14388,7 @@ func getDitzPortfolio(c *gin.Context) {
 			TotalReturnPct: posReturnPct,
 			CurrentValue:   posValue,
 			IsLive:         pos.IsLive,
+			MarketCap:      marketCaps[pos.Symbol],
 		})
 	}
 
@@ -14060,23 +14623,32 @@ func ditzBackfill(c *gin.Context) {
 
 	addLog("INFO", fmt.Sprintf("Ditz Backfill gestartet ab %s bis heute", req.UntilDate))
 
+	// Set up streaming response for progress updates
+	c.Header("Content-Type", "application/x-ndjson")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("X-Accel-Buffering", "no")
+	sendProgress := func(current, total int, symbol, message string) {
+		line, _ := json.Marshal(gin.H{"type": "progress", "current": current, "total": total, "symbol": symbol, "message": message})
+		c.Writer.Write(append(line, '\n'))
+		c.Writer.Flush()
+	}
+
 	// Get all tracked stocks with their ditz performance data
 	var trackedStocks []DitzStockPerformance
 	db.Find(&trackedStocks)
 
 	if len(trackedStocks) == 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"message":        "No tracked stocks found",
-			"trades_created": 0,
-			"logs":           logs,
-		})
+		line, _ := json.Marshal(gin.H{"type": "done", "trades_created": 0, "positions_created": 0, "logs": logs})
+		c.Writer.Write(append(line, '\n'))
+		c.Writer.Flush()
 		return
 	}
 
 	var tradesCreated int
 	var positionsCreated int
 
-	for _, stock := range trackedStocks {
+	for stockIdx, stock := range trackedStocks {
+		sendProgress(stockIdx+1, len(trackedStocks), stock.Symbol, fmt.Sprintf("Verarbeite %s (%d/%d)", stock.Symbol, stockIdx+1, len(trackedStocks)))
 		if stock.TradesJSON == "" {
 			continue
 		}
@@ -14084,6 +14656,12 @@ func ditzBackfill(c *gin.Context) {
 		// Check allowlist
 		if !isStockAllowedForBot("ditz", stock.Symbol) {
 			addLog("SKIP", fmt.Sprintf("%s: Nicht in Allowlist — übersprungen", stock.Symbol))
+			continue
+		}
+
+		// Check bot filter config
+		if filterBlocked, filterReason := checkBotFilterConfig("ditz", stock.WinRate, stock.RiskReward, stock.AvgReturn, stock.MarketCap); filterBlocked {
+			addLog("FILTER", fmt.Sprintf("%s: Übersprungen durch Filter (%s)", stock.Symbol, filterReason))
 			continue
 		}
 
@@ -14114,6 +14692,9 @@ func ditzBackfill(c *gin.Context) {
 			continue
 		}
 
+		// Warmup detection: check if indicator has enough data for stable signals
+		warmupEnd := getWarmupEndDate(stock.Symbol, 225, historicalTrades)
+
 		for _, trade := range historicalTrades {
 			entryTime := time.Unix(trade.EntryDate, 0).UTC()
 			entryTime = time.Date(entryTime.Year(), entryTime.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -14143,6 +14724,9 @@ func ditzBackfill(c *gin.Context) {
 			if qty <= 0 || trade.EntryPrice <= 0 {
 				continue
 			}
+			// Check if trade is in warmup period (indicator not yet stable)
+			isWarmup := warmupEnd > 0 && trade.EntryDate <= warmupEnd
+
 
 			buyTrade := DitzTrade{
 				Symbol:     stock.Symbol,
@@ -14153,10 +14737,15 @@ func ditzBackfill(c *gin.Context) {
 				SignalDate: entryTime,
 				ExecutedAt: entryTime,
 				IsPending:  false,
+				IsDeleted:  isWarmup,
 			}
 			db.Create(&buyTrade)
 			tradesCreated++
-			addLog("ACTION", fmt.Sprintf("%s: BUY erstellt @ $%.2f am %s", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
+			if isWarmup {
+				addLog("WARMUP", fmt.Sprintf("%s: BUY @ $%.2f am %s — Indikator nicht eingeschwungen (225 Bars nötig)", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
+			} else {
+				addLog("ACTION", fmt.Sprintf("%s: BUY erstellt @ $%.2f am %s", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
+			}
 
 			if trade.ExitDate != nil && trade.ExitPrice != nil {
 				exitTime := time.Unix(*trade.ExitDate, 0).UTC()
@@ -14177,11 +14766,14 @@ func ditzBackfill(c *gin.Context) {
 						IsPending:     false,
 						ProfitLoss:    &profitLoss,
 						ProfitLossPct: &profitLossPct,
+						IsDeleted:     isWarmup,
 					}
 					db.Create(&sellTrade)
 					tradesCreated++
-					addLog("ACTION", fmt.Sprintf("%s: SELL erstellt @ $%.2f am %s (%.2f%%)", stock.Symbol, *trade.ExitPrice, exitTime.Format("2006-01-02"), profitLossPct))
-				} else {
+					if !isWarmup {
+						addLog("ACTION", fmt.Sprintf("%s: SELL erstellt @ $%.2f am %s (%.2f%%)", stock.Symbol, *trade.ExitPrice, exitTime.Format("2006-01-02"), profitLossPct))
+					}
+				} else if !isWarmup {
 					var existingPos DitzPosition
 					if db.Where("symbol = ? AND is_closed = ?", stock.Symbol, false).First(&existingPos).Error != nil {
 						newPos := DitzPosition{
@@ -14209,7 +14801,7 @@ func ditzBackfill(c *gin.Context) {
 						addLog("ACTION", fmt.Sprintf("%s: Position erstellt (offen)", stock.Symbol))
 					}
 				}
-			} else if trade.IsOpen {
+			} else if trade.IsOpen && !isWarmup {
 				var existingPos DitzPosition
 				if db.Where("symbol = ? AND is_closed = ?", stock.Symbol, false).First(&existingPos).Error != nil {
 					newPos := DitzPosition{
@@ -14242,13 +14834,9 @@ func ditzBackfill(c *gin.Context) {
 
 	addLog("INFO", fmt.Sprintf("Ditz Backfill abgeschlossen: %d Trades, %d Positionen erstellt", tradesCreated, positionsCreated))
 
-	c.JSON(http.StatusOK, gin.H{
-		"message":           "Backfill completed",
-		"trades_created":    tradesCreated,
-		"positions_created": positionsCreated,
-		"until_date":        req.UntilDate,
-		"logs":              logs,
-	})
+	line, _ := json.Marshal(gin.H{"type": "done", "trades_created": tradesCreated, "positions_created": positionsCreated, "until_date": req.UntilDate, "logs": logs})
+	c.Writer.Write(append(line, '\n'))
+	c.Writer.Flush()
 }
 
 func getDitzCompletedTrades(c *gin.Context) {
@@ -15014,6 +15602,16 @@ func getDitzSimulatedPortfolio(c *gin.Context) {
 	}
 	quotes := fetchQuotes(symbols)
 
+	// Fetch market caps from stocks table
+	marketCaps := make(map[string]int64)
+	if len(symbols) > 0 {
+		var mcStocks []Stock
+		db.Select("symbol, market_cap").Where("symbol IN ? AND market_cap > 0", symbols).Find(&mcStocks)
+		for _, s := range mcStocks {
+			marketCaps[s.Symbol] = s.MarketCap
+		}
+	}
+
 	type PositionWithQuote struct {
 		ID             uint      `json:"id"`
 		Symbol         string    `json:"symbol"`
@@ -15028,6 +15626,7 @@ func getDitzSimulatedPortfolio(c *gin.Context) {
 		TotalReturnPct float64   `json:"total_return_pct"`
 		CurrentValue   float64   `json:"current_value"`
 		IsLive         bool      `json:"is_live"`
+		MarketCap      int64     `json:"market_cap"`
 	}
 
 	result := make([]PositionWithQuote, 0)
@@ -15064,6 +15663,7 @@ func getDitzSimulatedPortfolio(c *gin.Context) {
 			TotalReturnPct: posReturnPct,
 			CurrentValue:   posValue,
 			IsLive:         pos.IsLive,
+			MarketCap:      marketCaps[pos.Symbol],
 		})
 	}
 
@@ -15428,6 +16028,11 @@ func updateBXtrenderTraderConfig(c *gin.Context) {
 // runTraderUpdateInternal performs the Trader bot update without HTTP context
 func runTraderUpdateInternal(triggeredBy string) {
 	checkTraderStopLoss()
+
+	// Only process signals on the 1st of the month to match calculated trade history
+	if !isFirstOfMonth() {
+		return
+	}
 
 	now := time.Now()
 	sessionID := uuid.New().String()
@@ -15844,6 +16449,16 @@ func getTraderPortfolio(c *gin.Context) {
 	}
 	quotes := fetchQuotes(symbols)
 
+	// Fetch market caps from stocks table
+	marketCaps := make(map[string]int64)
+	if len(symbols) > 0 {
+		var mcStocks []Stock
+		db.Select("symbol, market_cap").Where("symbol IN ? AND market_cap > 0", symbols).Find(&mcStocks)
+		for _, s := range mcStocks {
+			marketCaps[s.Symbol] = s.MarketCap
+		}
+	}
+
 	type PositionWithQuote struct {
 		ID             uint      `json:"id"`
 		Symbol         string    `json:"symbol"`
@@ -15858,6 +16473,7 @@ func getTraderPortfolio(c *gin.Context) {
 		TotalReturnPct float64   `json:"total_return_pct"`
 		CurrentValue   float64   `json:"current_value"`
 		IsLive         bool      `json:"is_live"`
+		MarketCap      int64     `json:"market_cap"`
 	}
 
 	result := make([]PositionWithQuote, 0)
@@ -15894,6 +16510,7 @@ func getTraderPortfolio(c *gin.Context) {
 			TotalReturnPct: posReturnPct,
 			CurrentValue:   posValue,
 			IsLive:         pos.IsLive,
+			MarketCap:      marketCaps[pos.Symbol],
 		})
 	}
 
@@ -16128,23 +16745,32 @@ func traderBackfill(c *gin.Context) {
 
 	addLog("INFO", fmt.Sprintf("Trader Backfill gestartet ab %s bis heute", req.UntilDate))
 
+	// Set up streaming response for progress updates
+	c.Header("Content-Type", "application/x-ndjson")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("X-Accel-Buffering", "no")
+	sendProgress := func(current, total int, symbol, message string) {
+		line, _ := json.Marshal(gin.H{"type": "progress", "current": current, "total": total, "symbol": symbol, "message": message})
+		c.Writer.Write(append(line, '\n'))
+		c.Writer.Flush()
+	}
+
 	// Get all tracked stocks with their trader performance data
 	var trackedStocks []TraderStockPerformance
 	db.Find(&trackedStocks)
 
 	if len(trackedStocks) == 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"message":        "No tracked stocks found",
-			"trades_created": 0,
-			"logs":           logs,
-		})
+		line, _ := json.Marshal(gin.H{"type": "done", "trades_created": 0, "positions_created": 0, "logs": logs})
+		c.Writer.Write(append(line, '\n'))
+		c.Writer.Flush()
 		return
 	}
 
 	var tradesCreated int
 	var positionsCreated int
 
-	for _, stock := range trackedStocks {
+	for stockIdx, stock := range trackedStocks {
+		sendProgress(stockIdx+1, len(trackedStocks), stock.Symbol, fmt.Sprintf("Verarbeite %s (%d/%d)", stock.Symbol, stockIdx+1, len(trackedStocks)))
 		if stock.TradesJSON == "" {
 			continue
 		}
@@ -16152,6 +16778,12 @@ func traderBackfill(c *gin.Context) {
 		// Check allowlist
 		if !isStockAllowedForBot("trader", stock.Symbol) {
 			addLog("SKIP", fmt.Sprintf("%s: Nicht in Allowlist — übersprungen", stock.Symbol))
+			continue
+		}
+
+		// Check bot filter config
+		if filterBlocked, filterReason := checkBotFilterConfig("trader", stock.WinRate, stock.RiskReward, stock.AvgReturn, stock.MarketCap); filterBlocked {
+			addLog("FILTER", fmt.Sprintf("%s: Übersprungen durch Filter (%s)", stock.Symbol, filterReason))
 			continue
 		}
 
@@ -16182,6 +16814,9 @@ func traderBackfill(c *gin.Context) {
 			continue
 		}
 
+		// Warmup detection: check if indicator has enough data for stable signals
+		warmupEnd := getWarmupEndDate(stock.Symbol, 45, historicalTrades)
+
 		for _, trade := range historicalTrades {
 			entryTime := time.Unix(trade.EntryDate, 0).UTC()
 			entryTime = time.Date(entryTime.Year(), entryTime.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -16211,6 +16846,9 @@ func traderBackfill(c *gin.Context) {
 			if qty <= 0 || trade.EntryPrice <= 0 {
 				continue
 			}
+			// Check if trade is in warmup period (indicator not yet stable)
+			isWarmup := warmupEnd > 0 && trade.EntryDate <= warmupEnd
+
 
 			buyTrade := TraderTrade{
 				Symbol:     stock.Symbol,
@@ -16221,10 +16859,15 @@ func traderBackfill(c *gin.Context) {
 				SignalDate: entryTime,
 				ExecutedAt: entryTime,
 				IsPending:  false,
+				IsDeleted:  isWarmup,
 			}
 			db.Create(&buyTrade)
 			tradesCreated++
-			addLog("ACTION", fmt.Sprintf("%s: BUY erstellt @ $%.2f am %s", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
+			if isWarmup {
+				addLog("WARMUP", fmt.Sprintf("%s: BUY @ $%.2f am %s — Indikator nicht eingeschwungen (45 Bars nötig)", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
+			} else {
+				addLog("ACTION", fmt.Sprintf("%s: BUY erstellt @ $%.2f am %s", stock.Symbol, trade.EntryPrice, entryTime.Format("2006-01-02")))
+			}
 
 			if trade.ExitDate != nil && trade.ExitPrice != nil {
 				exitTime := time.Unix(*trade.ExitDate, 0).UTC()
@@ -16245,11 +16888,14 @@ func traderBackfill(c *gin.Context) {
 						IsPending:     false,
 						ProfitLoss:    &profitLoss,
 						ProfitLossPct: &profitLossPct,
+						IsDeleted:     isWarmup,
 					}
 					db.Create(&sellTrade)
 					tradesCreated++
-					addLog("ACTION", fmt.Sprintf("%s: SELL erstellt @ $%.2f am %s (%.2f%%)", stock.Symbol, *trade.ExitPrice, exitTime.Format("2006-01-02"), profitLossPct))
-				} else {
+					if !isWarmup {
+						addLog("ACTION", fmt.Sprintf("%s: SELL erstellt @ $%.2f am %s (%.2f%%)", stock.Symbol, *trade.ExitPrice, exitTime.Format("2006-01-02"), profitLossPct))
+					}
+				} else if !isWarmup {
 					var existingPos TraderPosition
 					if db.Where("symbol = ? AND is_closed = ?", stock.Symbol, false).First(&existingPos).Error != nil {
 						newPos := TraderPosition{
@@ -16277,7 +16923,7 @@ func traderBackfill(c *gin.Context) {
 						addLog("ACTION", fmt.Sprintf("%s: Position erstellt (offen)", stock.Symbol))
 					}
 				}
-			} else if trade.IsOpen {
+			} else if trade.IsOpen && !isWarmup {
 				var existingPos TraderPosition
 				if db.Where("symbol = ? AND is_closed = ?", stock.Symbol, false).First(&existingPos).Error != nil {
 					newPos := TraderPosition{
@@ -16310,13 +16956,9 @@ func traderBackfill(c *gin.Context) {
 
 	addLog("INFO", fmt.Sprintf("Trader Backfill abgeschlossen: %d Trades, %d Positionen erstellt", tradesCreated, positionsCreated))
 
-	c.JSON(http.StatusOK, gin.H{
-		"message":           "Backfill completed",
-		"trades_created":    tradesCreated,
-		"positions_created": positionsCreated,
-		"until_date":        req.UntilDate,
-		"logs":              logs,
-	})
+	line, _ := json.Marshal(gin.H{"type": "done", "trades_created": tradesCreated, "positions_created": positionsCreated, "until_date": req.UntilDate, "logs": logs})
+	c.Writer.Write(append(line, '\n'))
+	c.Writer.Flush()
 }
 
 func getTraderCompletedTrades(c *gin.Context) {
@@ -17082,6 +17724,16 @@ func getTraderSimulatedPortfolio(c *gin.Context) {
 	}
 	quotes := fetchQuotes(symbols)
 
+	// Fetch market caps from stocks table
+	marketCaps := make(map[string]int64)
+	if len(symbols) > 0 {
+		var mcStocks []Stock
+		db.Select("symbol, market_cap").Where("symbol IN ? AND market_cap > 0", symbols).Find(&mcStocks)
+		for _, s := range mcStocks {
+			marketCaps[s.Symbol] = s.MarketCap
+		}
+	}
+
 	type PositionWithQuote struct {
 		ID             uint      `json:"id"`
 		Symbol         string    `json:"symbol"`
@@ -17096,6 +17748,7 @@ func getTraderSimulatedPortfolio(c *gin.Context) {
 		TotalReturnPct float64   `json:"total_return_pct"`
 		CurrentValue   float64   `json:"current_value"`
 		IsLive         bool      `json:"is_live"`
+		MarketCap      int64     `json:"market_cap"`
 	}
 
 	result := make([]PositionWithQuote, 0)
@@ -17132,6 +17785,7 @@ func getTraderSimulatedPortfolio(c *gin.Context) {
 			TotalReturnPct: posReturnPct,
 			CurrentValue:   posValue,
 			IsLive:         pos.IsLive,
+			MarketCap:      marketCaps[pos.Symbol],
 		})
 	}
 
@@ -17359,7 +18013,8 @@ func calculateBXtrenderDitzServer(ohlcv []OHLCV, config BXtrenderDitzConfig, nex
 	lastBuySignalIdx := -1
 	lastSellSignalIdx := -1
 
-	for i := 1; i < len(ohlcv); i++ {
+	// Skip warmup period — indicators not stable before minLen bars
+	for i := minLen; i < len(ohlcv); i++ {
 		shortPrev := shortXtrender[i-1]
 		shortCurr := shortXtrender[i]
 		longPrev := longXtrender[i-1]
@@ -17611,7 +18266,8 @@ func calculateBXtrenderTraderServer(ohlcv []OHLCV, config BXtrenderTraderConfig,
 	lastBuySignalIdx := -1
 	lastSellSignalIdx := -1
 
-	for i := 2; i < len(ohlcv); i++ {
+	// Skip warmup period — indicators not stable before minLen bars
+	for i := minLen; i < len(ohlcv); i++ {
 		price := ohlcv[i].Close
 
 		// Update highest price if in position
@@ -17721,6 +18377,479 @@ func calculateBXtrenderTraderServer(ohlcv []OHLCV, config BXtrenderTraderConfig,
 }
 
 // saveTraderPerformanceServer saves performance data for trader mode (server-side batch)
+// ==================== Signal Liste ====================
+
+type signalListModeData struct {
+	Mode                string   `json:"mode"`
+	Signal              string   `json:"signal"`
+	SignalSince         string   `json:"signal_since"`
+	WinRate             float64  `json:"win_rate"`
+	RiskReward          float64  `json:"risk_reward"`
+	TotalReturn         float64  `json:"total_return"`
+	AvgReturn           float64  `json:"avg_return"`
+	TotalTrades         int      `json:"total_trades"`
+	Wins                int      `json:"wins"`
+	Losses              int      `json:"losses"`
+	TradeReturnPct      *float64 `json:"trade_return_pct"`
+	TradeDurationMonths *int     `json:"trade_duration_months"`
+}
+
+type signalListEntry struct {
+	Symbol         string               `json:"symbol"`
+	Name           string               `json:"name"`
+	Signal         string               `json:"signal"`
+	SignalSince    string               `json:"signal_since"`
+	CurrentPrice   float64              `json:"current_price"`
+	MarketCap      int64                `json:"market_cap"`
+	TradeReturnPct      *float64             `json:"trade_return_pct"`
+	TradeDurationMonths *int                 `json:"trade_duration_months"`
+	Modes               []signalListModeData `json:"modes"`
+	ModeCount      int                  `json:"mode_count"`
+	BuyModeCount   int                  `json:"buy_mode_count"`
+	SellModeCount  int                  `json:"sell_mode_count"`
+	Visible        bool                 `json:"visible"`
+	WinRate        float64              `json:"win_rate"`
+	RiskReward     float64              `json:"risk_reward"`
+	TotalReturn    float64              `json:"total_return"`
+	AvgReturn      float64              `json:"avg_return"`
+	TotalTrades    int                  `json:"total_trades"`
+}
+
+func signalForMonth(tradesJSON string, targetYear int, targetMonth int) string {
+	var trades []TradeData
+	if err := json.Unmarshal([]byte(tradesJSON), &trades); err != nil || len(trades) == 0 {
+		return ""
+	}
+
+	monthStart := time.Date(targetYear, time.Month(targetMonth), 1, 0, 0, 0, 0, time.UTC)
+	monthEnd := monthStart.AddDate(0, 1, 0).Add(-time.Second)
+
+	hasSell := false
+	hasBuy := false
+	hasHold := false
+
+	for _, trade := range trades {
+		entryDate := time.Unix(trade.EntryDate, 0).UTC()
+		hasExit := trade.ExitDate != nil && *trade.ExitDate > 0
+		var exitDate time.Time
+		if hasExit {
+			exitDate = time.Unix(*trade.ExitDate, 0).UTC()
+		}
+
+		openAtMonthEnd := !hasExit || exitDate.After(monthEnd)
+
+		// SELL: exit in target month
+		if hasExit && !exitDate.Before(monthStart) && !exitDate.After(monthEnd) {
+			hasSell = true
+		}
+		// BUY: entry in target month and still open at month end
+		if !entryDate.Before(monthStart) && !entryDate.After(monthEnd) && openAtMonthEnd {
+			hasBuy = true
+		}
+		// HOLD: entry before month and still open at month end
+		if entryDate.Before(monthStart) && openAtMonthEnd {
+			hasHold = true
+		}
+	}
+
+	if hasSell {
+		return "SELL"
+	}
+	if hasBuy {
+		return "BUY"
+	}
+	if hasHold {
+		return "HOLD"
+	}
+	return "WAIT"
+}
+
+func getSignalList(c *gin.Context) {
+	now := time.Now()
+	monthParam := c.DefaultQuery("month", fmt.Sprintf("%d-%02d", now.Year(), now.Month()))
+
+	// Parse month parameter
+	parts := strings.Split(monthParam, "-")
+	if len(parts) != 2 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid month format, use YYYY-MM"})
+		return
+	}
+	targetYear := 0
+	targetMonth := 0
+	fmt.Sscanf(parts[0], "%d", &targetYear)
+	fmt.Sscanf(parts[1], "%d", &targetMonth)
+	if targetYear == 0 || targetMonth < 1 || targetMonth > 12 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid month"})
+		return
+	}
+
+	isCurrentMonth := targetYear == now.Year() && targetMonth == int(now.Month())
+	isAdmin := false
+	if v, exists := c.Get("isAdmin"); exists {
+		isAdmin = v.(bool)
+	}
+
+	type perfRow struct {
+		Symbol       string
+		Name         string
+		Signal       string
+		SignalSince  string
+		CurrentPrice float64
+		MarketCap    int64
+		WinRate      float64
+		RiskReward   float64
+		TotalReturn  float64
+		AvgReturn    float64
+		TotalTrades  int
+		Wins         int
+		Losses       int
+		TradesJSON   string
+	}
+
+	symbolMap := make(map[string]*signalListEntry)
+
+	// Extract trade return + duration from TradesJSON
+	type tradeReturnInfo struct {
+		ReturnPct      float64
+		DurationMonths int
+	}
+	getTradeReturn := func(tradesJSON string, sig string, signalSince string, tYear int, tMonth int) *tradeReturnInfo {
+		var trades []TradeData
+		if err := json.Unmarshal([]byte(tradesJSON), &trades); err != nil || len(trades) == 0 {
+			return nil
+		}
+		mStart := time.Date(tYear, time.Month(tMonth), 1, 0, 0, 0, 0, time.UTC)
+		mEnd := mStart.AddDate(0, 1, 0).Add(-time.Second)
+		calcMonths := func(entry, exit time.Time) int {
+			m := (exit.Year()-entry.Year())*12 + int(exit.Month()) - int(entry.Month())
+			if m < 1 {
+				m = 1
+			}
+			return m
+		}
+		if sig == "BUY" {
+			for i := len(trades) - 1; i >= 0; i-- {
+				t := trades[i]
+				entryDate := time.Unix(t.EntryDate, 0).UTC()
+				hasExit := t.ExitDate != nil && *t.ExitDate > 0
+				openAtEnd := !hasExit || time.Unix(*t.ExitDate, 0).UTC().After(mEnd)
+				if !entryDate.After(mEnd) && openAtEnd {
+					dur := calcMonths(entryDate, time.Now())
+					return &tradeReturnInfo{ReturnPct: t.ReturnPct, DurationMonths: dur}
+				}
+			}
+		} else if sig == "SELL" {
+			// For current month: find last closed trade matching signal_since or just the latest closed
+			// For historical: find trade closed in that month
+			for i := len(trades) - 1; i >= 0; i-- {
+				t := trades[i]
+				if t.ExitDate == nil || *t.ExitDate <= 0 {
+					continue
+				}
+				exitDate := time.Unix(*t.ExitDate, 0).UTC()
+				entryDate := time.Unix(t.EntryDate, 0).UTC()
+				if isCurrentMonth {
+					// For current month: match by signal_since date or latest closed trade
+					if signalSince != "" {
+						ssParsed, err := time.Parse("2006-01-02", signalSince)
+						if err == nil {
+							// Exit date should be in the same month as signalSince
+							if exitDate.Year() == ssParsed.Year() && exitDate.Month() == ssParsed.Month() {
+								dur := calcMonths(entryDate, exitDate)
+								return &tradeReturnInfo{ReturnPct: t.ReturnPct, DurationMonths: dur}
+							}
+							continue
+						}
+					}
+					// Fallback: latest closed trade
+					dur := calcMonths(entryDate, exitDate)
+					return &tradeReturnInfo{ReturnPct: t.ReturnPct, DurationMonths: dur}
+				} else {
+					if !exitDate.Before(mStart) && !exitDate.After(mEnd) {
+						dur := calcMonths(entryDate, exitDate)
+						return &tradeReturnInfo{ReturnPct: t.ReturnPct, DurationMonths: dur}
+					}
+				}
+			}
+		}
+		return nil
+	}
+
+
+	processRows := func(rows []perfRow, modeName string) {
+		for _, row := range rows {
+			signal := ""
+			signalSince := row.SignalSince
+
+			if isCurrentMonth {
+				if row.Signal == "BUY" || row.Signal == "SELL" {
+					signal = row.Signal
+				}
+				// Fallback: derive signalSince from TradesJSON if empty
+				if signal != "" && signalSince == "" && row.TradesJSON != "" {
+					var tmpTrades []TradeData
+					if err := json.Unmarshal([]byte(row.TradesJSON), &tmpTrades); err == nil && len(tmpTrades) > 0 {
+						lastTrade := tmpTrades[len(tmpTrades)-1]
+						if signal == "BUY" {
+							entryDate := time.Unix(lastTrade.EntryDate, 0).UTC()
+							signalSince = entryDate.Format("2006-01-02")
+						} else if signal == "SELL" && lastTrade.ExitDate != nil && *lastTrade.ExitDate > 0 {
+							exitDate := time.Unix(*lastTrade.ExitDate, 0).UTC()
+							signalSince = exitDate.Format("2006-01-02")
+						}
+					}
+				}
+			} else {
+				sig := signalForMonth(row.TradesJSON, targetYear, targetMonth)
+				if sig == "BUY" || sig == "SELL" {
+					signal = sig
+					signalSince = ""
+					// Derive date from TradesJSON for historical months
+					var tmpTrades []TradeData
+					if err := json.Unmarshal([]byte(row.TradesJSON), &tmpTrades); err == nil {
+						mStart := time.Date(targetYear, time.Month(targetMonth), 1, 0, 0, 0, 0, time.UTC)
+						mEnd := mStart.AddDate(0, 1, 0).Add(-time.Second)
+						for i := len(tmpTrades) - 1; i >= 0; i-- {
+							t := tmpTrades[i]
+							if sig == "SELL" && t.ExitDate != nil && *t.ExitDate > 0 {
+								exitDate := time.Unix(*t.ExitDate, 0).UTC()
+								if !exitDate.Before(mStart) && !exitDate.After(mEnd) {
+									signalSince = exitDate.Format("2006-01-02")
+									break
+								}
+							} else if sig == "BUY" {
+								entryDate := time.Unix(t.EntryDate, 0).UTC()
+								if !entryDate.Before(mStart) && !entryDate.After(mEnd) {
+									signalSince = entryDate.Format("2006-01-02")
+									break
+								}
+							}
+						}
+					}
+				}
+			}
+
+			if signal == "" {
+				continue
+			}
+
+			modeData := signalListModeData{
+				Mode:        modeName,
+				Signal:      signal,
+				SignalSince: signalSince,
+				WinRate:     row.WinRate,
+				RiskReward:  row.RiskReward,
+				TotalReturn: row.TotalReturn,
+				AvgReturn:   row.AvgReturn,
+				TotalTrades: row.TotalTrades,
+				Wins:        row.Wins,
+				Losses:      row.Losses,
+			}
+
+			entry, exists := symbolMap[row.Symbol]
+			if !exists {
+				entry = &signalListEntry{
+					Symbol:       row.Symbol,
+					Name:         row.Name,
+					CurrentPrice: row.CurrentPrice,
+					MarketCap:    row.MarketCap,
+					Visible:      true,
+				}
+				symbolMap[row.Symbol] = entry
+			}
+			// Calculate trade return per mode
+			if info := getTradeReturn(row.TradesJSON, signal, signalSince, targetYear, targetMonth); info != nil {
+				modeData.TradeReturnPct = &info.ReturnPct
+				modeData.TradeDurationMonths = &info.DurationMonths
+			}
+			entry.Modes = append(entry.Modes, modeData)
+
+			if signal == "BUY" {
+				entry.BuyModeCount++
+			} else {
+				entry.SellModeCount++
+			}
+		}
+	}
+
+	// Query all 5 performance tables
+	var defRows []perfRow
+	db.Model(&StockPerformance{}).Select("symbol, name, signal, signal_since, current_price, market_cap, win_rate, risk_reward, total_return, avg_return, total_trades, wins, losses, trades_json").Find(&defRows)
+	processRows(defRows, "defensive")
+
+	var aggRows []perfRow
+	db.Model(&AggressiveStockPerformance{}).Select("symbol, name, signal, signal_since, current_price, market_cap, win_rate, risk_reward, total_return, avg_return, total_trades, wins, losses, trades_json").Find(&aggRows)
+	processRows(aggRows, "aggressive")
+
+	var quantRows []perfRow
+	db.Model(&QuantStockPerformance{}).Select("symbol, name, signal, signal_since, current_price, market_cap, win_rate, risk_reward, total_return, avg_return, total_trades, wins, losses, trades_json").Find(&quantRows)
+	processRows(quantRows, "quant")
+
+	var ditzRows []perfRow
+	db.Model(&DitzStockPerformance{}).Select("symbol, name, signal, signal_since, current_price, market_cap, win_rate, risk_reward, total_return, avg_return, total_trades, wins, losses, trades_json").Find(&ditzRows)
+	processRows(ditzRows, "ditz")
+
+	var traderRows []perfRow
+	db.Model(&TraderStockPerformance{}).Select("symbol, name, signal, signal_since, current_price, market_cap, win_rate, risk_reward, total_return, avg_return, total_trades, wins, losses, trades_json").Find(&traderRows)
+	processRows(traderRows, "trader")
+
+	// Load visibility
+	var hidden []SignalListVisibility
+	db.Where("month = ? AND visible = ?", monthParam, false).Find(&hidden)
+	hiddenSet := make(map[string]bool)
+	for _, h := range hidden {
+		hiddenSet[h.Symbol] = true
+	}
+
+	// Build result
+	var results []signalListEntry
+	for _, entry := range symbolMap {
+		entry.ModeCount = len(entry.Modes)
+
+		// Determine dominant signal
+		if entry.BuyModeCount >= entry.SellModeCount {
+			entry.Signal = "BUY"
+		} else {
+			entry.Signal = "SELL"
+		}
+
+		// Find earliest signal_since
+		earliest := ""
+		for _, m := range entry.Modes {
+			if m.SignalSince != "" {
+				if earliest == "" || m.SignalSince < earliest {
+					earliest = m.SignalSince
+				}
+			}
+		}
+		entry.SignalSince = earliest
+
+		// Aggregate metrics: average across modes
+		totalWR := 0.0
+		totalRR := 0.0
+		totalTR := 0.0
+		totalAR := 0.0
+		totalT := 0
+		for _, m := range entry.Modes {
+			totalWR += m.WinRate
+			totalRR += m.RiskReward
+			totalTR += m.TotalReturn
+			totalAR += m.AvgReturn
+			totalT += m.TotalTrades
+		}
+		n := float64(len(entry.Modes))
+		entry.WinRate = totalWR / n
+		entry.RiskReward = totalRR / n
+		entry.TotalReturn = totalTR / n
+		entry.AvgReturn = totalAR / n
+		entry.TotalTrades = totalT
+
+		// Aggregate trade return for sorting (average of mode returns)
+		var returnSum float64
+		var returnCount int
+		for _, m := range entry.Modes {
+			if m.TradeReturnPct != nil {
+				returnSum += *m.TradeReturnPct
+				returnCount++
+			}
+		}
+		if returnCount > 0 {
+			avg := returnSum / float64(returnCount)
+			entry.TradeReturnPct = &avg
+		}
+
+		// Visibility
+		if hiddenSet[entry.Symbol] {
+			entry.Visible = false
+		}
+		if !isAdmin && !entry.Visible {
+			continue
+		}
+
+		results = append(results, *entry)
+	}
+
+	// Sort: BUY first, then by mode_count desc, then market_cap desc
+	sort.Slice(results, func(i, j int) bool {
+		// Primary: BUY before SELL
+		if results[i].Signal != results[j].Signal {
+			return results[i].Signal == "BUY"
+		}
+		// Secondary: more total modes = higher rank
+		if results[i].ModeCount != results[j].ModeCount {
+			return results[i].ModeCount > results[j].ModeCount
+		}
+		// Tertiary: higher market cap
+		return results[i].MarketCap > results[j].MarketCap
+	})
+
+	c.JSON(http.StatusOK, gin.H{
+		"month":   monthParam,
+		"entries": results,
+		"total":   len(results),
+	})
+}
+
+func getSignalListFilterConfig(c *gin.Context) {
+	var config SignalListFilterConfig
+	result := db.First(&config)
+	if result.Error != nil {
+		c.JSON(http.StatusOK, SignalListFilterConfig{})
+		return
+	}
+	c.JSON(http.StatusOK, config)
+}
+
+func updateSignalListFilterConfig(c *gin.Context) {
+	var req SignalListFilterConfig
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	var config SignalListFilterConfig
+	result := db.First(&config)
+	if result.Error != nil {
+		req.UpdatedAt = time.Now()
+		db.Create(&req)
+		c.JSON(http.StatusOK, req)
+	} else {
+		config.MinWinrate = req.MinWinrate
+		config.MaxWinrate = req.MaxWinrate
+		config.MinRR = req.MinRR
+		config.MaxRR = req.MaxRR
+		config.MinAvgReturn = req.MinAvgReturn
+		config.MaxAvgReturn = req.MaxAvgReturn
+		config.MinMarketCap = req.MinMarketCap
+		config.UpdatedAt = time.Now()
+		db.Save(&config)
+		c.JSON(http.StatusOK, config)
+	}
+}
+
+func toggleSignalListVisibility(c *gin.Context) {
+	var req struct {
+		Symbol  string `json:"symbol"`
+		Month   string `json:"month"`
+		Visible bool   `json:"visible"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	var vis SignalListVisibility
+	result := db.Where("symbol = ? AND month = ?", req.Symbol, req.Month).First(&vis)
+	if result.Error != nil {
+		vis = SignalListVisibility{Symbol: req.Symbol, Month: req.Month, Visible: req.Visible}
+		db.Create(&vis)
+	} else {
+		vis.Visible = req.Visible
+		db.Save(&vis)
+	}
+	c.JSON(http.StatusOK, vis)
+}
+
 func saveTraderPerformanceServer(symbol, name string, metrics MetricsResult, result BXtrenderResult, currentPrice float64, marketCap int64) {
 	if result.Signal == "NO_DATA" {
 		return

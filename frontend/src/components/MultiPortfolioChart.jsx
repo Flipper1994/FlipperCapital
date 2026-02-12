@@ -23,15 +23,26 @@ function MultiPortfolioChart({ token, height = 300, portfolios = [], onColorMap,
   const chartContainerRef = useRef(null)
   const chartRef = useRef(null)
   const seriesRef = useRef([])
+  const userSeriesMapRef = useRef({})
   const [internalPeriod, setInternalPeriod] = useState('1m')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [legendItems, setLegendItems] = useState([])
+  const [hiddenUsers, setHiddenUsers] = useState(new Set())
 
   const period = externalPeriod !== undefined ? externalPeriod : internalPeriod
   const handlePeriodChange = (newPeriod) => {
     if (onPeriodChange) onPeriodChange(newPeriod)
     else setInternalPeriod(newPeriod)
+  }
+
+  const toggleUser = (userId) => {
+    setHiddenUsers(prev => {
+      const next = new Set(prev)
+      if (next.has(userId)) next.delete(userId)
+      else next.add(userId)
+      return next
+    })
   }
 
   const periodLabels = {
@@ -92,6 +103,17 @@ function MultiPortfolioChart({ token, height = 300, portfolios = [], onColorMap,
     }
   }, [height])
 
+  // Toggle series visibility when hiddenUsers changes
+  useEffect(() => {
+    Object.entries(userSeriesMapRef.current).forEach(([userId, series]) => {
+      try {
+        series.applyOptions({ visible: !hiddenUsers.has(Number(userId)) })
+      } catch (e) {
+        // Series might be removed
+      }
+    })
+  }, [hiddenUsers])
+
   useEffect(() => {
     if (!chartRef.current || !token) return
 
@@ -123,6 +145,7 @@ function MultiPortfolioChart({ token, height = 300, portfolios = [], onColorMap,
           }
         })
         seriesRef.current = []
+        userSeriesMapRef.current = {}
 
         // Build color map for parent component
         const colorMap = {}
@@ -136,6 +159,7 @@ function MultiPortfolioChart({ token, height = 300, portfolios = [], onColorMap,
           const series = chartRef.current.addLineSeries({
             color: color,
             lineWidth: 2,
+            visible: !hiddenUsers.has(portfolio.user_id),
             priceLineVisible: false,
             lastValueVisible: false,
             priceFormat: {
@@ -152,10 +176,11 @@ function MultiPortfolioChart({ token, height = 300, portfolios = [], onColorMap,
           }))
 
           const lastPct = chartData.length > 0 ? chartData[chartData.length - 1].value : 0
-          legend.push({ name: portfolio.username, color, pct: lastPct })
+          legend.push({ name: portfolio.username, color, pct: lastPct, userId: portfolio.user_id })
 
           series.setData(chartData)
           seriesRef.current.push(series)
+          userSeriesMapRef.current[portfolio.user_id] = series
         })
         setLegendItems(legend)
 
@@ -230,17 +255,24 @@ function MultiPortfolioChart({ token, height = 300, portfolios = [], onColorMap,
         <div ref={chartContainerRef} className="w-full h-full" />
       </div>
 
-      {/* Legend */}
+      {/* Clickable Legend */}
       {legendItems.length > 0 && (
         <div className="px-4 py-2 border-t border-dark-600 flex flex-wrap gap-x-4 gap-y-1">
           {legendItems.map((item, i) => (
-            <div key={i} className="flex items-center gap-1.5 text-xs">
+            <button
+              key={i}
+              className={`flex items-center gap-1.5 text-xs transition-opacity cursor-pointer hover:bg-dark-700/50 rounded px-1 py-0.5 ${
+                hiddenUsers.has(item.userId) ? 'opacity-30' : 'opacity-100'
+              }`}
+              onClick={() => toggleUser(item.userId)}
+              title={hiddenUsers.has(item.userId) ? `${item.name} einblenden` : `${item.name} ausblenden`}
+            >
               <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
               <span className="text-gray-400">{item.name}</span>
               <span className={`font-medium ${item.pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                 {item.pct >= 0 ? '+' : ''}{item.pct.toFixed(2)}%
               </span>
-            </div>
+            </button>
           ))}
         </div>
       )}

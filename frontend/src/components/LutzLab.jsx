@@ -1,10 +1,13 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useCurrency } from '../context/CurrencyContext'
+import { useBlockedStocks } from '../hooks/useBlockedStocks'
+import BlockedBadge from './BlockedBadge'
 import PortfolioChart from './PortfolioChart'
 import StockDetailOverlay from './StockDetailOverlay'
 
 function LutzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
+  const blockedStocks = useBlockedStocks()
   const [portfolio, setPortfolio] = useState(null)
   const [actions, setActions] = useState([])
   const [performance, setPerformance] = useState(null)
@@ -418,6 +421,7 @@ function LutzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                         <div className="cursor-pointer" onClick={() => setSelectedPosition({ symbol: pos.symbol, name: pos.name, mode: 'aggressive' })}>
                           <div className="font-semibold text-white flex items-center gap-2 hover:text-orange-400">
                             {pos.symbol}
+                            <BlockedBadge symbol={pos.symbol} blockedStocks={blockedStocks} />
                             {pos.is_live && (
                               <span className="px-2 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded flex items-center gap-1">
                                 <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span>
@@ -496,6 +500,7 @@ function LutzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                               <div>
                                 <div className="font-medium text-white flex items-center gap-2 hover:text-orange-400">
                                   {pos.symbol}
+                                  <BlockedBadge symbol={pos.symbol} blockedStocks={blockedStocks} />
                                   {pos.is_live && (
                                     <span className="px-2 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded flex items-center gap-1">
                                       <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span>
@@ -579,7 +584,7 @@ function LutzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                         <tr key={trade.id} className={`border-b border-dark-700/50 last:border-0 ${trade.is_live ? 'bg-green-500/5' : ''}`}>
                           <td className="py-3 px-4">
                             <div className="flex items-center gap-2">
-                              <div className="font-medium text-white">{trade.symbol}</div>
+                              <div className="font-medium text-white">{trade.symbol}<BlockedBadge symbol={trade.symbol} blockedStocks={blockedStocks} /></div>
                               {trade.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
                               {trade.is_stop_loss && <span className="px-1.5 py-0.5 bg-red-500/20 text-red-400 text-[10px] rounded font-medium">SL</span>}
                             </div>
@@ -622,6 +627,7 @@ function LutzLab({ isAdmin = false, isLoggedIn = false, token = '' }) {
                       </span>
                       {action.is_stop_loss && <span className="px-1.5 py-0.5 bg-red-500/20 text-red-400 text-[10px] rounded font-medium">SL</span>}
                       <span className="font-semibold text-white">{action.symbol}</span>
+                      <BlockedBadge symbol={action.symbol} blockedStocks={blockedStocks} />
                       {action.is_live && (
                         <span className="px-2 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded flex items-center gap-1">
                           <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span>

@@ -18,6 +18,8 @@ import QuantLab from './components/QuantLab'
 import DitzLab from './components/DitzLab'
 import TraderLab from './components/TraderLab'
 import Performance from './components/Performance'
+import SignalList from './components/SignalList'
+import Profile from './components/Profile'
 import Help from './components/Help'
 
 function UnderConstruction() {
@@ -42,6 +44,7 @@ function UnderConstruction() {
 function App() {
   const [isAdmin, setIsAdmin] = useState(false)
   const [isLoggedIn, setIsLoggedIn] = useState(false)
+  const [authLoading, setAuthLoading] = useState(!!localStorage.getItem('authToken'))
   const [user, setUser] = useState(null)
   const [token, setToken] = useState(localStorage.getItem('authToken') || '')
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -67,6 +70,8 @@ function App() {
       }
     } catch {
       clearAuth()
+    } finally {
+      setAuthLoading(false)
     }
   }
 
@@ -138,11 +143,15 @@ function App() {
               />
               <Route
                 path="/portfolio"
-                element={isLoggedIn ? <PortfolioManage /> : <Navigate to="/login" />}
+                element={authLoading ? null : isLoggedIn ? <PortfolioManage /> : <Navigate to="/login" />}
+              />
+              <Route
+                path="/profile"
+                element={authLoading ? null : isLoggedIn ? <Profile /> : <Navigate to="/login" />}
               />
               <Route
                 path="/compare"
-                element={isLoggedIn ? <PortfolioCompare /> : <Navigate to="/login" />}
+                element={authLoading ? null : isLoggedIn ? <PortfolioCompare user={user} isAdmin={isAdmin} /> : <Navigate to="/login" />}
               />
               <Route
                 path="/tracker"
@@ -151,6 +160,10 @@ function App() {
               <Route
                 path="/performance"
                 element={<Performance token={token} />}
+              />
+              <Route
+                path="/signal-liste"
+                element={<SignalList token={token} isAdmin={isAdmin} />}
               />
               <Route
                 path="/admin"

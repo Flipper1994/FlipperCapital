@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useCurrency } from '../context/CurrencyContext'
 import MultiPortfolioChart, { getPortfolioColor } from './MultiPortfolioChart'
 
-function PortfolioCompare() {
+function PortfolioCompare({ user, isAdmin }) {
   const token = localStorage.getItem('authToken')
 
   // Show login prompt if not authenticated
@@ -41,16 +41,17 @@ function PortfolioCompare() {
     )
   }
 
-  return <PortfolioCompareContent token={token} />
+  return <PortfolioCompareContent token={token} user={user} isAdmin={isAdmin} />
 }
 
-function PortfolioCompareContent({ token }) {
+function PortfolioCompareContent({ token, user, isAdmin }) {
   const [portfolios, setPortfolios] = useState([])
   const [loading, setLoading] = useState(true)
   const [expandedPortfolio, setExpandedPortfolio] = useState(null)
   const [colorMap, setColorMap] = useState({})
   const [period, setPeriod] = useState('1m')
   const [historyData, setHistoryData] = useState([])
+  const [visibleInRanking, setVisibleInRanking] = useState(user?.visible_in_ranking !== false)
   const { formatPrice, currency } = useCurrency()
 
   // Callback to receive color mapping from chart
@@ -116,9 +117,34 @@ function PortfolioCompareContent({ token }) {
     <div className="flex-1 p-4 md:p-6 overflow-auto">
       <div className="max-w-6xl mx-auto">
         {/* Header */}
-        <div className="mb-4 md:mb-6">
-          <h1 className="text-xl md:text-2xl font-bold text-white">Portfolio Vergleich</h1>
-          <p className="text-gray-500 text-sm">Vergleiche alle Nutzer-Portfolios nach Performance</p>
+        <div className="mb-4 md:mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div>
+            <h1 className="text-xl md:text-2xl font-bold text-white">Portfolio Vergleich</h1>
+            <p className="text-gray-500 text-sm">Vergleiche alle Nutzer-Portfolios nach Performance</p>
+          </div>
+          {user && (
+            <label className="flex items-center gap-2 text-sm text-gray-400 cursor-pointer select-none shrink-0">
+              <div
+                className={`relative w-9 h-5 rounded-full transition-colors ${visibleInRanking ? 'bg-accent-500' : 'bg-dark-600'}`}
+                onClick={async () => {
+                  const newVisible = !visibleInRanking
+                  setVisibleInRanking(newVisible)
+                  try {
+                    await fetch('/api/user/ranking-visibility', {
+                      method: 'PUT',
+                      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ visible: newVisible })
+                    })
+                  } catch (e) {
+                    setVisibleInRanking(!newVisible)
+                  }
+                }}
+              >
+                <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${visibleInRanking ? 'translate-x-4.5 left-0.5' : 'left-0.5'}`} style={{ transform: visibleInRanking ? 'translateX(16px)' : 'translateX(0)' }} />
+              </div>
+              Im Ranking sichtbar
+            </label>
+          )}
         </div>
 
         {loading ? (
@@ -188,7 +214,7 @@ function PortfolioCompareContent({ token }) {
 
                       {/* Username */}
                       <div className="w-24 md:w-32 truncate text-sm text-white font-medium text-left">
-                        {portfolio.username}
+                        {portfolio.username}{isAdmin && !portfolio.visible_in_ranking && ' 👻'}
                       </div>
 
                       {/* Bar Chart - centered at 0 */}
@@ -258,18 +284,23 @@ function PortfolioCompareContent({ token }) {
                           </span>
                         </div>
                         <div className="text-left">
-                          <div className="text-white font-medium">{portfolio.username}</div>
+                          <div className="text-white font-medium">{portfolio.username}{isAdmin && !portfolio.visible_in_ranking && ' 👻'}</div>
                           <div className="text-xs text-gray-500">
                             {portfolio.position_count} Position{portfolio.position_count !== 1 ? 'en' : ''}
                           </div>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className={`text-lg font-bold ${
-                          portfolio.total_return_pct >= 0 ? 'text-green-400' : 'text-red-400'
-                        }`}>
-                          {formatPercent(portfolio.total_return_pct)}
-                        </span>
+                        {(() => {
+                          const periodRet = getPeriodReturn(portfolio.user_id)
+                          return (
+                            <span className={`text-lg font-bold ${
+                              periodRet >= 0 ? 'text-green-400' : 'text-red-400'
+                            }`}>
+                              {formatPercent(periodRet)}
+                            </span>
+                          )
+                        })()}
                         <svg
                           className={`w-5 h-5 text-gray-400 transition-transform ${
                             expandedPortfolio === portfolio.user_id ? 'rotate-180' : ''
@@ -326,7 +357,7 @@ function PortfolioCompareContent({ token }) {
                       <th className="p-4">Nutzer</th>
                       <th className="p-4">Positionen</th>
                       <th className="p-4">Aktien</th>
-                      <th className="p-4 text-right">Rendite</th>
+                      <th className="p-4 text-right">Zeitraum-Rendite</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -355,7 +386,7 @@ function PortfolioCompareContent({ token }) {
                                   {portfolio.username.charAt(0).toUpperCase()}
                                 </span>
                               </div>
-                              <span className="text-white font-medium">{portfolio.username}</span>
+                              <span className="text-white font-medium">{portfolio.username}{isAdmin && !portfolio.visible_in_ranking && ' 👻'}</span>
                             </div>
                           </td>
                           <td className="p-4 text-gray-400">
@@ -379,11 +410,14 @@ function PortfolioCompareContent({ token }) {
                             </div>
                           </td>
                           <td className="p-4 text-right">
+                            {(() => {
+                              const periodRet = getPeriodReturn(portfolio.user_id)
+                              return (
                             <div className="flex items-center justify-end gap-2">
                               <span className={`text-lg font-bold ${
-                                portfolio.total_return_pct >= 0 ? 'text-green-400' : 'text-red-400'
+                                periodRet >= 0 ? 'text-green-400' : 'text-red-400'
                               }`}>
-                                {formatPercent(portfolio.total_return_pct)}
+                                {formatPercent(periodRet)}
                               </span>
                               <svg
                                 className={`w-5 h-5 text-gray-400 transition-transform ${
@@ -396,6 +430,8 @@ function PortfolioCompareContent({ token }) {
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                               </svg>
                             </div>
+                              )
+                            })()}
                           </td>
                         </tr>
 

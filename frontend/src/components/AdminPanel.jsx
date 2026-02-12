@@ -46,6 +46,7 @@ function AdminPanel() {
   const [backfillDate, setBackfillDate] = useState('')
   const [backfilling, setBackfilling] = useState(false)
   const [backfillResult, setBackfillResult] = useState(null)
+  const [backfillProgress, setBackfillProgress] = useState(null)
   const [showBxConfig, setShowBxConfig] = useState(false)
   const [showBotReset, setShowBotReset] = useState(false)
   const [showBackfill, setShowBackfill] = useState(false)
@@ -174,6 +175,7 @@ function AdminPanel() {
   // Bot filter config state
   const [botFilterConfigs, setBotFilterConfigs] = useState({})
   const [botFilterSaving, setBotFilterSaving] = useState(null)
+  const [globalFilter, setGlobalFilter] = useState({})
 
   const fetchAllowlist = async () => {
     setAllowlistLoading(true)
@@ -228,7 +230,7 @@ function AdminPanel() {
     if (activeTab === 'allowlist' && Object.keys(allowlistData).length === 0) {
       fetchAllowlist()
     }
-    if (activeTab === 'botfilter' && Object.keys(botFilterConfigs).length === 0) {
+    if (activeTab === 'botfilter') {
       fetchBotFilterConfigs()
     }
   }, [activeTab])
@@ -284,6 +286,51 @@ function AdminPanel() {
       ...prev,
       [botName]: { ...(prev[botName] || { bot_name: botName }), [field]: value }
     }))
+  }
+
+  const applyGlobalFilterToAll = async () => {
+    const bots = ['flipper', 'lutz', 'quant', 'ditz', 'trader']
+    const fields = ['min_winrate', 'max_winrate', 'min_rr', 'max_rr', 'min_avg_return', 'max_avg_return', 'min_market_cap']
+    setBotFilterSaving('global')
+    try {
+      for (const botName of bots) {
+        const prev = botFilterConfigs[botName] || { bot_name: botName }
+        const merged = { ...prev }
+        for (const f of fields) {
+          if (globalFilter[f] !== undefined && globalFilter[f] !== '') {
+            merged[f] = globalFilter[f]
+          }
+        }
+        if (globalFilter.enabled !== undefined) {
+          merged.enabled = globalFilter.enabled
+        }
+        const body = {
+          bot_name: botName,
+          enabled: merged.enabled || false,
+          min_winrate: merged.min_winrate !== '' && merged.min_winrate != null ? parseFloat(merged.min_winrate) : null,
+          max_winrate: merged.max_winrate !== '' && merged.max_winrate != null ? parseFloat(merged.max_winrate) : null,
+          min_rr: merged.min_rr !== '' && merged.min_rr != null ? parseFloat(merged.min_rr) : null,
+          max_rr: merged.max_rr !== '' && merged.max_rr != null ? parseFloat(merged.max_rr) : null,
+          min_avg_return: merged.min_avg_return !== '' && merged.min_avg_return != null ? parseFloat(merged.min_avg_return) : null,
+          max_avg_return: merged.max_avg_return !== '' && merged.max_avg_return != null ? parseFloat(merged.max_avg_return) : null,
+          min_market_cap: merged.min_market_cap !== '' && merged.min_market_cap != null ? parseFloat(merged.min_market_cap) : null,
+        }
+        const res = await fetch('/api/admin/bot-filter-config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify(body)
+        })
+        if (res.ok) {
+          const data = await res.json()
+          setBotFilterConfigs(prev => ({ ...prev, [botName]: data }))
+        }
+      }
+      alert('Filter auf alle Bots angewendet!')
+    } catch (err) {
+      console.error('Failed to apply global filter:', err)
+      alert('Fehler beim Anwenden')
+    }
+    setBotFilterSaving(null)
   }
 
   useEffect(() => {
@@ -1419,6 +1466,7 @@ function AdminPanel() {
     if (!confirm(`${botName} Backfill ab ${backfillDate} bis heute durchführen? Historische Trades für ${modeInfo}-Aktien werden erstellt.`)) return
     setBackfilling(true)
     setBackfillResult(null)
+    setBackfillProgress({ current: 0, total: 0, symbol: '', message: 'Starte Backfill...' })
     try {
       const res = await fetch(`/api/${bot}/backfill`, {
         method: 'POST',
@@ -1428,15 +1476,50 @@ function AdminPanel() {
         },
         body: JSON.stringify({ until_date: backfillDate })
       })
-      const data = await res.json()
-      if (res.ok) {
-        setBackfillResult({ success: true, data })
-        fetchBotData()
-      } else {
-        setBackfillResult({ success: false, error: data.error || 'Fehler beim Backfill' })
+      if (!res.ok) {
+        const text = await res.text()
+        let error = 'Fehler beim Backfill'
+        try { error = JSON.parse(text).error || error } catch {}
+        setBackfillResult({ success: false, error })
+        setBackfillProgress(null)
+        return
+      }
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop()
+        for (const line of lines) {
+          if (!line.trim()) continue
+          try {
+            const event = JSON.parse(line)
+            if (event.type === 'progress') {
+              setBackfillProgress({ current: event.current, total: event.total, symbol: event.symbol, message: event.message })
+            } else if (event.type === 'done') {
+              setBackfillResult({ success: true, data: event })
+              setBackfillProgress(null)
+              fetchBotData()
+            }
+          } catch {}
+        }
+      }
+      if (buffer.trim()) {
+        try {
+          const event = JSON.parse(buffer)
+          if (event.type === 'done') {
+            setBackfillResult({ success: true, data: event })
+            setBackfillProgress(null)
+            fetchBotData()
+          }
+        } catch {}
       }
     } catch (err) {
       setBackfillResult({ success: false, error: err.message })
+      setBackfillProgress(null)
     } finally {
       setBackfilling(false)
     }
@@ -2844,6 +2927,7 @@ function AdminPanel() {
                                 { key: 'stop_loss_price', label: 'SL', align: 'right' },
                                 { key: 'buy_date', label: 'Kaufdatum', align: 'left' },
                                 { key: 'is_live', label: 'Live', align: 'center' },
+                                { key: 'market_cap', label: 'MCap', align: 'right' },
                                 { key: 'chart', label: 'Chart', align: 'center' }
                               ].map(col => (
                                 <th key={col.key}
@@ -2903,6 +2987,9 @@ function AdminPanel() {
                                 <td className="p-2 text-gray-500 text-sm">{new Date(pos.buy_date).toLocaleDateString('de-DE')}</td>
                                 <td className="p-2 text-center">
                                   {pos.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
+                                </td>
+                                <td className="p-2 text-right text-gray-400 text-xs">
+                                  {pos.market_cap > 0 ? (pos.market_cap >= 1e12 ? `${(pos.market_cap / 1e12).toFixed(1)}T` : pos.market_cap >= 1e9 ? `${(pos.market_cap / 1e9).toFixed(1)}B` : pos.market_cap >= 1e6 ? `${(pos.market_cap / 1e6).toFixed(0)}M` : pos.market_cap.toLocaleString()) : '-'}
                                 </td>
                                 <td className="p-2 text-center">
                                   <a href={`https://www.tradingview.com/chart/?symbol=${pos.symbol}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300" title="TradingView Chart">
@@ -3125,6 +3212,7 @@ function AdminPanel() {
                                 { key: 'stop_loss_price', label: 'SL', align: 'right' },
                                 { key: 'buy_date', label: 'Kaufdatum', align: 'left' },
                                 { key: 'is_live', label: 'Live', align: 'center' },
+                                { key: 'market_cap', label: 'MCap', align: 'right' },
                                 { key: 'chart', label: 'Chart', align: 'center' }
                               ].map(col => (
                                 <th key={col.key}
@@ -3184,6 +3272,9 @@ function AdminPanel() {
                                 <td className="p-2 text-gray-500 text-sm">{new Date(pos.buy_date).toLocaleDateString('de-DE')}</td>
                                 <td className="p-2 text-center">
                                   {pos.is_live && <span className="px-1.5 py-0.5 bg-green-500 text-white text-[10px] font-bold rounded">LIVE</span>}
+                                </td>
+                                <td className="p-2 text-right text-gray-400 text-xs">
+                                  {pos.market_cap > 0 ? (pos.market_cap >= 1e12 ? `${(pos.market_cap / 1e12).toFixed(1)}T` : pos.market_cap >= 1e9 ? `${(pos.market_cap / 1e9).toFixed(1)}B` : pos.market_cap >= 1e6 ? `${(pos.market_cap / 1e6).toFixed(0)}M` : pos.market_cap.toLocaleString()) : '-'}
                                 </td>
                                 <td className="p-2 text-center">
                                   <a href={`https://www.tradingview.com/chart/?symbol=${pos.symbol}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300" title="TradingView Chart">
@@ -3501,6 +3592,7 @@ function AdminPanel() {
                                 { key: 'total_return_pct', label: 'Rendite (Wert)', align: 'right' },
                                 { key: 'buy_date', label: 'Kaufdatum', align: 'left' },
                                 { key: 'is_live', label: 'Live', align: 'center' },
+                                { key: 'market_cap', label: 'MCap', align: 'right' },
                                 { key: 'chart', label: 'Chart', align: 'center' }
                               ].map(col => (
                                 <th
@@ -3889,6 +3981,7 @@ function AdminPanel() {
                                 { key: 'total_return_pct', label: 'Rendite (Wert)', align: 'right' },
                                 { key: 'buy_date', label: 'Kaufdatum', align: 'left' },
                                 { key: 'is_live', label: 'Live', align: 'center' },
+                                { key: 'market_cap', label: 'MCap', align: 'right' },
                                 { key: 'chart', label: 'Chart', align: 'center' }
                               ].map(col => (
                                 <th
@@ -4276,6 +4369,7 @@ function AdminPanel() {
                                 { key: 'total_return_pct', label: 'Rendite (Wert)', align: 'right' },
                                 { key: 'buy_date', label: 'Kaufdatum', align: 'left' },
                                 { key: 'is_live', label: 'Live', align: 'center' },
+                                { key: 'market_cap', label: 'MCap', align: 'right' },
                                 { key: 'chart', label: 'Chart', align: 'center' }
                               ].map(col => (
                                 <th
@@ -5434,7 +5528,25 @@ function AdminPanel() {
                     </svg>
                   </button>
                   {showBotReset && (
-                    <div className="px-4 pb-4 flex gap-3">
+                    <div className="px-4 pb-4 flex flex-col gap-3">
+                      <button
+                        onClick={async () => {
+                          if (!confirm('ALLE 5 Bots komplett zurücksetzen? Sämtliche Trades, Positionen und Logs werden gelöscht!')) return
+                          try {
+                            const res = await fetch('/api/bots/reset-all', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } })
+                            if (!res.ok) throw new Error('Reset fehlgeschlagen')
+                            alert('Alle Bots wurden zurückgesetzt')
+                            window.location.reload()
+                          } catch (err) { alert('Fehler beim Zurücksetzen') }
+                        }}
+                        className="w-full px-4 py-2 bg-red-500/20 text-red-400 rounded-lg hover:bg-red-500/30 transition-colors font-medium text-sm flex items-center justify-center gap-2 border border-red-500/30"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                        Alle Bots zurücksetzen
+                      </button>
+                      <div className="flex gap-3">
                       <button
                         onClick={async () => {
                           if (!confirm('FlipperBot komplett zurücksetzen? Alle Trades und Positionen werden gelöscht!')) return
@@ -5520,6 +5632,7 @@ function AdminPanel() {
                         </svg>
                         Trader Reset
                       </button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -5589,6 +5702,37 @@ function AdminPanel() {
                           )}
                         </button>
                       </div>
+                      {backfillProgress && (
+                        <div className="mt-3 p-3 bg-dark-800 rounded-lg">
+                          <div className="flex items-center justify-between text-sm mb-2">
+                            <span className="text-gray-400">{backfillProgress.message || 'Starte Backfill...'}</span>
+                            {backfillProgress.total > 0 && (
+                              <span className="text-white font-medium">
+                                {backfillProgress.current} / {backfillProgress.total}
+                              </span>
+                            )}
+                          </div>
+                          {backfillProgress.total > 0 && (
+                            <div className="w-full h-2 bg-dark-700 rounded-full overflow-hidden">
+                              <div
+                                className={`h-full transition-all duration-300 ${
+                                  botTab === 'flipper' ? 'bg-purple-500'
+                                    : botTab === 'lutz' ? 'bg-orange-500'
+                                    : botTab === 'ditz' ? 'bg-cyan-500'
+                                    : botTab === 'trader' ? 'bg-emerald-500'
+                                    : 'bg-violet-500'
+                                }`}
+                                style={{ width: `${(backfillProgress.current / backfillProgress.total) * 100}%` }}
+                              />
+                            </div>
+                          )}
+                          {backfillProgress.symbol && (
+                            <div className="text-xs text-gray-500 mt-2">
+                              Aktuell: {backfillProgress.symbol}
+                            </div>
+                          )}
+                        </div>
+                      )}
                       {backfillResult && (
                         <div className={`mt-3 p-3 rounded-lg text-sm ${backfillResult.success ? 'bg-green-500/20 text-green-300' : 'bg-red-500/20 text-red-300'}`}>
                           {backfillResult.success ? (
@@ -6157,6 +6301,90 @@ function AdminPanel() {
                   <p className="text-sm text-gray-400">
                     Konfiguriere Filter pro Bot. Wenn aktiv, werden BUY-Signale blockiert wenn die Aktie die Kriterien nicht erfüllt. Blockierte Trades werden trotzdem aufgezeichnet.
                   </p>
+                </div>
+
+                {/* Global Filter - apply to all bots */}
+                <div className="p-4 bg-dark-700 border border-yellow-500/30 rounded-xl">
+                  <div className="flex items-center justify-between mb-4">
+                    <h4 className="text-md font-medium text-yellow-400">Für alle Bots</h4>
+                    <button
+                      onClick={() => setGlobalFilter(prev => ({ ...prev, enabled: !prev.enabled }))}
+                      className={`px-4 py-1.5 rounded font-bold text-sm transition-colors ${
+                        globalFilter.enabled ? 'bg-green-500 text-white' : 'bg-dark-600 text-gray-400'
+                      }`}
+                    >
+                      {globalFilter.enabled ? 'AKTIV' : 'INAKTIV'}
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                    <div className="bg-dark-800 rounded-lg p-3">
+                      <label className="text-xs text-gray-400 block mb-1">Min WinRate (%)</label>
+                      <input type="number" step="1" placeholder="-"
+                        value={globalFilter.min_winrate ?? ''}
+                        onChange={e => setGlobalFilter(prev => ({ ...prev, min_winrate: e.target.value === '' ? null : e.target.value }))}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-white text-sm"
+                      />
+                    </div>
+                    <div className="bg-dark-800 rounded-lg p-3">
+                      <label className="text-xs text-gray-400 block mb-1">Max WinRate (%)</label>
+                      <input type="number" step="1" placeholder="-"
+                        value={globalFilter.max_winrate ?? ''}
+                        onChange={e => setGlobalFilter(prev => ({ ...prev, max_winrate: e.target.value === '' ? null : e.target.value }))}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-white text-sm"
+                      />
+                    </div>
+                    <div className="bg-dark-800 rounded-lg p-3">
+                      <label className="text-xs text-gray-400 block mb-1">Min R/R</label>
+                      <input type="number" step="0.1" placeholder="-"
+                        value={globalFilter.min_rr ?? ''}
+                        onChange={e => setGlobalFilter(prev => ({ ...prev, min_rr: e.target.value === '' ? null : e.target.value }))}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-white text-sm"
+                      />
+                    </div>
+                    <div className="bg-dark-800 rounded-lg p-3">
+                      <label className="text-xs text-gray-400 block mb-1">Max R/R</label>
+                      <input type="number" step="0.1" placeholder="-"
+                        value={globalFilter.max_rr ?? ''}
+                        onChange={e => setGlobalFilter(prev => ({ ...prev, max_rr: e.target.value === '' ? null : e.target.value }))}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-white text-sm"
+                      />
+                    </div>
+                    <div className="bg-dark-800 rounded-lg p-3">
+                      <label className="text-xs text-gray-400 block mb-1">Min Ø Rendite (%)</label>
+                      <input type="number" step="0.1" placeholder="-"
+                        value={globalFilter.min_avg_return ?? ''}
+                        onChange={e => setGlobalFilter(prev => ({ ...prev, min_avg_return: e.target.value === '' ? null : e.target.value }))}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-white text-sm"
+                      />
+                    </div>
+                    <div className="bg-dark-800 rounded-lg p-3">
+                      <label className="text-xs text-gray-400 block mb-1">Max Ø Rendite (%)</label>
+                      <input type="number" step="0.1" placeholder="-"
+                        value={globalFilter.max_avg_return ?? ''}
+                        onChange={e => setGlobalFilter(prev => ({ ...prev, max_avg_return: e.target.value === '' ? null : e.target.value }))}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-white text-sm"
+                      />
+                    </div>
+                    <div className="bg-dark-800 rounded-lg p-3 col-span-2">
+                      <label className="text-xs text-gray-400 block mb-1">Min MarketCap (Mrd)</label>
+                      <input type="number" step="0.1" placeholder="-"
+                        value={globalFilter.min_market_cap ?? ''}
+                        onChange={e => setGlobalFilter(prev => ({ ...prev, min_market_cap: e.target.value === '' ? null : e.target.value }))}
+                        className="w-full bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-white text-sm"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end">
+                    <button
+                      onClick={applyGlobalFilterToAll}
+                      disabled={botFilterSaving === 'global'}
+                      className="px-5 py-2 bg-yellow-500 hover:bg-yellow-400 text-black rounded-lg font-medium text-sm disabled:opacity-50"
+                    >
+                      {botFilterSaving === 'global' ? 'Wird angewendet...' : 'Auf alle Bots anwenden'}
+                    </button>
+                  </div>
                 </div>
 
                 {[

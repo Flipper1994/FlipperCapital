@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { createChart } from 'lightweight-charts'
 import { useCurrency } from '../context/CurrencyContext'
+import { useBlockedStocks } from '../hooks/useBlockedStocks'
+import BlockedBadge from './BlockedBadge'
 
 const MODES = [
   { key: 'defensive', title: 'Defensiv' },
@@ -91,6 +93,7 @@ function SortTH({ field, sort, onSort, children, right }) {
 
 function Performance({ token }) {
   const { formatPrice, currencySymbol } = useCurrency()
+  const blockedStocks = useBlockedStocks()
 
   const [trades, setTrades] = useState([])
   const [loading, setLoading] = useState(true)
@@ -863,7 +866,7 @@ function Performance({ token }) {
                                 {sortSimTrades(sim.trades, getSimSort(mc.key)).map((t, i) => (
                                   <tr key={i} className="hover:bg-dark-700/30 transition-colors">
                                     <td className="px-2 py-1.5">
-                                      <div className="font-medium text-white truncate max-w-[120px]">{t.name || t.symbol}</div>
+                                      <div className="font-medium text-white truncate max-w-[120px]">{t.name || t.symbol}<BlockedBadge symbol={t.symbol} blockedStocks={blockedStocks} /></div>
                                       <div className="text-xs text-gray-500">{t.symbol}</div>
                                     </td>
                                     <td className="px-2 py-1.5 text-gray-300">{fmtDate(t.entryDate)}</td>
@@ -921,7 +924,7 @@ function Performance({ token }) {
                                 {sortBasicTrades(data.trades, getTradeSort(mc.key)).map((t, i) => (
                                   <tr key={i} className="hover:bg-dark-700/30 transition-colors">
                                     <td className="px-2 py-1.5">
-                                      <div className="font-medium text-white truncate max-w-[120px]">{t.name || t.symbol}</div>
+                                      <div className="font-medium text-white truncate max-w-[120px]">{t.name || t.symbol}<BlockedBadge symbol={t.symbol} blockedStocks={blockedStocks} /></div>
                                       <div className="text-xs text-gray-500">{t.symbol}</div>
                                     </td>
                                     <td className="px-2 py-1.5">
