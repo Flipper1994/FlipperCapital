@@ -87,12 +87,10 @@ function StockTracker() {
   const { mode, isAggressive, isQuant, isDitz, isTrader, isDefensive } = useTradingMode()
   const { formatPrice } = useCurrency()
 
-  // Selected month - default to PREVIOUS month (signal is based on last completed month)
+  // Selected month - default to current month
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date()
-    const prevMonth = now.getMonth() === 0 ? 12 : now.getMonth()
-    const prevYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear()
-    return `${prevYear}-${String(prevMonth).padStart(2, '0')}`
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
   })
 
   // Generate month options on each page load

@@ -48,6 +48,76 @@ function Help() {
       ]
     },
     {
+      id: 'bxtrender-math',
+      title: 'B-Xtrender Indikator (Mathematik)',
+      icon: 'M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z',
+      content: [
+        {
+          subtitle: 'Exponential Moving Average (EMA)',
+          text: 'Rekursive Berechnung: EMA(t) = α · P(t) + (1 − α) · EMA(t−1), wobei der Glättungsfaktor α = 2/(n+1) ist. Die Initialisierung erfolgt über den arithmetischen Mittelwert der ersten n Datenpunkte: EMA₀ = (1/n) · Σᵢ₌₁ⁿ P(i). Der EMA gewichtet jüngere Kursdaten exponentiell stärker als ältere.'
+        },
+        {
+          subtitle: 'Wilder\'s RSI (Relative Strength Index)',
+          text: 'RSI(n) = 100 − 100/(1 + RS), wobei RS = RMA(gains, n) / RMA(losses, n). Die RMA (Relative Moving Average nach Wilder) ist definiert als: RMA(t) = (1/n) · x(t) + (1 − 1/n) · RMA(t−1). Gains und Losses werden aus den Preisdifferenzen Δ(t) = P(t) − P(t−1) berechnet: gain(t) = max(Δ(t), 0), loss(t) = |min(Δ(t), 0)|. Der RSI normiert Momentum auf das Intervall [0, 100].'
+        },
+        {
+          subtitle: 'Short-Term Xtrender S(t)',
+          text: 'S(t) = RSI(EMA(C, 5) − EMA(C, 20), 15) − 50. Die Differenz der schnellen EMA(5) und der langsamen EMA(20) bildet ein Momentum-Signal. Der RSI mit Periode 15 normiert dieses auf [0, 100]. Durch Subtraktion von 50 entsteht ein zentrierter Oszillator im Intervall [−50, +50]. Interpretation: S(t) > 0 signalisiert bullisches kurzfristiges Momentum, S(t) < 0 bearisches.'
+        },
+        {
+          subtitle: 'Long-Term Xtrender L(t)',
+          text: 'L(t) = RSI(EMA(C, 20), 15) − 50. Der Long-Term Xtrender verwendet ausschließlich die EMA(20) als Eingangssignal für die RSI-Transformation. Durch die längere Basislinie filtert er kurzfristiges Rauschen und quantifiziert die übergeordnete Trendrichtung. L(t) > 0 entspricht einem intakten Aufwärtstrend auf mittlerer Zeitebene.'
+        },
+        {
+          subtitle: 'T3 Signal-Linie (Tillson Moving Average)',
+          text: 'T3(x, p) = c₁·e₆ + c₂·e₅ + c₃·e₄ + c₄·e₃, wobei eₖ = EMA(eₖ₋₁, p) eine kaskadierende EMA-Kette mit e₁ = EMA(x, p) bildet. Die Koeffizienten werden über den Volumenfaktor b = 0.7 berechnet: c₁ = −b³ = −0.343, c₂ = 3b² + 3b³ = 2.499, c₃ = −6b² − 3b − 3b³ = −6.063, c₄ = 1 + 3b + b³ + 3b² = 4.907. Die sechsfache EMA-Glättung erzeugt eine nahezu verzögerungsfreie, hochgradig geglättete Signal-Linie. Angewendet auf S(t) mit Periode 5: T3(S, 5).'
+        },
+        {
+          subtitle: 'Histogramm-Farbkodierung',
+          text: 'Jede Bar kodiert Vorzeichen und Richtungsänderung in vier Zuständen: Hellgrün (#00FF00): x(t) > 0 ∧ x(t) > x(t−1) — bullisch, zunehmendes Momentum. Dunkelgrün (#228B22): x(t) > 0 ∧ x(t) ≤ x(t−1) — bullisch, abnehmendes Momentum. Hellrot (#FF0000): x(t) < 0 ∧ x(t) > x(t−1) — bearisch, Erholungstendenz. Dunkelrot (#8B0000): x(t) < 0 ∧ x(t) ≤ x(t−1) — bearisch, zunehmendes Abwärtsmomentum. Dieses Farbschema gilt für beide Histogramme (Short und Long).'
+        }
+      ]
+    },
+    {
+      id: 'trading-strategies',
+      title: 'Trading-Strategien (5 Bots)',
+      icon: 'M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z',
+      content: [
+        {
+          subtitle: '1. FlipperBot (Defensiv)',
+          text: 'Entry-Bedingung: (S(t−1) < 0 ∧ S(t) > 0) ∨ (S(t) < 0 ∧ S(t) > S(t−1) ∧ n_cons = 4). Der FlipperBot eröffnet eine Position beim Vorzeichenwechsel S: negativ→positiv (Rot→Grün), oder nach exakt 4 aufeinanderfolgenden hellroten Bars (bearisch mit Erholungstendenz). Exit-Bedingung: S(t) < 0 ∧ S(t) ≤ S(t−1) — erste dunkelrote Bar. Kein MA-Filter. Profil: Konservativ. Wartet auf Trendbestätigung bevor Kapital eingesetzt wird.'
+        },
+        {
+          subtitle: '2. Lutz (Aggressiv)',
+          text: 'Entry-Bedingung: (S(t) < 0 ∧ S(t) > S(t−1) ∧ n_cons = 1) ∨ (S(t−1) < 0 ∧ S(t) > 0). Lutz steigt bereits bei der allerersten hellroten Bar ein — dem frühestmöglichen Erholungssignal innerhalb einer Abwärtsbewegung. Exit-Bedingung: S(t) < 0 ∧ S(t) ≤ S(t−1) — identisch zu FlipperBot. Kein MA-Filter. Profil: Aggressiv. Maximale Markt-Exposition durch frühestmöglichen Entry.'
+        },
+        {
+          subtitle: '3. Quant (Trendfolger)',
+          text: 'Entry-Bedingung: S(t) > 0 ∧ L(t) > 0 ∧ (S(t−1) ≤ 0 ∨ L(t−1) ≤ 0) ∧ P(t) > EMA(C, 200). Doppelte Bestätigung: Beide Oszillatoren (Short und Long) müssen simultan positiv werden. Zusätzlich muss der Kurs über dem 200-Perioden-EMA liegen (Trendfilter). Exit-Bedingung: (S(t) < 0 ∨ L(t) < 0) ∨ TSL — ein einzelner negativer Indikator genügt für den sofortigen Ausstieg. Profil: Trendfolger mit doppelter Bestätigung und schnellem Exit bei Schwäche.'
+        },
+        {
+          subtitle: '4. Ditz (Konservativer Trendfolger)',
+          text: 'Entry-Bedingung: S(t) > 0 ∧ L(t) > 0 ∧ ¬(S(t−1) > 0 ∧ L(t−1) > 0) ∧ P(t) > EMA(C, 200). Identische Entry-Logik wie Quant — beide Indikatoren positiv plus MA-Filter. Exit-Bedingung: (S(t) < 0 ∧ L(t) < 0) ∨ TSL — entscheidender Unterschied: BEIDE Indikatoren müssen negativ sein (Konjunktion statt Disjunktion). Dies führt zu signifikant längeren Haltedauern. Profil: Konservativster Exit aller 5 Bots.'
+        },
+        {
+          subtitle: '5. Trader (Signal-Linie)',
+          text: 'Entry-Bedingung: T3\'(t) > 0 ∧ T3\'(t−1) ≤ 0, wobei T3\'(t) = T3(t) − T3(t−1) die erste Ableitung (diskrete Differenz) der T3 Signal-Linie darstellt. Der Trader eröffnet bei jedem Farbwechsel Rot→Grün der Signal-Linie. Exit-Bedingung: (T3\'(t) < 0 ∧ T3\'(t−1) ≥ 0) ∨ TSL — Grün→Rot Wechsel. Kein MA-Filter. Profil: Schnellster Bot mit höchster Handelsfrequenz. Reagiert auf die geglättete Richtungsänderung des Short-Xtrender.'
+        },
+        {
+          subtitle: 'Trailing Stop Loss (TSL)',
+          text: 'Globaler Schutzmechanismus für alle 5 Bots. H(t) = max(H(t−1), P(t)) mit H(t₀) = P_entry definiert den Höchststand seit Positionseröffnung. Der TSL triggert wenn: P(t) ≤ H(t) · (1 − δ), δ = 0.20 (20% Standardwert, konfigurierbar). H(t) wird täglich aktualisiert und ist monoton steigend (Ratchet-Mechanismus). Der TSL greift unabhängig vom Indikator-Signal und schützt aufgelaufene Gewinne bei abrupten Kursrückgängen.'
+        },
+        {
+          subtitle: 'Signal-Bestimmung (alle Modi einheitlich)',
+          text: 'Vier diskrete Zustände basierend auf der Trade-Historie: BUY — Position eröffnet innerhalb der letzten ≤ 1 Monatskerze. HOLD — Offene Position seit > 1 Monatskerze. SELL — Position geschlossen innerhalb der letzten ≤ 1 Monatskerze. WAIT — Keine offene Position, letzter SELL liegt > 1 Monatskerze zurück. Alle Signale werden auf Basis der vollständig abgeschlossenen Monatskerze evaluiert. Die Trade-Ausführung erfolgt deterministisch zum Open-Kurs des Folgemonats.'
+        },
+        {
+          subtitle: 'Gemeinsame Handelsparameter',
+          text: 'Investitionsbetrag: 100 EUR pro Trade (konvertiert in USD zum aktuellen Wechselkurs). Re-Entry: Erst nach vollständigem Zyklus BUY → SELL zulässig. Allowlist: Konfigurierbare Zulassung pro Bot und Symbol (Default: alle erlaubt). Bot-Filter: Optionale Mindestanforderungen an Winrate (%), Risk/Reward-Ratio, Ø-Rendite (%) und Market Cap (USD) — gefilterte Trades werden als blockiert protokolliert.'
+        }
+      ]
+    },
+    {
       id: 'portfolio',
       title: 'Mein Portfolio',
       icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01',

@@ -21,6 +21,9 @@ import Performance from './components/Performance'
 import SignalList from './components/SignalList'
 import Profile from './components/Profile'
 import Help from './components/Help'
+import TradingArena from './components/TradingArena'
+import LiveTrading from './components/LiveTrading'
+import BacktestLab from './components/BacktestLab'
 
 function UnderConstruction() {
   return (
@@ -196,6 +199,21 @@ function App() {
               <Route
                 path="/trader-lab"
                 element={<TraderLab isAdmin={isAdmin} isLoggedIn={isLoggedIn} token={token} />}
+              />
+              <Route
+                path="/backtest-lab"
+                element={authLoading ? null : isLoggedIn ?
+                  <BacktestLab token={token} isAdmin={isAdmin} /> : <Navigate to="/login" />}
+              />
+              <Route
+                path="/trading-arena"
+                element={authLoading ? null : (isLoggedIn && isAdmin) ?
+                  <TradingArena isAdmin={isAdmin} token={token} /> : <Navigate to="/login" />}
+              />
+              <Route
+                path="/live-trading"
+                element={authLoading ? null : (isLoggedIn && isAdmin) ?
+                  <LiveTrading isAdmin={isAdmin} token={token} /> : <Navigate to="/login" />}
               />
             </Routes>
           </div>

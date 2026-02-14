@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"net/http/cookiejar"
@@ -728,6 +729,239 @@ type SignalListVisibility struct {
 	Visible bool   `gorm:"default:true" json:"visible"`
 }
 
+type TradingWatchlistItem struct {
+	ID        uint      `json:"id" gorm:"primaryKey"`
+	Symbol    string    `json:"symbol" gorm:"uniqueIndex;not null"`
+	Name      string    `json:"name"`
+	AddedBy   uint      `json:"added_by"`
+	IsLive    bool      `json:"is_live" gorm:"default:false"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type TradingVirtualPosition struct {
+	ID            uint       `json:"id" gorm:"primaryKey"`
+	Symbol        string     `json:"symbol" gorm:"index"`
+	Strategy      string     `json:"strategy"`
+	Direction     string     `json:"direction"`
+	EntryPrice    float64    `json:"entry_price"`
+	EntryTime     time.Time  `json:"entry_time"`
+	StopLoss      float64    `json:"stop_loss"`
+	TakeProfit    float64    `json:"take_profit"`
+	CurrentPrice  float64    `json:"current_price"`
+	IsClosed      bool       `json:"is_closed" gorm:"default:false"`
+	ClosePrice    float64    `json:"close_price"`
+	CloseTime     *time.Time `json:"close_time"`
+	CloseReason   string     `json:"close_reason"`
+	ProfitLossPct float64    `json:"profit_loss_pct"`
+	CreatedAt     time.Time  `json:"created_at"`
+}
+
+type ArenaBacktestHistory struct {
+	ID          uint      `gorm:"primaryKey"`
+	Symbol      string    `gorm:"index;not null"`
+	Strategy    string    `gorm:"not null"`
+	Interval    string    `gorm:"not null"`
+	MetricsJSON string    `gorm:"type:text"`
+	TradesJSON  string    `gorm:"type:text"`
+	MarkersJSON string    `gorm:"type:text"`
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type ArenaStrategySettings struct {
+	ID         uint      `json:"id" gorm:"primaryKey"`
+	Symbol     string    `json:"symbol" gorm:"uniqueIndex:idx_sym_strat;default:''"`
+	Strategy   string    `json:"strategy" gorm:"uniqueIndex:idx_sym_strat;not null"`
+	ParamsJSON string    `json:"params_json" gorm:"type:text"`
+	Interval   string    `json:"interval"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// Weekly OHLCV cache table
+type WeeklyOHLCVCache struct {
+	ID        uint      `gorm:"primaryKey"`
+	Symbol    string    `gorm:"uniqueIndex;not null"`
+	DataJSON  string    `gorm:"type:text"`
+	UpdatedAt time.Time `gorm:"autoUpdateTime"`
+}
+
+// Backtest Lab History
+type BacktestLabHistory struct {
+	ID               uint      `json:"id" gorm:"primaryKey"`
+	UserID           uint      `json:"user_id" gorm:"index"`
+	Name             string    `json:"name"`
+	BaseMode         string    `json:"base_mode"`
+	RulesJSON        string    `json:"-" gorm:"type:text"`
+	TSL              float64   `json:"tsl"`
+	TimeRange        string    `json:"time_range"`
+	FiltersJSON      string    `json:"-" gorm:"type:text"`
+	MetricsJSON      string    `json:"-" gorm:"type:text"`
+	StockSummaryJSON string    `json:"-" gorm:"type:text"`
+	TestedStocks     int       `json:"tested_stocks"`
+	SkippedCount     int       `json:"skipped_count"`
+	TotalStocks      int       `json:"total_stocks"`
+	FilteredStocks   int       `json:"filtered_stocks"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+// Live Trading
+type LiveTradingConfig struct {
+	ID            uint      `json:"id" gorm:"primaryKey"`
+	UserID        uint      `json:"user_id" gorm:"uniqueIndex;not null"`
+	Strategy      string    `json:"strategy"`
+	Interval      string    `json:"interval"`
+	ParamsJSON    string    `json:"params_json" gorm:"type:text"`
+	Symbols       string    `json:"symbols" gorm:"type:text"`
+	LongOnly      bool      `json:"long_only" gorm:"default:true"`
+	TradeAmount   float64   `json:"trade_amount" gorm:"default:500"`
+	FiltersJSON   string    `json:"filters_json" gorm:"type:text"`
+	FiltersActive bool      `json:"filters_active"`
+	Currency      string    `json:"currency" gorm:"default:'EUR'"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+type LiveTradingSession struct {
+	ID          uint       `json:"id" gorm:"primaryKey"`
+	UserID      uint       `json:"user_id" gorm:"index"`
+	ConfigID    uint       `json:"config_id"`
+	Strategy    string     `json:"strategy"`
+	Interval    string     `json:"interval"`
+	ParamsJSON  string     `json:"params_json" gorm:"type:text"`
+	Symbols     string     `json:"symbols" gorm:"type:text"`
+	LongOnly    bool       `json:"long_only"`
+	TradeAmount float64    `json:"trade_amount"`
+	Currency    string     `json:"currency" gorm:"default:'EUR'"`
+	IsActive    bool       `json:"is_active" gorm:"default:true;index"`
+	StartedAt   time.Time  `json:"started_at"`
+	StoppedAt   *time.Time `json:"stopped_at"`
+	LastPollAt  *time.Time `json:"last_poll_at"`
+	NextPollAt  *time.Time `json:"next_poll_at"`
+	TotalPolls       int        `json:"total_polls" gorm:"default:0"`
+	SymbolPricesJSON string     `json:"-" gorm:"type:text"`
+	CreatedAt        time.Time  `json:"created_at"`
+}
+
+type LiveTradingPosition struct {
+	ID             uint       `json:"id" gorm:"primaryKey"`
+	SessionID      uint       `json:"session_id" gorm:"index"`
+	Symbol         string     `json:"symbol" gorm:"index"`
+	Direction      string     `json:"direction"`
+	EntryPrice     float64    `json:"entry_price"`
+	EntryPriceUSD  float64    `json:"entry_price_usd"`
+	EntryTime      time.Time  `json:"entry_time"`
+	StopLoss       float64    `json:"stop_loss"`
+	TakeProfit     float64    `json:"take_profit"`
+	CurrentPrice   float64    `json:"current_price"`
+	IsClosed       bool       `json:"is_closed" gorm:"default:false;index"`
+	ClosePrice     float64    `json:"close_price"`
+	ClosePriceUSD  float64    `json:"close_price_usd"`
+	CloseTime      *time.Time `json:"close_time"`
+	CloseReason    string     `json:"close_reason"`
+	ProfitLossPct  float64    `json:"profit_loss_pct"`
+	InvestedAmount float64    `json:"invested_amount"`
+	ProfitLossAmt  float64    `json:"profit_loss_amt"`
+	NativeCurrency string     `json:"native_currency"`
+	SignalIndex    int        `json:"signal_index"`
+	CreatedAt      time.Time  `json:"created_at"`
+}
+
+type LiveTradingLog struct {
+	ID        uint      `json:"id" gorm:"primaryKey"`
+	SessionID uint      `json:"session_id" gorm:"index"`
+	Level     string    `json:"level"`
+	Symbol    string    `json:"symbol"`
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"created_at" gorm:"index"`
+}
+
+type BacktestLabHistoryStockSummary struct {
+	Symbol      string  `json:"symbol"`
+	Name        string  `json:"name"`
+	WinRate     float64 `json:"win_rate"`
+	TotalReturn float64 `json:"total_return"`
+	AvgReturn   float64 `json:"avg_return"`
+	RiskReward  float64 `json:"risk_reward"`
+	TotalTrades int     `json:"total_trades"`
+}
+
+// Backtest Lab types
+type BacktestLabRule struct {
+	Type             string `json:"type"`              // "entry" or "exit"
+	MonthlyCondition string `json:"monthly_condition"` // "BUY","SELL","HOLD","WAIT","FIRST_LIGHT_RED","ANY"
+	WeeklyCondition  string `json:"weekly_condition"`  // "BUY","SELL","HOLD","WAIT","BUY_TO_HOLD","ANY"
+	Operator         string `json:"operator"`          // "AND", "OR"
+}
+
+type BacktestLabRequest struct {
+	Symbol   string            `json:"symbol"`
+	BaseMode string            `json:"base_mode"` // "defensive","aggressive","quant","ditz","trader"
+	Rules    []BacktestLabRule `json:"rules"`
+	TSL      float64           `json:"tsl"` // 0 = default 20%
+}
+
+type BacktestLabBatchRequest struct {
+	BaseMode     string            `json:"base_mode"`
+	Rules        []BacktestLabRule `json:"rules"`
+	TSL          float64           `json:"tsl"`
+	TimeRange    string            `json:"time_range"` // "1y","2y","3y","5y","10y","all"
+	MinWinrate   *float64          `json:"min_winrate"`
+	MaxWinrate   *float64          `json:"max_winrate"`
+	MinRR        *float64          `json:"min_rr"`
+	MaxRR        *float64          `json:"max_rr"`
+	MinAvgReturn *float64          `json:"min_avg_return"`
+	MaxAvgReturn *float64          `json:"max_avg_return"`
+	MinMarketCap *float64          `json:"min_market_cap"` // in Mrd
+}
+
+type BacktestLabBatchStockResult struct {
+	Symbol  string               `json:"symbol"`
+	Name    string               `json:"name"`
+	Metrics ArenaBacktestMetrics `json:"metrics"`
+	Trades  []ArenaBacktestTrade `json:"trades"`
+}
+
+type BacktestLabBatchResponse struct {
+	TotalMetrics   ArenaBacktestMetrics          `json:"total_metrics"`
+	StockResults   []BacktestLabBatchStockResult  `json:"stock_results"`
+	SkippedStocks  []BacktestLabSkippedStock      `json:"skipped_stocks"`
+	TotalStocks    int                            `json:"total_stocks"`
+	TestedStocks   int                            `json:"tested_stocks"`
+	FilteredStocks int                            `json:"filtered_stocks"`
+}
+
+type BacktestLabSkippedStock struct {
+	Symbol string `json:"symbol"`
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
+
+type BacktestLabTimeValue struct {
+	Time  int64   `json:"time"`
+	Value float64 `json:"value"`
+}
+
+type BacktestLabOHLCV struct {
+	Time   int64   `json:"time"`
+	Open   float64 `json:"open"`
+	High   float64 `json:"high"`
+	Low    float64 `json:"low"`
+	Close  float64 `json:"close"`
+	Volume float64 `json:"volume"`
+}
+
+type BacktestLabResponse struct {
+	Metrics      ArenaBacktestMetrics   `json:"metrics"`
+	Trades       []ArenaBacktestTrade   `json:"trades"`
+	Markers      []ChartMarker          `json:"markers"`
+	MonthlyBars  []BacktestLabOHLCV     `json:"monthly_bars"`
+	MonthlyShort []BacktestLabTimeValue `json:"monthly_short"`
+	MonthlyLong  []BacktestLabTimeValue `json:"monthly_long"`
+	WeeklyBars   []BacktestLabOHLCV     `json:"weekly_bars"`
+	WeeklyShort  []BacktestLabTimeValue `json:"weekly_short"`
+	WeeklyLong   []BacktestLabTimeValue `json:"weekly_long"`
+}
+
 var db *gorm.DB
 var latestPriceCache sync.Map // key: symbol (string), value: float64
 var sessions = make(map[string]Session) // Legacy in-memory cache, DB is source of truth
@@ -875,8 +1109,9 @@ func main() {
 	// Drop unique indexes before AutoMigrate (changed to non-unique index)
 	db.Exec("DROP INDEX IF EXISTS idx_flipper_bot_positions_symbol")
 	db.Exec("DROP INDEX IF EXISTS idx_lutz_positions_symbol")
+	db.Exec("DROP INDEX IF EXISTS idx_arena_strategy_settings_strategy")
 
-	db.AutoMigrate(&User{}, &Stock{}, &Category{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{}, &DBSession{}, &BotLog{}, &BotTodo{}, &BXtrenderConfig{}, &BXtrenderQuantConfig{}, &QuantStockPerformance{}, &QuantTrade{}, &QuantPosition{}, &BXtrenderDitzConfig{}, &DitzStockPerformance{}, &DitzTrade{}, &DitzPosition{}, &BXtrenderTraderConfig{}, &TraderStockPerformance{}, &TraderTrade{}, &TraderPosition{}, &SystemSetting{}, &BotStockAllowlist{}, &BotFilterConfig{}, &SignalListFilterConfig{}, &SignalListVisibility{}, &UserNotification{})
+	db.AutoMigrate(&User{}, &Stock{}, &Category{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{}, &DBSession{}, &BotLog{}, &BotTodo{}, &BXtrenderConfig{}, &BXtrenderQuantConfig{}, &QuantStockPerformance{}, &QuantTrade{}, &QuantPosition{}, &BXtrenderDitzConfig{}, &DitzStockPerformance{}, &DitzTrade{}, &DitzPosition{}, &BXtrenderTraderConfig{}, &TraderStockPerformance{}, &TraderTrade{}, &TraderPosition{}, &SystemSetting{}, &BotStockAllowlist{}, &BotFilterConfig{}, &SignalListFilterConfig{}, &SignalListVisibility{}, &UserNotification{}, &TradingWatchlistItem{}, &TradingVirtualPosition{}, &ArenaBacktestHistory{}, &ArenaStrategySettings{}, &WeeklyOHLCVCache{}, &BacktestLabHistory{}, &LiveTradingConfig{}, &LiveTradingSession{}, &LiveTradingPosition{}, &LiveTradingLog{})
 
 	// Ensure existing users are visible in ranking (new column defaults to false in SQLite)
 	db.Exec("UPDATE users SET visible_in_ranking = 1 WHERE visible_in_ranking = 0 OR visible_in_ranking IS NULL")
@@ -937,6 +1172,13 @@ func main() {
 
 	// Clean up expired sessions on startup
 	db.Where("expiry < ?", time.Now()).Delete(&DBSession{})
+
+	// Mark orphaned live trading sessions as stopped (scheduler lost on restart)
+	now := time.Now()
+	db.Model(&LiveTradingSession{}).Where("is_active = ?", true).Updates(map[string]interface{}{
+		"is_active":  false,
+		"stopped_at": now,
+	})
 
 	// Ensure bot users exist for portfolio comparison
 	ensureFlipperBotUser()
@@ -1072,6 +1314,38 @@ func main() {
 		api.PUT("/admin/bot-filter-config", authMiddleware(), adminOnly(), updateBotFilterConfig)
 		api.GET("/admin/export-watchlist", authMiddleware(), adminOnly(), exportWatchlist)
 		api.POST("/admin/import-watchlist", authMiddleware(), adminOnly(), importWatchlist)
+
+		// Trading Arena routes
+		api.GET("/trading/watchlist", authMiddleware(), getTradingWatchlist)
+		api.POST("/trading/watchlist", authMiddleware(), adminOnly(), addToTradingWatchlist)
+		api.POST("/trading/watchlist/import", authMiddleware(), adminOnly(), importWatchlistToTrading)
+		api.DELETE("/trading/watchlist/:id", authMiddleware(), adminOnly(), removeFromTradingWatchlist)
+		api.POST("/trading/backtest", authMiddleware(), runBacktestHandler)
+		api.GET("/trading/backtest-results/:symbol", authMiddleware(), getBacktestResultsHandler)
+		api.POST("/trading/backtest-batch", authMiddleware(), adminOnly(), backtestBatchHandler)
+		api.POST("/trading/backtest-watchlist", authMiddleware(), backtestWatchlistHandler)
+		api.GET("/trading/strategy-settings", authMiddleware(), getStrategySettings)
+		api.POST("/trading/strategy-settings", authMiddleware(), saveStrategySettings)
+		api.GET("/trading/positions", authMiddleware(), getTradingPositions)
+		api.GET("/trading/scheduler/status", authMiddleware(), adminOnly(), getTradingSchedulerStatus)
+		api.POST("/trading/scheduler/toggle", authMiddleware(), adminOnly(), toggleTradingScheduler)
+
+		// Live Trading
+		api.POST("/trading/live/config", authMiddleware(), adminOnly(), saveLiveTradingConfig)
+		api.GET("/trading/live/config", authMiddleware(), adminOnly(), getLiveTradingConfig)
+		api.POST("/trading/live/start", authMiddleware(), adminOnly(), startLiveTrading)
+		api.POST("/trading/live/stop", authMiddleware(), adminOnly(), stopLiveTrading)
+		api.GET("/trading/live/status", authMiddleware(), adminOnly(), getLiveTradingStatus)
+		api.GET("/trading/live/sessions", authMiddleware(), adminOnly(), getLiveTradingSessions)
+		api.GET("/trading/live/session/:id", authMiddleware(), adminOnly(), getLiveTradingSession)
+		api.POST("/trading/live/session/:id/resume", authMiddleware(), adminOnly(), resumeLiveTrading)
+		api.GET("/trading/live/logs/:sessionId", authMiddleware(), adminOnly(), getLiveTradingLogs)
+
+		// Backtest Lab
+		api.POST("/backtest-lab", authMiddleware(), runBacktestLabHandler)
+		api.POST("/backtest-lab/batch", authMiddleware(), runBacktestLabBatchHandler)
+		api.GET("/backtest-lab/history", authMiddleware(), getBacktestLabHistory)
+		api.DELETE("/backtest-lab/history/:id", authMiddleware(), deleteBacktestLabHistory)
 
 		// Public endpoint for fetching BXtrender config (no auth required for frontend calculation)
 		api.GET("/bxtrender-config", getBXtrenderConfigPublic)
@@ -1947,10 +2221,57 @@ type YahooChartResponse struct {
 	} `json:"chart"`
 }
 
+// aggregateOHLCV combines consecutive OHLCV candles by the given factor.
+// O=first.Open, H=max(High), L=min(Low), C=last.Close, V=sum(Volume)
+func aggregateOHLCV(data []OHLCV, factor int) []OHLCV {
+	if factor <= 1 || len(data) == 0 {
+		return data
+	}
+	result := make([]OHLCV, 0, len(data)/factor+1)
+	for i := 0; i < len(data); i += factor {
+		end := i + factor
+		if end > len(data) {
+			end = len(data)
+		}
+		chunk := data[i:end]
+		agg := OHLCV{
+			Time:   chunk[0].Time,
+			Open:   chunk[0].Open,
+			High:   chunk[0].High,
+			Low:    chunk[0].Low,
+			Close:  chunk[len(chunk)-1].Close,
+			Volume: 0,
+		}
+		for _, bar := range chunk {
+			if bar.High > agg.High {
+				agg.High = bar.High
+			}
+			if bar.Low < agg.Low {
+				agg.Low = bar.Low
+			}
+			agg.Volume += bar.Volume
+		}
+		result = append(result, agg)
+	}
+	return result
+}
+
 func getHistory(c *gin.Context) {
 	symbol := strings.ToUpper(c.Param("symbol"))
 	period := c.DefaultQuery("period", "6mo")
 	interval := c.DefaultQuery("interval", "1d")
+
+	// Map 2h/4h to 60m fetch + aggregation (Yahoo doesn't support 2h/4h natively)
+	requestedInterval := interval
+	aggregateFactor := 0
+	switch interval {
+	case "2h":
+		interval = "60m"
+		aggregateFactor = 2
+	case "4h":
+		interval = "60m"
+		aggregateFactor = 4
+	}
 
 	apiURL := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/chart/%s?range=%s&interval=%s",
 		url.QueryEscape(symbol), period, interval)
@@ -1995,6 +2316,12 @@ func getHistory(c *gin.Context) {
 				})
 			}
 		}
+	}
+
+	// Aggregate 60m candles into 2h/4h if requested
+	if aggregateFactor > 0 {
+		data = aggregateOHLCV(data, aggregateFactor)
+		interval = requestedInterval
 	}
 
 	// Normalize monthly timestamps to 1st of month 00:00 UTC
@@ -13082,6 +13409,1474 @@ func calculateSMAServer(data []float64, period int) []float64 {
 	return sma
 }
 
+// ========== Trading Arena Indicators ==========
+
+// extractCloses extracts close prices from OHLCV data
+func extractCloses(ohlcv []OHLCV) []float64 {
+	closes := make([]float64, len(ohlcv))
+	for i, bar := range ohlcv {
+		closes[i] = bar.Close
+	}
+	return closes
+}
+
+// calculateAwesomeOscillator calculates AO = SMA(5, midpoints) - SMA(34, midpoints)
+func calculateAwesomeOscillator(ohlcv []OHLCV) []float64 {
+	midpoints := make([]float64, len(ohlcv))
+	for i, bar := range ohlcv {
+		midpoints[i] = (bar.High + bar.Low) / 2
+	}
+	sma5 := calculateSMAServer(midpoints, 5)
+	sma34 := calculateSMAServer(midpoints, 34)
+	ao := make([]float64, len(ohlcv))
+	for i := range ohlcv {
+		ao[i] = sma5[i] - sma34[i]
+	}
+	return ao
+}
+
+// calculateHeikinAshi converts OHLCV data to Heikin Ashi candles
+func calculateHeikinAshi(ohlcv []OHLCV) []OHLCV {
+	if len(ohlcv) == 0 {
+		return nil
+	}
+	ha := make([]OHLCV, len(ohlcv))
+	// First candle
+	ha[0].Time = ohlcv[0].Time
+	ha[0].Close = (ohlcv[0].Open + ohlcv[0].High + ohlcv[0].Low + ohlcv[0].Close) / 4
+	ha[0].Open = (ohlcv[0].Open + ohlcv[0].Close) / 2
+	ha[0].High = math.Max(ohlcv[0].High, math.Max(ha[0].Open, ha[0].Close))
+	ha[0].Low = math.Min(ohlcv[0].Low, math.Min(ha[0].Open, ha[0].Close))
+	ha[0].Volume = ohlcv[0].Volume
+
+	for i := 1; i < len(ohlcv); i++ {
+		ha[i].Time = ohlcv[i].Time
+		ha[i].Close = (ohlcv[i].Open + ohlcv[i].High + ohlcv[i].Low + ohlcv[i].Close) / 4
+		ha[i].Open = (ha[i-1].Open + ha[i-1].Close) / 2
+		ha[i].High = math.Max(ohlcv[i].High, math.Max(ha[i].Open, ha[i].Close))
+		ha[i].Low = math.Min(ohlcv[i].Low, math.Min(ha[i].Open, ha[i].Close))
+		ha[i].Volume = ohlcv[i].Volume
+	}
+	return ha
+}
+
+// solveLinearSystem solves Ax=b using Gaussian elimination with partial pivoting
+func solveLinearSystem(A [][]float64, b []float64) []float64 {
+	n := len(b)
+	// Augmented matrix
+	aug := make([][]float64, n)
+	for i := 0; i < n; i++ {
+		aug[i] = make([]float64, n+1)
+		copy(aug[i], A[i])
+		aug[i][n] = b[i]
+	}
+	// Forward elimination with partial pivoting
+	for col := 0; col < n; col++ {
+		maxRow := col
+		maxVal := math.Abs(aug[col][col])
+		for row := col + 1; row < n; row++ {
+			if math.Abs(aug[row][col]) > maxVal {
+				maxVal = math.Abs(aug[row][col])
+				maxRow = row
+			}
+		}
+		aug[col], aug[maxRow] = aug[maxRow], aug[col]
+		if math.Abs(aug[col][col]) < 1e-12 {
+			return make([]float64, n)
+		}
+		for row := col + 1; row < n; row++ {
+			factor := aug[row][col] / aug[col][col]
+			for j := col; j <= n; j++ {
+				aug[row][j] -= factor * aug[col][j]
+			}
+		}
+	}
+	// Back substitution
+	x := make([]float64, n)
+	for i := n - 1; i >= 0; i-- {
+		x[i] = aug[i][n]
+		for j := i + 1; j < n; j++ {
+			x[i] -= aug[i][j] * x[j]
+		}
+		x[i] /= aug[i][i]
+	}
+	return x
+}
+
+// calculatePolyRegressionBands calculates Moving Regression Prediction Bands
+// Source: TradingView Script zOaMXJ65 (tbtkg)
+func calculatePolyRegressionBands(closes []float64, degree, length int, multiplier float64) (upper, middle, lower []float64) {
+	n := len(closes)
+	upper = make([]float64, n)
+	middle = make([]float64, n)
+	lower = make([]float64, n)
+
+	if n < length+1 {
+		return
+	}
+
+	prevPrediction := 0.0
+	prevRMSE := 0.0
+	hasPrev := false
+
+	for i := length - 1; i < n; i++ {
+		// Window: closes[i-length+1 .. i]
+		window := closes[i-length+1 : i+1]
+		dim := degree + 1
+
+		// Build normal equations: X^T X beta = X^T y
+		// X columns: [1, x, x², ...], x = 0..length-1
+		XtX := make([][]float64, dim)
+		for r := 0; r < dim; r++ {
+			XtX[r] = make([]float64, dim)
+		}
+		Xty := make([]float64, dim)
+
+		for j := 0; j < length; j++ {
+			xj := float64(j)
+			xPow := 1.0
+			for r := 0; r < dim; r++ {
+				xPow2 := 1.0
+				for c := 0; c < dim; c++ {
+					XtX[r][c] += xPow * xPow2
+					xPow2 *= xj
+				}
+				Xty[r] += xPow * window[j]
+				xPow *= xj
+			}
+		}
+
+		beta := solveLinearSystem(XtX, Xty)
+
+		// Prediction at x = length (extrapolation to next point)
+		prediction := 0.0
+		xPow := 1.0
+		xVal := float64(length)
+		for d := 0; d < dim; d++ {
+			prediction += beta[d] * xPow
+			xPow *= xVal
+		}
+
+		// RMSE
+		sumSqErr := 0.0
+		for j := 0; j < length; j++ {
+			xj := float64(j)
+			fitted := 0.0
+			xp := 1.0
+			for d := 0; d < dim; d++ {
+				fitted += beta[d] * xp
+				xp *= xj
+			}
+			diff := window[j] - fitted
+			sumSqErr += diff * diff
+		}
+		rmse := math.Sqrt(sumSqErr / float64(length))
+
+		// Bands use PREVIOUS prediction + RMSE
+		if hasPrev {
+			middle[i] = prevPrediction
+			upper[i] = prevPrediction + multiplier*prevRMSE
+			lower[i] = prevPrediction - multiplier*prevRMSE
+		} else {
+			middle[i] = prediction
+			upper[i] = prediction + multiplier*rmse
+			lower[i] = prediction - multiplier*rmse
+		}
+
+		prevPrediction = prediction
+		prevRMSE = rmse
+		hasPrev = true
+	}
+
+	return
+}
+
+// nadarayaWatsonSmooth applies Nadaraya-Watson kernel smoothing with Gaussian kernel.
+// Skips zero values (warmup period) to match Pine Script behavior with na values.
+func nadarayaWatsonSmooth(data []float64, bandwidth float64, lookback int) []float64 {
+	n := len(data)
+	smoothed := make([]float64, n)
+
+	for i := 0; i < n; i++ {
+		if data[i] == 0 {
+			continue // skip warmup bars
+		}
+		sumWeighted := 0.0
+		sumWeights := 0.0
+		start := i - lookback
+		if start < 0 {
+			start = 0
+		}
+		for j := start; j <= i; j++ {
+			if data[j] == 0 {
+				continue // skip na/warmup values
+			}
+			offset := float64(i - j)
+			weight := math.Exp(-(offset * offset) / (2 * bandwidth * bandwidth))
+			sumWeighted += weight * data[j]
+			sumWeights += weight
+		}
+		if sumWeights > 0 {
+			smoothed[i] = sumWeighted / sumWeights
+		}
+	}
+	return smoothed
+}
+
+// calculateSingleBBLevel computes one Bollinger Band level from HLC3 with NW smoothing.
+// Source: TradingView Script LUoxSDKw (Flux Charts) — "Bollinger Bands (Nadaraya Smoothed)"
+func calculateSingleBBLevel(ohlcv []OHLCV, period int, stdevMult, nwBandwidth float64, nwLookback int) (smoothedUpper, smoothedLower []float64) {
+	n := len(ohlcv)
+	smoothedUpper = make([]float64, n)
+	smoothedLower = make([]float64, n)
+
+	if n < period {
+		return
+	}
+
+	// Source: hlc3 = (high + low + close) / 3
+	src := make([]float64, n)
+	for i, bar := range ohlcv {
+		src[i] = (bar.High + bar.Low + bar.Close) / 3
+	}
+
+	// Standard Bollinger Bands on HLC3
+	bbBasis := calculateSMAServer(src, period)
+	bbUpper := make([]float64, n)
+	bbLower := make([]float64, n)
+
+	for i := period - 1; i < n; i++ {
+		sumSq := 0.0
+		for j := i - period + 1; j <= i; j++ {
+			diff := src[j] - bbBasis[i]
+			sumSq += diff * diff
+		}
+		stdev := math.Sqrt(sumSq / float64(period))
+		bbUpper[i] = bbBasis[i] + stdevMult*stdev
+		bbLower[i] = bbBasis[i] - stdevMult*stdev
+	}
+
+	// Apply Nadaraya-Watson Gaussian kernel smoothing (non-repainting mode)
+	smoothedUpper = nadarayaWatsonSmooth(bbUpper, nwBandwidth, nwLookback)
+	smoothedLower = nadarayaWatsonSmooth(bbLower, nwBandwidth, nwLookback)
+
+	return
+}
+
+// calculateHybridEMA calculates the Hybrid EMA AlgoLearner oscillator (k-NN weighted)
+// Source: TradingView Script 4jhuhtMN (Uldisbebris)
+func calculateHybridEMA(closes []float64, shortP, longP, k, lookback, normLookback int) []float64 {
+	n := len(closes)
+	scaled := make([]float64, n)
+	if n < longP+lookback {
+		return scaled
+	}
+
+	shortEMA := calculateEMAServer(closes, shortP)
+	longEMA := calculateEMAServer(closes, longP)
+
+	// k-NN inspired weighted EMA
+	weightEMA := make([]float64, n)
+	for i := 0; i < n; i++ {
+		if i < lookback {
+			weightEMA[i] = shortEMA[i]
+			continue
+		}
+		type distPair struct {
+			dist float64
+			idx  int
+		}
+		distances := make([]distPair, 0, lookback)
+		for j := 1; j <= lookback; j++ {
+			d := math.Abs(shortEMA[i] - longEMA[i-j])
+			distances = append(distances, distPair{d, i - j})
+		}
+		sort.Slice(distances, func(a, b int) bool {
+			return distances[a].dist < distances[b].dist
+		})
+		if len(distances) > k {
+			distances = distances[:k]
+		}
+		sumWeighted := 0.0
+		sumDist := 0.0
+		for _, dp := range distances {
+			w := 1.0 / (dp.dist + 1e-10)
+			sumWeighted += shortEMA[dp.idx] * w
+			sumDist += w
+		}
+		if sumDist > 0 {
+			weightEMA[i] = sumWeighted / sumDist
+		} else {
+			weightEMA[i] = shortEMA[i]
+		}
+	}
+
+	// Normalize to 0-100 scale
+	for i := 0; i < n; i++ {
+		start := i - normLookback
+		if start < 0 {
+			start = 0
+		}
+		minVal := weightEMA[start]
+		maxVal := weightEMA[start]
+		for j := start + 1; j <= i; j++ {
+			if weightEMA[j] < minVal {
+				minVal = weightEMA[j]
+			}
+			if weightEMA[j] > maxVal {
+				maxVal = weightEMA[j]
+			}
+		}
+		if maxVal-minVal > 1e-10 {
+			scaled[i] = (weightEMA[i] - minVal) / (maxVal - minVal) * 100
+		} else {
+			scaled[i] = 50
+		}
+	}
+
+	return scaled
+}
+
+// ========== Diamond Signals Indicators ==========
+
+// findLocalExtrema identifies local peaks and troughs in a data series.
+// A point at index i is a peak if it is the highest within `order` bars on both sides.
+func findLocalExtrema(data []float64, order int) (peaks []int, troughs []int) {
+	if len(data) < 2*order+1 {
+		return
+	}
+	for i := order; i < len(data)-order; i++ {
+		isPeak := true
+		isTrough := true
+		for j := 1; j <= order; j++ {
+			if data[i] <= data[i-j] || data[i] <= data[i+j] {
+				isPeak = false
+			}
+			if data[i] >= data[i-j] || data[i] >= data[i+j] {
+				isTrough = false
+			}
+			if !isPeak && !isTrough {
+				break
+			}
+		}
+		if isPeak {
+			peaks = append(peaks, i)
+		}
+		if isTrough {
+			troughs = append(troughs, i)
+		}
+	}
+	return
+}
+
+// detectRSIDivergence detects classic RSI divergences.
+// Bullish: price lower low + RSI higher low. Bearish: price higher high + RSI lower high.
+func detectRSIDivergence(closes []float64, rsiPeriod, lookback int) (bullDiv, bearDiv []int) {
+	if len(closes) < rsiPeriod+20 {
+		return
+	}
+	rsi := calculateRSIServer(closes, rsiPeriod)
+	pricePeaks, priceTroughs := findLocalExtrema(closes, 5)
+	rsiPeaks, rsiTroughs := findLocalExtrema(rsi, 5)
+
+	// Helper: find closest RSI extremum to a price extremum (within tolerance)
+	findClosest := func(rsiExtrema []int, target int, tolerance int) (int, bool) {
+		bestIdx := -1
+		bestDist := tolerance + 1
+		for _, idx := range rsiExtrema {
+			dist := target - idx
+			if dist < 0 {
+				dist = -dist
+			}
+			if dist <= tolerance && dist < bestDist {
+				bestDist = dist
+				bestIdx = idx
+			}
+		}
+		return bestIdx, bestIdx >= 0
+	}
+
+	// Bullish divergence: consecutive price troughs
+	for i := 1; i < len(priceTroughs); i++ {
+		t2 := priceTroughs[i]
+		t1 := priceTroughs[i-1]
+		if t2-t1 > lookback {
+			continue
+		}
+		if closes[t2] >= closes[t1] {
+			continue // not lower low
+		}
+		r1, ok1 := findClosest(rsiTroughs, t1, 3)
+		r2, ok2 := findClosest(rsiTroughs, t2, 3)
+		if ok1 && ok2 && rsi[r2] > rsi[r1] {
+			bullDiv = append(bullDiv, t2)
+		}
+	}
+
+	// Bearish divergence: consecutive price peaks
+	for i := 1; i < len(pricePeaks); i++ {
+		p2 := pricePeaks[i]
+		p1 := pricePeaks[i-1]
+		if p2-p1 > lookback {
+			continue
+		}
+		if closes[p2] <= closes[p1] {
+			continue // not higher high
+		}
+		r1, ok1 := findClosest(rsiPeaks, p1, 3)
+		r2, ok2 := findClosest(rsiPeaks, p2, 3)
+		if ok1 && ok2 && rsi[r2] < rsi[r1] {
+			bearDiv = append(bearDiv, p2)
+		}
+	}
+	return
+}
+
+// detectVolumeDivergence detects volume-price disagreement.
+// Bearish: price new high + volume declining. Bullish: price new low + volume declining.
+func detectVolumeDivergence(ohlcv []OHLCV, lookback int) (bullVolDiv, bearVolDiv []int) {
+	if len(ohlcv) < 20 {
+		return
+	}
+	closes := extractCloses(ohlcv)
+	volumes := make([]float64, len(ohlcv))
+	for i, bar := range ohlcv {
+		volumes[i] = bar.Volume
+	}
+
+	pricePeaks, priceTroughs := findLocalExtrema(closes, 5)
+
+	// Bearish: price higher high, volume lower
+	for i := 1; i < len(pricePeaks); i++ {
+		p2 := pricePeaks[i]
+		p1 := pricePeaks[i-1]
+		if p2-p1 > lookback {
+			continue
+		}
+		if closes[p2] > closes[p1] && volumes[p2] < volumes[p1] {
+			bearVolDiv = append(bearVolDiv, p2)
+		}
+	}
+
+	// Bullish: price lower low, volume lower
+	for i := 1; i < len(priceTroughs); i++ {
+		t2 := priceTroughs[i]
+		t1 := priceTroughs[i-1]
+		if t2-t1 > lookback {
+			continue
+		}
+		if closes[t2] < closes[t1] && volumes[t2] < volumes[t1] {
+			bullVolDiv = append(bullVolDiv, t2)
+		}
+	}
+	return
+}
+
+// detectDiamondPattern detects diamond chart patterns (expansion then contraction).
+// bullDiamond = bottom reversal (breakout down from diamond). bearDiamond = top reversal.
+func detectDiamondPattern(ohlcv []OHLCV, length int) (bullDiamond, bearDiamond []int) {
+	if len(ohlcv) < length || length < 4 {
+		return
+	}
+	halfLen := length / 2
+
+	for i := length - 1; i < len(ohlcv); i++ {
+		// First half: check range expansion
+		expandCount := 0
+		for j := 1; j < halfLen; j++ {
+			idx := i - length + 1 + j
+			prevIdx := idx - 1
+			rangeJ := ohlcv[idx].High - ohlcv[idx].Low
+			rangePrev := ohlcv[prevIdx].High - ohlcv[prevIdx].Low
+			if rangeJ > rangePrev {
+				expandCount++
+			}
+		}
+
+		// Second half: check range contraction
+		contractCount := 0
+		for j := 1; j < halfLen; j++ {
+			idx := i - halfLen + j
+			prevIdx := idx - 1
+			rangeJ := ohlcv[idx].High - ohlcv[idx].Low
+			rangePrev := ohlcv[prevIdx].High - ohlcv[prevIdx].Low
+			if rangeJ < rangePrev {
+				contractCount++
+			}
+		}
+
+		// Find max range bar position within window
+		maxRange := 0.0
+		maxRangePos := 0
+		for j := 0; j < length; j++ {
+			idx := i - length + 1 + j
+			r := ohlcv[idx].High - ohlcv[idx].Low
+			if r > maxRange {
+				maxRange = r
+				maxRangePos = j
+			}
+		}
+		relPos := float64(maxRangePos) / float64(length)
+
+		expandThresh := int(float64(halfLen-1) * 0.6)
+		contractThresh := int(float64(halfLen-1) * 0.6)
+
+		if expandCount >= expandThresh && contractCount >= contractThresh && relPos > 0.25 && relPos < 0.75 {
+			midIdx := i - halfLen
+			midPrice := (ohlcv[midIdx].High + ohlcv[midIdx].Low) / 2
+			exitPrice := ohlcv[i].Close
+
+			if exitPrice < midPrice {
+				bullDiamond = append(bullDiamond, i) // broke down → bottom reversal
+			} else {
+				bearDiamond = append(bearDiamond, i) // broke up → top reversal
+			}
+		}
+	}
+	return
+}
+
+// detectOrderBlocks identifies supply/demand zones from high-volume impulse candles.
+// Returns zones as [low, high] price ranges.
+func detectOrderBlocks(ohlcv []OHLCV, lookback int) (demandZones, supplyZones [][2]float64) {
+	if len(ohlcv) < 21 {
+		return
+	}
+
+	for i := 20; i < len(ohlcv); i++ {
+		// Calculate 20-bar average volume and body
+		avgVol := 0.0
+		avgBody := 0.0
+		for j := i - 20; j < i; j++ {
+			avgVol += ohlcv[j].Volume
+			avgBody += math.Abs(ohlcv[j].Close - ohlcv[j].Open)
+		}
+		avgVol /= 20
+		avgBody /= 20
+
+		body := math.Abs(ohlcv[i].Close - ohlcv[i].Open)
+		isBullishImpulse := ohlcv[i].Close > ohlcv[i].Open && ohlcv[i].Volume > avgVol*1.5 && body > avgBody*1.5
+		isBearishImpulse := ohlcv[i].Close < ohlcv[i].Open && ohlcv[i].Volume > avgVol*1.5 && body > avgBody*1.5
+
+		if isBullishImpulse {
+			// Demand zone = last bearish candle before impulse
+			for j := i - 1; j >= i-10 && j >= 0; j-- {
+				if ohlcv[j].Close < ohlcv[j].Open {
+					demandZones = append(demandZones, [2]float64{ohlcv[j].Low, ohlcv[j].High})
+					break
+				}
+			}
+		}
+		if isBearishImpulse {
+			// Supply zone = last bullish candle before impulse
+			for j := i - 1; j >= i-10 && j >= 0; j-- {
+				if ohlcv[j].Close > ohlcv[j].Open {
+					supplyZones = append(supplyZones, [2]float64{ohlcv[j].Low, ohlcv[j].High})
+					break
+				}
+			}
+		}
+	}
+
+	// Only keep zones from recent bars
+	if lookback > 0 && len(ohlcv) > lookback {
+		threshold := len(ohlcv) - lookback
+		_ = threshold // zones are added chronologically, keep all for now (proximity check handles relevance)
+	}
+	return
+}
+
+// ========== Diamond Signals Utility Helpers ==========
+
+// toIndexMap converts a slice of indices to a map for O(1) lookup
+func toIndexMap(indices []int) map[int]bool {
+	m := make(map[int]bool, len(indices))
+	for _, idx := range indices {
+		m[idx] = true
+	}
+	return m
+}
+
+// expandAggMap maps aggregated-timeframe indices back to base-timeframe index ranges
+func expandAggMap(aggIndices []int, factor int, maxLen int) map[int]bool {
+	m := make(map[int]bool)
+	for _, aggIdx := range aggIndices {
+		for j := 0; j < factor; j++ {
+			baseIdx := aggIdx*factor + j
+			if baseIdx < maxLen {
+				m[baseIdx] = true
+			}
+		}
+	}
+	return m
+}
+
+// withinRange checks if any index within [center-radius, center+radius] exists in map
+func withinRange(m map[int]bool, center int, radius int) bool {
+	for i := center - radius; i <= center+radius; i++ {
+		if m[i] {
+			return true
+		}
+	}
+	return false
+}
+
+// isNearZone checks if price is within tolerance of any zone's range
+func isNearZone(price float64, zones [][2]float64, tolerance float64) bool {
+	for _, zone := range zones {
+		zoneMid := (zone[0] + zone[1]) / 2
+		if math.Abs(price-zoneMid)/price <= tolerance {
+			return true
+		}
+	}
+	return false
+}
+
+// findRecentSwingLow finds the lowest low in the past N bars
+func findRecentSwingLow(ohlcv []OHLCV, currentIdx int, lookback int) float64 {
+	low := ohlcv[currentIdx].Low
+	start := currentIdx - lookback
+	if start < 0 {
+		start = 0
+	}
+	for j := start; j < currentIdx; j++ {
+		if ohlcv[j].Low < low {
+			low = ohlcv[j].Low
+		}
+	}
+	return low
+}
+
+// findRecentSwingHigh finds the highest high in the past N bars
+func findRecentSwingHigh(ohlcv []OHLCV, currentIdx int, lookback int) float64 {
+	high := ohlcv[currentIdx].High
+	start := currentIdx - lookback
+	if start < 0 {
+		start = 0
+	}
+	for j := start; j < currentIdx; j++ {
+		if ohlcv[j].High > high {
+			high = ohlcv[j].High
+		}
+	}
+	return high
+}
+
+// ========== Trading Arena Strategies & Backtest Engine ==========
+
+type ChartMarker struct {
+	Time     int64  `json:"time"`
+	Position string `json:"position"`
+	Color    string `json:"color"`
+	Shape    string `json:"shape"`
+	Text     string `json:"text"`
+}
+
+type StrategySignal struct {
+	Index      int
+	Direction  string // "LONG" | "SHORT"
+	EntryPrice float64
+	StopLoss   float64
+	TakeProfit float64
+	Shape      string // optional, default "" → arrowUp/Down
+	Text       string // optional, default "" → "LONG"/"SHORT"
+	Color      string // optional, default "" → standard colors
+}
+
+type IndicatorSeries struct {
+	Name  string           `json:"name"`
+	Type  string           `json:"type"` // "histogram", "line"
+	Color string           `json:"color"`
+	Data  []IndicatorPoint `json:"data"`
+}
+
+type IndicatorPoint struct {
+	Time  int64   `json:"time"`
+	Value float64 `json:"value"`
+	Color string  `json:"color,omitempty"`
+}
+
+type IndicatorProvider interface {
+	ComputeIndicators(ohlcv []OHLCV) []IndicatorSeries
+}
+
+type TradingStrategy interface {
+	Name() string
+	RequiredBars() int
+	Analyze(ohlcv []OHLCV) []StrategySignal
+}
+
+// --- Strategy A: Moving Regression Scalping ---
+type RegressionScalpingStrategy struct {
+	Degree               int     `json:"degree"`
+	Length               int     `json:"length"`
+	Multiplier           float64 `json:"multiplier"`
+	RiskReward           float64 `json:"risk_reward"`
+	SLLookback           int     `json:"sl_lookback"`
+	ConfirmationRequired int     `json:"confirmation_required"` // 1=on (default), 0=off
+}
+
+func (s *RegressionScalpingStrategy) defaults() {
+	if s.Degree <= 0 { s.Degree = 2 }
+	if s.Length <= 0 { s.Length = 100 }
+	if s.Multiplier <= 0 { s.Multiplier = 3.0 }
+	if s.RiskReward <= 0 { s.RiskReward = 2.5 }
+	if s.SLLookback <= 0 { s.SLLookback = 30 }
+	if s.ConfirmationRequired <= 0 { s.ConfirmationRequired = 1 }
+}
+
+func (s *RegressionScalpingStrategy) Name() string      { return "regression_scalping" }
+func (s *RegressionScalpingStrategy) RequiredBars() int  { s.defaults(); return s.Length + 20 }
+
+func (s *RegressionScalpingStrategy) Analyze(ohlcv []OHLCV) []StrategySignal {
+	s.defaults()
+	var signals []StrategySignal
+	minBars := s.Length + 20
+	if len(ohlcv) < minBars {
+		return signals
+	}
+
+	closes := extractCloses(ohlcv)
+	upper, _, lower := calculatePolyRegressionBands(closes, s.Degree, s.Length, s.Multiplier)
+	ao := calculateAwesomeOscillator(ohlcv)
+	needConfirm := s.ConfirmationRequired == 1
+
+	// Three-step confirmation: Setup → AO flip → Candle color
+	type setupState struct {
+		active    bool
+		dir       string
+		confirmed bool
+	}
+	setup := setupState{}
+
+	for i := 35; i < len(ohlcv); i++ {
+		// Reset setup if price returns between bands (without confirmation)
+		if closes[i] > lower[i] && closes[i] < upper[i] && !setup.confirmed {
+			setup = setupState{}
+		}
+
+		// Step A: LONG setup — price closes under Lower Band
+		if !setup.active && closes[i] < lower[i] && lower[i] > 0 {
+			setup = setupState{active: true, dir: "LONG", confirmed: !needConfirm}
+			if needConfirm { continue }
+		}
+		// Step A: SHORT setup — price closes above Upper Band
+		if !setup.active && closes[i] > upper[i] && upper[i] > 0 {
+			setup = setupState{active: true, dir: "SHORT", confirmed: !needConfirm}
+			if needConfirm { continue }
+		}
+
+		if !setup.active {
+			continue
+		}
+
+		// Step B: AO color flip (Red→Green for Long, Green→Red for Short)
+		if needConfirm && !setup.confirmed && i > 1 {
+			aoRising := ao[i] > ao[i-1]   // Green bar (rising)
+			aoFalling := ao[i] < ao[i-1]  // Red bar (falling)
+			aoPrevFalling := ao[i-1] <= ao[i-2] // Previous was red
+			aoPrevRising := ao[i-1] >= ao[i-2]  // Previous was green
+
+			if setup.dir == "LONG" && aoRising && aoPrevFalling {
+				setup.confirmed = true
+			} else if setup.dir == "SHORT" && aoFalling && aoPrevRising {
+				setup.confirmed = true
+			}
+		}
+
+		if !setup.confirmed {
+			continue
+		}
+
+		// Step C: Candle color confirms direction (Close > Open = bullish)
+		candleBullish := ohlcv[i].Close > ohlcv[i].Open
+		candleBearish := ohlcv[i].Close < ohlcv[i].Open
+		if needConfirm && setup.dir == "LONG" && !candleBullish { continue }
+		if needConfirm && setup.dir == "SHORT" && !candleBearish { continue }
+
+		if setup.dir == "LONG" {
+			if i+1 >= len(ohlcv) {
+				setup = setupState{}
+				continue
+			}
+			entryPrice := ohlcv[i+1].Open
+			swingLow := ohlcv[i].Low
+			lookStart := i - s.SLLookback
+			if lookStart < 0 { lookStart = 0 }
+			for j := lookStart; j < i; j++ {
+				if ohlcv[j].Low < swingLow { swingLow = ohlcv[j].Low }
+			}
+			risk := entryPrice - swingLow
+			if risk > 0 {
+				signals = append(signals, StrategySignal{
+					Index: i + 1, Direction: "LONG", EntryPrice: entryPrice,
+					StopLoss: swingLow, TakeProfit: entryPrice + s.RiskReward*risk,
+				})
+			}
+			setup = setupState{}
+		} else if setup.dir == "SHORT" {
+			if i+1 >= len(ohlcv) {
+				setup = setupState{}
+				continue
+			}
+			entryPrice := ohlcv[i+1].Open
+			swingHigh := ohlcv[i].High
+			lookStart := i - s.SLLookback
+			if lookStart < 0 { lookStart = 0 }
+			for j := lookStart; j < i; j++ {
+				if ohlcv[j].High > swingHigh { swingHigh = ohlcv[j].High }
+			}
+			risk := swingHigh - entryPrice
+			if risk > 0 {
+				signals = append(signals, StrategySignal{
+					Index: i + 1, Direction: "SHORT", EntryPrice: entryPrice,
+					StopLoss: swingHigh, TakeProfit: entryPrice - s.RiskReward*risk,
+				})
+			}
+			setup = setupState{}
+		}
+	}
+	return signals
+}
+
+// --- Strategy B: NW Bollinger Bands (Flux Charts LUoxSDKw) ---
+type HybridAITrendStrategy struct {
+	BB1Period   int     `json:"bb1_period"`    // Level 1 (inner, signal line) — default 20
+	BB1Stdev    float64 `json:"bb1_stdev"`     // default 3.0
+	BB2Period   int     `json:"bb2_period"`    // Level 2 — default 75
+	BB2Stdev    float64 `json:"bb2_stdev"`     // default 3.0 (short_stdev in Pine)
+	BB3Period   int     `json:"bb3_period"`    // Level 3 — default 100
+	BB3Stdev    float64 `json:"bb3_stdev"`     // default 4.0
+	BB4Period   int     `json:"bb4_period"`    // Level 4 (outermost) — default 100
+	BB4Stdev    float64 `json:"bb4_stdev"`     // default 4.25
+	NWBandwidth float64 `json:"nw_bandwidth"`  // Nadaraya-Watson smoothing factor h — default 6.0
+	NWLookback  int     `json:"nw_lookback"`   // NW kernel lookback — default 499
+	SLBuffer    float64 `json:"sl_buffer"`     // Stop Loss buffer % — default 1.5
+	RiskReward  float64 `json:"risk_reward"`   // Risk/Reward ratio — default 2.0
+	HybridFilter      bool    `json:"hybrid_filter"`       // filter signals by Hybrid EMA AlgoLearner
+	HybridLongThresh  float64 `json:"hybrid_long_thresh"`  // LONG only when oscillator >= this — default 75
+	HybridShortThresh float64 `json:"hybrid_short_thresh"` // SHORT only when oscillator <= this — default 25
+}
+
+func (s *HybridAITrendStrategy) defaults() {
+	if s.BB1Period <= 0 { s.BB1Period = 20 }
+	if s.BB1Stdev <= 0 { s.BB1Stdev = 3.0 }
+	if s.BB2Period <= 0 { s.BB2Period = 75 }
+	if s.BB2Stdev <= 0 { s.BB2Stdev = 3.0 }
+	if s.BB3Period <= 0 { s.BB3Period = 100 }
+	if s.BB3Stdev <= 0 { s.BB3Stdev = 4.0 }
+	if s.BB4Period <= 0 { s.BB4Period = 100 }
+	if s.BB4Stdev <= 0 { s.BB4Stdev = 4.25 }
+	if s.NWBandwidth <= 0 { s.NWBandwidth = 6.0 }
+	if s.NWLookback <= 0 { s.NWLookback = 499 }
+	if s.SLBuffer < 0 { s.SLBuffer = 1.5 }
+	if s.RiskReward <= 0 { s.RiskReward = 2.0 }
+	if s.HybridLongThresh <= 0 { s.HybridLongThresh = 75.0 }
+	if s.HybridShortThresh <= 0 { s.HybridShortThresh = 25.0 }
+}
+
+func (s *HybridAITrendStrategy) Name() string     { return "hybrid_ai_trend" }
+func (s *HybridAITrendStrategy) RequiredBars() int { s.defaults(); return s.NWLookback + 100 }
+
+func (s *HybridAITrendStrategy) Analyze(ohlcv []OHLCV) []StrategySignal {
+	s.defaults()
+	var signals []StrategySignal
+	if len(ohlcv) < s.BB1Period+2 {
+		return signals
+	}
+
+	// Compute Level 1 NW-smoothed Bollinger Bands (signal line)
+	upper1, lower1 := calculateSingleBBLevel(ohlcv, s.BB1Period, s.BB1Stdev, s.NWBandwidth, s.NWLookback)
+	closes := extractCloses(ohlcv)
+
+	// Optional: Hybrid EMA AlgoLearner filter
+	var oscillator []float64
+	if s.HybridFilter {
+		oscillator = calculateHybridEMA(closes, 50, 200, 5, 100, 400)
+	}
+
+	for i := 1; i < len(ohlcv); i++ {
+		if upper1[i] == 0 || lower1[i] == 0 || upper1[i-1] == 0 || lower1[i-1] == 0 {
+			continue
+		}
+
+		// BUY (LONG): close crosses below lower band 1
+		// Signal fires at bar i close → entry at bar i+1 open (no look-ahead bias)
+		if closes[i] <= lower1[i] && closes[i-1] > lower1[i-1] {
+			if i+1 >= len(ohlcv) {
+				continue // no next bar to enter on
+			}
+			if s.HybridFilter && (i >= len(oscillator) || oscillator[i] < s.HybridLongThresh) {
+				continue // oscillator below long threshold → skip
+			}
+			entryPrice := ohlcv[i+1].Open
+			slPrice := entryPrice * (1 - s.SLBuffer/100)
+			risk := entryPrice - slPrice
+			signals = append(signals, StrategySignal{
+				Index: i + 1, Direction: "LONG", EntryPrice: entryPrice,
+				StopLoss: slPrice, TakeProfit: entryPrice + s.RiskReward*risk,
+			})
+		}
+
+		// SELL (SHORT): close crosses above upper band 1
+		// Signal fires at bar i close → entry at bar i+1 open (no look-ahead bias)
+		if closes[i] >= upper1[i] && closes[i-1] < upper1[i-1] {
+			if i+1 >= len(ohlcv) {
+				continue
+			}
+			if s.HybridFilter && (i >= len(oscillator) || oscillator[i] > s.HybridShortThresh) {
+				continue // oscillator above short threshold → skip
+			}
+			entryPrice := ohlcv[i+1].Open
+			slPrice := entryPrice * (1 + s.SLBuffer/100)
+			risk := slPrice - entryPrice
+			signals = append(signals, StrategySignal{
+				Index: i + 1, Direction: "SHORT", EntryPrice: entryPrice,
+				StopLoss: slPrice, TakeProfit: entryPrice - s.RiskReward*risk,
+			})
+		}
+	}
+	return signals
+}
+
+// --- Strategy C: Diamond Signals ---
+type DiamondSignalsStrategy struct {
+	PatternLength int     `json:"pattern_length"`
+	RSIPeriod     int     `json:"rsi_period"`
+	ConfluenceMin int     `json:"confluence_min"`
+	RSIOverbought float64 `json:"rsi_overbought"`
+	RSIOversold   float64 `json:"rsi_oversold"`
+	Cooldown      int     `json:"cooldown"`
+	RiskReward    float64 `json:"risk_reward"`
+}
+
+func (s *DiamondSignalsStrategy) defaults() {
+	if s.PatternLength <= 0 { s.PatternLength = 20 }
+	if s.RSIPeriod <= 0 { s.RSIPeriod = 14 }
+	if s.ConfluenceMin <= 0 { s.ConfluenceMin = 3 }
+	if s.RSIOverbought <= 0 { s.RSIOverbought = 65 }
+	if s.RSIOversold <= 0 { s.RSIOversold = 35 }
+	if s.Cooldown <= 0 { s.Cooldown = 5 }
+	if s.RiskReward <= 0 { s.RiskReward = 2.0 }
+}
+
+func (s *DiamondSignalsStrategy) Name() string     { return "diamond_signals" }
+func (s *DiamondSignalsStrategy) RequiredBars() int { return 200 }
+
+func (s *DiamondSignalsStrategy) Analyze(ohlcv []OHLCV) []StrategySignal {
+	s.defaults()
+	var signals []StrategySignal
+	if len(ohlcv) < 200 {
+		return signals
+	}
+
+	closes := extractCloses(ohlcv)
+	rsi := calculateRSIServer(closes, s.RSIPeriod)
+
+	bullDiamond, bearDiamond := detectDiamondPattern(ohlcv, s.PatternLength)
+	rsiBullDiv, rsiBearDiv := detectRSIDivergence(closes, s.RSIPeriod, 30)
+	volBullDiv, volBearDiv := detectVolumeDivergence(ohlcv, 30)
+	demandZones, supplyZones := detectOrderBlocks(ohlcv, 50)
+
+	aggOHLCV := aggregateOHLCV(ohlcv, 4)
+	var aggBullDiamondBase, aggBearDiamondBase map[int]bool
+	var aggRSIBullBase, aggRSIBearBase map[int]bool
+	if len(aggOHLCV) >= 50 {
+		aggBullD, aggBearD := detectDiamondPattern(aggOHLCV, s.PatternLength)
+		aggCloses := extractCloses(aggOHLCV)
+		aggRSIBull, aggRSIBear := detectRSIDivergence(aggCloses, s.RSIPeriod, 15)
+		aggBullDiamondBase = expandAggMap(aggBullD, 4, len(ohlcv))
+		aggBearDiamondBase = expandAggMap(aggBearD, 4, len(ohlcv))
+		aggRSIBullBase = expandAggMap(aggRSIBull, 4, len(ohlcv))
+		aggRSIBearBase = expandAggMap(aggRSIBear, 4, len(ohlcv))
+	} else {
+		aggBullDiamondBase = make(map[int]bool)
+		aggBearDiamondBase = make(map[int]bool)
+		aggRSIBullBase = make(map[int]bool)
+		aggRSIBearBase = make(map[int]bool)
+	}
+
+	bullDiamondMap := toIndexMap(bullDiamond)
+	bearDiamondMap := toIndexMap(bearDiamond)
+	rsiBullMap := toIndexMap(rsiBullDiv)
+	rsiBearMap := toIndexMap(rsiBearDiv)
+	volBullMap := toIndexMap(volBullDiv)
+	volBearMap := toIndexMap(volBearDiv)
+
+	cooldown := 0
+
+	for i := 50; i < len(ohlcv); i++ {
+		if cooldown > 0 {
+			cooldown--
+			continue
+		}
+
+		longScore := 0
+		if withinRange(bullDiamondMap, i, 3) { longScore++ }
+		if withinRange(rsiBullMap, i, 3) { longScore++ }
+		if withinRange(volBullMap, i, 3) { longScore++ }
+		if isNearZone(closes[i], demandZones, 0.02) { longScore++ }
+		if aggBullDiamondBase[i] || aggRSIBullBase[i] { longScore++ }
+
+		shortScore := 0
+		if withinRange(bearDiamondMap, i, 3) { shortScore++ }
+		if withinRange(rsiBearMap, i, 3) { shortScore++ }
+		if withinRange(volBearMap, i, 3) { shortScore++ }
+		if isNearZone(closes[i], supplyZones, 0.02) { shortScore++ }
+		if aggBearDiamondBase[i] || aggRSIBearBase[i] { shortScore++ }
+
+		if longScore >= s.ConfluenceMin && rsi[i] < s.RSIOverbought {
+			if i+1 >= len(ohlcv) {
+				continue
+			}
+			entryPrice := ohlcv[i+1].Open
+			swingLow := findRecentSwingLow(ohlcv, i, 20)
+			risk := entryPrice - swingLow
+			if risk > 0 && risk/entryPrice > 0.002 {
+				signals = append(signals, StrategySignal{
+					Index: i + 1, Direction: "LONG", EntryPrice: entryPrice,
+					StopLoss: swingLow, TakeProfit: entryPrice + s.RiskReward*risk,
+					Shape: "square", Text: "◆ LONG", Color: "#3b82f6",
+				})
+				cooldown = s.Cooldown
+			}
+		}
+
+		if shortScore >= s.ConfluenceMin && rsi[i] > s.RSIOversold {
+			if i+1 >= len(ohlcv) {
+				continue
+			}
+			entryPrice := ohlcv[i+1].Open
+			swingHigh := findRecentSwingHigh(ohlcv, i, 20)
+			risk := swingHigh - entryPrice
+			if risk > 0 && risk/entryPrice > 0.002 {
+				signals = append(signals, StrategySignal{
+					Index: i + 1, Direction: "SHORT", EntryPrice: entryPrice,
+					StopLoss: swingHigh, TakeProfit: entryPrice - s.RiskReward*risk,
+					Shape: "square", Text: "◆ SHORT", Color: "#ec4899",
+				})
+				cooldown = s.Cooldown
+			}
+		}
+	}
+	return signals
+}
+
+type OverlaySeries struct {
+	Name       string         `json:"name"`
+	Type       string         `json:"type"` // "line"
+	Color      string         `json:"color"`
+	Data       []OverlayPoint `json:"data"`
+	Style      int            `json:"style"` // 0=solid, 2=dashed
+	FillColor  string         `json:"fill_color,omitempty"`  // RGBA for area fill
+	InvertFill bool           `json:"invert_fill,omitempty"` // true = fill upward (for lower bands)
+}
+
+type OverlayPoint struct {
+	Time  int64   `json:"time"`
+	Value float64 `json:"value"`
+}
+
+type OverlayProvider interface {
+	ComputeOverlays(ohlcv []OHLCV) []OverlaySeries
+}
+
+// BacktestResult holds all results of a backtest run
+type ArenaBacktestResult struct {
+	Metrics    ArenaBacktestMetrics `json:"metrics"`
+	Trades     []ArenaBacktestTrade `json:"trades"`
+	Markers    []ChartMarker        `json:"markers"`
+	Indicators []IndicatorSeries    `json:"indicators,omitempty"`
+	Overlays   []OverlaySeries      `json:"overlays,omitempty"`
+	ChartData  []OHLCV              `json:"chart_data,omitempty"`
+}
+
+type ArenaBacktestMetrics struct {
+	WinRate     float64 `json:"win_rate"`
+	RiskReward  float64 `json:"risk_reward"`
+	TotalReturn float64 `json:"total_return"`
+	AvgReturn   float64 `json:"avg_return"`
+	MaxDrawdown float64 `json:"max_drawdown"`
+	NetProfit   float64 `json:"net_profit"`
+	TotalTrades int     `json:"total_trades"`
+	Wins        int     `json:"wins"`
+	Losses      int     `json:"losses"`
+}
+
+type ArenaBacktestTrade struct {
+	Direction  string  `json:"direction"`
+	EntryPrice float64 `json:"entry_price"`
+	EntryTime  int64   `json:"entry_time"`
+	ExitPrice  float64 `json:"exit_price"`
+	ExitTime   int64   `json:"exit_time"`
+	ReturnPct  float64 `json:"return_pct"`
+	ExitReason string  `json:"exit_reason"` // "TP", "SL", "SIGNAL", "END"
+	IsOpen     bool    `json:"is_open"`
+}
+
+// runArenaBacktest runs a bar-by-bar backtest simulation
+func runArenaBacktest(ohlcv []OHLCV, strategy TradingStrategy) ArenaBacktestResult {
+	signals := strategy.Analyze(ohlcv)
+	var trades []ArenaBacktestTrade
+	var markers []ChartMarker
+
+	signalMap := make(map[int]StrategySignal)
+	for _, sig := range signals {
+		signalMap[sig.Index] = sig
+	}
+
+	var activeTrade *ArenaBacktestTrade
+	var activeSL, activeTP float64
+	var activeDir string
+
+	for i := 0; i < len(ohlcv); i++ {
+		bar := ohlcv[i]
+
+		// Phase 1: Execute signals at bar open (entry/exit happen at open price)
+		// Signals have Index set to the bar AFTER detection, so EntryPrice = this bar's Open
+		if sig, ok := signalMap[i]; ok {
+			// Close opposing trade at bar open
+			if activeTrade != nil && activeDir != sig.Direction {
+				if activeDir == "LONG" {
+					activeTrade.ReturnPct = (bar.Open - activeTrade.EntryPrice) / activeTrade.EntryPrice * 100
+				} else {
+					activeTrade.ReturnPct = (activeTrade.EntryPrice - bar.Open) / activeTrade.EntryPrice * 100
+				}
+				activeTrade.ExitPrice = bar.Open
+				activeTrade.ExitTime = bar.Time
+				activeTrade.ExitReason = "SIGNAL"
+				trades = append(trades, *activeTrade)
+				activeTrade = nil
+			}
+			if activeTrade == nil {
+				activeTrade = &ArenaBacktestTrade{
+					Direction:  sig.Direction,
+					EntryPrice: sig.EntryPrice,
+					EntryTime:  bar.Time,
+				}
+				activeSL = sig.StopLoss
+				activeTP = sig.TakeProfit
+				activeDir = sig.Direction
+
+				if sig.Direction == "LONG" {
+					shape, text, color := "arrowUp", "LONG", "#22c55e"
+					if sig.Shape != "" { shape = sig.Shape }
+					if sig.Text != "" { text = sig.Text }
+					if sig.Color != "" { color = sig.Color }
+					markers = append(markers, ChartMarker{Time: bar.Time, Position: "belowBar", Color: color, Shape: shape, Text: text})
+				} else {
+					shape, text, color := "arrowDown", "SHORT", "#ef4444"
+					if sig.Shape != "" { shape = sig.Shape }
+					if sig.Text != "" { text = sig.Text }
+					if sig.Color != "" { color = sig.Color }
+					markers = append(markers, ChartMarker{Time: bar.Time, Position: "aboveBar", Color: color, Shape: shape, Text: text})
+				}
+			}
+		}
+
+		// Phase 2: Check SL/TP during bar (intrabar stop/limit order execution)
+		if activeTrade != nil {
+			closed := false
+			if activeDir == "LONG" {
+				if bar.Low <= activeSL {
+					activeTrade.ExitPrice = activeSL
+					activeTrade.ExitTime = bar.Time
+					activeTrade.ReturnPct = (activeSL - activeTrade.EntryPrice) / activeTrade.EntryPrice * 100
+					activeTrade.ExitReason = "SL"
+					closed = true
+					markers = append(markers, ChartMarker{Time: bar.Time, Position: "aboveBar", Color: "#ef4444", Shape: "arrowDown", Text: "SL"})
+				} else if bar.High >= activeTP {
+					activeTrade.ExitPrice = activeTP
+					activeTrade.ExitTime = bar.Time
+					activeTrade.ReturnPct = (activeTP - activeTrade.EntryPrice) / activeTrade.EntryPrice * 100
+					activeTrade.ExitReason = "TP"
+					closed = true
+					markers = append(markers, ChartMarker{Time: bar.Time, Position: "aboveBar", Color: "#22c55e", Shape: "arrowDown", Text: "TP"})
+				}
+			} else { // SHORT
+				if bar.High >= activeSL {
+					activeTrade.ExitPrice = activeSL
+					activeTrade.ExitTime = bar.Time
+					activeTrade.ReturnPct = (activeTrade.EntryPrice - activeSL) / activeTrade.EntryPrice * 100
+					activeTrade.ExitReason = "SL"
+					closed = true
+					markers = append(markers, ChartMarker{Time: bar.Time, Position: "belowBar", Color: "#ef4444", Shape: "arrowUp", Text: "SL"})
+				} else if bar.Low <= activeTP {
+					activeTrade.ExitPrice = activeTP
+					activeTrade.ExitTime = bar.Time
+					activeTrade.ReturnPct = (activeTrade.EntryPrice - activeTP) / activeTrade.EntryPrice * 100
+					activeTrade.ExitReason = "TP"
+					closed = true
+					markers = append(markers, ChartMarker{Time: bar.Time, Position: "belowBar", Color: "#22c55e", Shape: "arrowUp", Text: "TP"})
+				}
+			}
+			if closed {
+				trades = append(trades, *activeTrade)
+				activeTrade = nil
+			}
+		}
+	}
+
+	// Close open trade at end
+	if activeTrade != nil && len(ohlcv) > 0 {
+		lastBar := ohlcv[len(ohlcv)-1]
+		activeTrade.ExitPrice = lastBar.Close
+		activeTrade.ExitTime = lastBar.Time
+		activeTrade.ExitReason = "END"
+		activeTrade.IsOpen = true
+		if activeDir == "LONG" {
+			activeTrade.ReturnPct = (lastBar.Close - activeTrade.EntryPrice) / activeTrade.EntryPrice * 100
+		} else {
+			activeTrade.ReturnPct = (activeTrade.EntryPrice - lastBar.Close) / activeTrade.EntryPrice * 100
+		}
+		trades = append(trades, *activeTrade)
+	}
+
+	// Calculate metrics
+	metrics := ArenaBacktestMetrics{TotalTrades: len(trades)}
+	if len(trades) > 0 {
+		totalReturn := 0.0
+		var winReturns, lossReturns []float64
+		equity := 100.0
+		peak := equity
+		maxDD := 0.0
+
+		for _, t := range trades {
+			totalReturn += t.ReturnPct
+			if t.ReturnPct >= 0 {
+				metrics.Wins++
+				winReturns = append(winReturns, t.ReturnPct)
+			} else {
+				metrics.Losses++
+				lossReturns = append(lossReturns, t.ReturnPct)
+			}
+			equity *= (1 + t.ReturnPct/100)
+			if equity > peak {
+				peak = equity
+			}
+			dd := (peak - equity) / peak * 100
+			if dd > maxDD {
+				maxDD = dd
+			}
+		}
+
+		metrics.WinRate = float64(metrics.Wins) / float64(metrics.TotalTrades) * 100
+		metrics.TotalReturn = totalReturn
+		metrics.AvgReturn = totalReturn / float64(metrics.TotalTrades)
+		metrics.MaxDrawdown = maxDD
+		metrics.NetProfit = equity - 100 // Profit/Loss in % of starting capital
+
+		if len(winReturns) > 0 && len(lossReturns) > 0 {
+			avgWin := 0.0
+			for _, w := range winReturns {
+				avgWin += w
+			}
+			avgWin /= float64(len(winReturns))
+			avgLoss := 0.0
+			for _, l := range lossReturns {
+				avgLoss += math.Abs(l)
+			}
+			avgLoss /= float64(len(lossReturns))
+			if avgLoss > 0 {
+				metrics.RiskReward = avgWin / avgLoss
+			}
+		}
+	}
+
+	return ArenaBacktestResult{Metrics: metrics, Trades: trades, Markers: markers}
+}
+
+// --- IndicatorProvider implementations ---
+
+// --- Regression Scalping: Overlay = Bands, Sub-Chart = AO ---
+
+func (s *RegressionScalpingStrategy) ComputeOverlays(ohlcv []OHLCV) []OverlaySeries {
+	s.defaults()
+	if len(ohlcv) < s.Length+20 { return nil }
+	closes := extractCloses(ohlcv)
+	upper, middle, lower := calculatePolyRegressionBands(closes, s.Degree, s.Length, s.Multiplier)
+	toData := func(vals []float64) []OverlayPoint {
+		pts := make([]OverlayPoint, 0, len(ohlcv))
+		for i, v := range vals {
+			if v != 0 { pts = append(pts, OverlayPoint{Time: ohlcv[i].Time, Value: v}) }
+		}
+		return pts
+	}
+	return []OverlaySeries{
+		{Name: "Upper Band", Type: "line", Color: "#ef4444", Data: toData(upper), Style: 2},
+		{Name: "Prediction", Type: "line", Color: "#9ca3af", Data: toData(middle), Style: 0},
+		{Name: "Lower Band", Type: "line", Color: "#22c55e", Data: toData(lower), Style: 2},
+	}
+}
+
+func (s *RegressionScalpingStrategy) ComputeIndicators(ohlcv []OHLCV) []IndicatorSeries {
+	if len(ohlcv) < 34 { return nil }
+	ao := calculateAwesomeOscillator(ohlcv)
+	data := make([]IndicatorPoint, len(ohlcv))
+	for i := range ohlcv {
+		color := "#22c55e"
+		if i > 0 && ao[i] < ao[i-1] { color = "#ef4444" }
+		data[i] = IndicatorPoint{Time: ohlcv[i].Time, Value: ao[i], Color: color}
+	}
+	return []IndicatorSeries{{Name: "Awesome Oscillator", Type: "histogram", Color: "#f59e0b", Data: data}}
+}
+
+// --- NW Bollinger Bands: Overlay = 4-Level NW-BB, no Sub-Chart ---
+
+func (s *HybridAITrendStrategy) ComputeOverlays(ohlcv []OHLCV) []OverlaySeries {
+	s.defaults()
+	if len(ohlcv) < s.BB1Period+10 { return nil }
+
+	toData := func(vals []float64) []OverlayPoint {
+		pts := make([]OverlayPoint, 0, len(ohlcv))
+		for i, v := range vals {
+			if v != 0 { pts = append(pts, OverlayPoint{Time: ohlcv[i].Time, Value: v}) }
+		}
+		return pts
+	}
+
+	// Compute all 4 BB levels with NW smoothing
+	u1, l1 := calculateSingleBBLevel(ohlcv, s.BB1Period, s.BB1Stdev, s.NWBandwidth, s.NWLookback)
+	u2, l2 := calculateSingleBBLevel(ohlcv, s.BB2Period, s.BB2Stdev, s.NWBandwidth, s.NWLookback)
+	u3, l3 := calculateSingleBBLevel(ohlcv, s.BB3Period, s.BB3Stdev, s.NWBandwidth, s.NWLookback)
+	u4, l4 := calculateSingleBBLevel(ohlcv, s.BB4Period, s.BB4Stdev, s.NWBandwidth, s.NWLookback)
+
+	return []OverlaySeries{
+		// Upper bands (red) — innermost to outermost
+		{Name: "NW-BB Upper 1", Type: "line", Color: "#ef4444", Data: toData(u1), Style: 0,
+			FillColor: "rgba(239,68,68,0.10)"},
+		{Name: "NW-BB Upper 2", Type: "line", Color: "rgba(239,68,68,0.5)", Data: toData(u2), Style: 2,
+			FillColor: "rgba(239,68,68,0.12)"},
+		{Name: "NW-BB Upper 3", Type: "line", Color: "rgba(239,68,68,0.35)", Data: toData(u3), Style: 2,
+			FillColor: "rgba(239,68,68,0.15)"},
+		{Name: "NW-BB Upper 4", Type: "line", Color: "rgba(239,68,68,0.25)", Data: toData(u4), Style: 2},
+		// Lower bands (green) — innermost to outermost
+		{Name: "NW-BB Lower 1", Type: "line", Color: "#22c55e", Data: toData(l1), Style: 0,
+			FillColor: "rgba(34,197,94,0.10)", InvertFill: true},
+		{Name: "NW-BB Lower 2", Type: "line", Color: "rgba(34,197,94,0.5)", Data: toData(l2), Style: 2,
+			FillColor: "rgba(34,197,94,0.12)", InvertFill: true},
+		{Name: "NW-BB Lower 3", Type: "line", Color: "rgba(34,197,94,0.35)", Data: toData(l3), Style: 2,
+			FillColor: "rgba(34,197,94,0.15)", InvertFill: true},
+		{Name: "NW-BB Lower 4", Type: "line", Color: "rgba(34,197,94,0.25)", Data: toData(l4), Style: 2},
+	}
+}
+
+func (s *HybridAITrendStrategy) ComputeIndicators(ohlcv []OHLCV) []IndicatorSeries {
+	// Hybrid EMA AlgoLearner oscillator (display only, no signal influence)
+	// Hardcoded defaults matching TradingView Script 4jhuhtMN
+	const (
+		shortEMA     = 50
+		longEMA      = 200
+		kNearest     = 5
+		lookback     = 100
+		normLookback = 400
+		oscHigh      = 75.0
+		oscLow       = 25.0
+	)
+	minBars := normLookback + 50
+	if len(ohlcv) < minBars {
+		return nil
+	}
+	closes := extractCloses(ohlcv)
+	oscillator := calculateHybridEMA(closes, shortEMA, longEMA, kNearest, lookback, normLookback)
+
+	oscData := make([]IndicatorPoint, len(ohlcv))
+	for i := range ohlcv {
+		color := "#6366f1" // indigo default
+		if oscillator[i] >= oscHigh {
+			color = "#22c55e" // green = bullish
+		} else if oscillator[i] <= oscLow {
+			color = "#ef4444" // red = bearish
+		}
+		oscData[i] = IndicatorPoint{Time: ohlcv[i].Time, Value: oscillator[i], Color: color}
+	}
+
+	refHigh := make([]IndicatorPoint, len(ohlcv))
+	refMid := make([]IndicatorPoint, len(ohlcv))
+	refLow := make([]IndicatorPoint, len(ohlcv))
+	for i := range ohlcv {
+		refHigh[i] = IndicatorPoint{Time: ohlcv[i].Time, Value: oscHigh}
+		refMid[i] = IndicatorPoint{Time: ohlcv[i].Time, Value: 50}
+		refLow[i] = IndicatorPoint{Time: ohlcv[i].Time, Value: oscLow}
+	}
+	return []IndicatorSeries{
+		{Name: "Hybrid EMA AlgoLearner", Type: "line", Color: "#6366f1", Data: oscData},
+		{Name: "75", Type: "reference_line", Color: "#22c55e40", Data: refHigh},
+		{Name: "50", Type: "reference_line", Color: "#4b556340", Data: refMid},
+		{Name: "25", Type: "reference_line", Color: "#ef444440", Data: refLow},
+	}
+}
+
+// --- Diamond Signals: Sub-Chart = Confluence Score ---
+
+func (s *DiamondSignalsStrategy) ComputeIndicators(ohlcv []OHLCV) []IndicatorSeries {
+	s.defaults()
+	if len(ohlcv) < 200 { return nil }
+
+	closes := extractCloses(ohlcv)
+	rsi := calculateRSIServer(closes, s.RSIPeriod)
+
+	bullDiamond, bearDiamond := detectDiamondPattern(ohlcv, s.PatternLength)
+	rsiBullDiv, rsiBearDiv := detectRSIDivergence(closes, s.RSIPeriod, 30)
+	volBullDiv, volBearDiv := detectVolumeDivergence(ohlcv, 30)
+	demandZones, supplyZones := detectOrderBlocks(ohlcv, 50)
+
+	aggOHLCV := aggregateOHLCV(ohlcv, 4)
+	var aggBullDiamondBase, aggBearDiamondBase map[int]bool
+	var aggRSIBullBase, aggRSIBearBase map[int]bool
+	if len(aggOHLCV) >= 50 {
+		aggBullD, aggBearD := detectDiamondPattern(aggOHLCV, s.PatternLength)
+		aggCloses := extractCloses(aggOHLCV)
+		aggRSIBull, aggRSIBear := detectRSIDivergence(aggCloses, s.RSIPeriod, 15)
+		aggBullDiamondBase = expandAggMap(aggBullD, 4, len(ohlcv))
+		aggBearDiamondBase = expandAggMap(aggBearD, 4, len(ohlcv))
+		aggRSIBullBase = expandAggMap(aggRSIBull, 4, len(ohlcv))
+		aggRSIBearBase = expandAggMap(aggRSIBear, 4, len(ohlcv))
+	} else {
+		aggBullDiamondBase = make(map[int]bool)
+		aggBearDiamondBase = make(map[int]bool)
+		aggRSIBullBase = make(map[int]bool)
+		aggRSIBearBase = make(map[int]bool)
+	}
+
+	bullDiamondMap := toIndexMap(bullDiamond)
+	bearDiamondMap := toIndexMap(bearDiamond)
+	rsiBullMap := toIndexMap(rsiBullDiv)
+	rsiBearMap := toIndexMap(rsiBearDiv)
+	volBullMap := toIndexMap(volBullDiv)
+	volBearMap := toIndexMap(volBearDiv)
+
+	data := make([]IndicatorPoint, len(ohlcv))
+	for i := range ohlcv {
+		if i < 50 {
+			data[i] = IndicatorPoint{Time: ohlcv[i].Time, Value: 0}
+			continue
+		}
+		longScore := 0
+		if withinRange(bullDiamondMap, i, 3) { longScore++ }
+		if withinRange(rsiBullMap, i, 3) { longScore++ }
+		if withinRange(volBullMap, i, 3) { longScore++ }
+		if isNearZone(closes[i], demandZones, 0.02) { longScore++ }
+		if aggBullDiamondBase[i] || aggRSIBullBase[i] { longScore++ }
+
+		shortScore := 0
+		if withinRange(bearDiamondMap, i, 3) { shortScore++ }
+		if withinRange(rsiBearMap, i, 3) { shortScore++ }
+		if withinRange(volBearMap, i, 3) { shortScore++ }
+		if isNearZone(closes[i], supplyZones, 0.02) { shortScore++ }
+		if aggBearDiamondBase[i] || aggRSIBearBase[i] { shortScore++ }
+
+		score := float64(longScore - shortScore)
+		if rsi[i] >= s.RSIOverbought { score -= 0.5 }
+		if rsi[i] <= s.RSIOversold { score += 0.5 }
+
+		color := "#6b7280"
+		if score >= 2 { color = "#22c55e" } else if score >= 1 { color = "#86efac" } else if score <= -2 { color = "#ef4444" } else if score <= -1 { color = "#fca5a5" }
+		data[i] = IndicatorPoint{Time: ohlcv[i].Time, Value: score, Color: color}
+	}
+	return []IndicatorSeries{{Name: "Confluence Score", Type: "histogram", Color: "#8b5cf6", Data: data}}
+}
+
 // calculateBXtrenderServer calculates BXtrender indicators and generates signals
 func calculateBXtrenderServer(ohlcv []OHLCV, isAggressive bool, config BXtrenderConfig, nextBarOpen float64, nextBarTime int64) BXtrenderResult {
 	shortL1 := config.ShortL1
@@ -19112,5 +20907,2960 @@ func saveTraderPerformanceServer(symbol, name string, metrics MetricsResult, res
 		}
 		existing.UpdatedAt = time.Now()
 		db.Save(&existing)
+	}
+}
+
+
+// ========== Trading Arena API Handlers ==========
+
+func getTradingWatchlist(c *gin.Context) {
+	var items []TradingWatchlistItem
+	db.Order("symbol ASC").Find(&items)
+	c.JSON(200, items)
+}
+
+func addToTradingWatchlist(c *gin.Context) {
+	var req struct {
+		Symbol string `json:"symbol"`
+		Name   string `json:"name"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Symbol == "" {
+		c.JSON(400, gin.H{"error": "Symbol erforderlich"})
+		return
+	}
+	symbol := strings.ToUpper(strings.TrimSpace(req.Symbol))
+
+	// Validate symbol exists via Yahoo
+	quotes := fetchQuotes([]string{symbol})
+	if _, ok := quotes[symbol]; !ok {
+		c.JSON(400, gin.H{"error": "Symbol nicht verfügbar"})
+		return
+	}
+
+	var existingItem TradingWatchlistItem
+	if db.Where("symbol = ?", symbol).First(&existingItem).Error == nil {
+		c.JSON(409, gin.H{"error": "Symbol bereits in Trading-Watchlist"})
+		return
+	}
+
+	// Try to get name from main watchlist if not provided
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		var stock Stock
+		if db.Where("symbol = ?", symbol).First(&stock).Error == nil {
+			name = stock.Name
+		} else {
+			name = symbol
+		}
+	}
+
+	item := TradingWatchlistItem{
+		Symbol:    symbol,
+		Name:      name,
+		CreatedAt: time.Now(),
+	}
+	if err := db.Create(&item).Error; err != nil {
+		c.JSON(500, gin.H{"error": "Fehler beim Speichern"})
+		return
+	}
+	c.JSON(201, item)
+}
+
+func removeFromTradingWatchlist(c *gin.Context) {
+	id := c.Param("id")
+	if err := db.Delete(&TradingWatchlistItem{}, id).Error; err != nil {
+		c.JSON(500, gin.H{"error": "Fehler beim Löschen"})
+		return
+	}
+	c.JSON(200, gin.H{"status": "ok"})
+}
+
+func importWatchlistToTrading(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	uid := userID.(uint)
+
+	// Load all stocks from main watchlist
+	var allStocks []Stock
+	db.Find(&allStocks)
+
+	// Load existing trading watchlist
+	var existing []TradingWatchlistItem
+	db.Find(&existing)
+	existingSet := map[string]bool{}
+	for _, e := range existing {
+		existingSet[e.Symbol] = true
+	}
+
+	// Filter to only stocks not already in trading watchlist
+	type candidate struct {
+		Symbol string
+		Name   string
+	}
+	var candidates []candidate
+	for _, s := range allStocks {
+		if !existingSet[s.Symbol] {
+			candidates = append(candidates, candidate{Symbol: s.Symbol, Name: s.Name})
+		}
+	}
+
+	// SSE streaming
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Flush()
+
+	total := len(candidates)
+	added := 0
+	failed := 0
+	skipped := len(allStocks) - total // already existing
+
+	for i, cand := range candidates {
+		status := "checking"
+		msg := fmt.Sprintf(`{"current":%d,"total":%d,"symbol":"%s","status":"%s"}`, i+1, total, cand.Symbol, status)
+		fmt.Fprintf(c.Writer, "data: %s\n\n", msg)
+		c.Writer.Flush()
+
+		// Validate via Yahoo Finance OHLCV
+		_, err := fetchOHLCVFromYahoo(cand.Symbol, "5d", "5m")
+		if err != nil {
+			failed++
+			msg = fmt.Sprintf(`{"current":%d,"total":%d,"symbol":"%s","status":"failed"}`, i+1, total, cand.Symbol)
+			fmt.Fprintf(c.Writer, "data: %s\n\n", msg)
+			c.Writer.Flush()
+			continue
+		}
+
+		// Add to trading watchlist
+		name := cand.Name
+		if name == "" {
+			name = cand.Symbol
+		}
+		item := TradingWatchlistItem{
+			Symbol:  cand.Symbol,
+			Name:    name,
+			AddedBy: uid,
+			IsLive:  true,
+		}
+		db.Create(&item)
+		added++
+
+		msg = fmt.Sprintf(`{"current":%d,"total":%d,"symbol":"%s","status":"added"}`, i+1, total, cand.Symbol)
+		fmt.Fprintf(c.Writer, "data: %s\n\n", msg)
+		c.Writer.Flush()
+	}
+
+	// Final event
+	msg := fmt.Sprintf(`{"done":true,"added":%d,"skipped":%d,"failed":%d}`, added, skipped, failed)
+	fmt.Fprintf(c.Writer, "data: %s\n\n", msg)
+	c.Writer.Flush()
+}
+
+func runBacktestHandler(c *gin.Context) {
+	var req struct {
+		Symbol   string                 `json:"symbol"`
+		Strategy string                 `json:"strategy"`
+		Interval string                 `json:"interval"`
+		Params   map[string]interface{} `json:"params"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "Ungültige Anfrage"})
+		return
+	}
+
+	symbol := strings.ToUpper(strings.TrimSpace(req.Symbol))
+	if symbol == "" {
+		c.JSON(400, gin.H{"error": "Symbol erforderlich"})
+		return
+	}
+
+	periodMap := map[string]string{
+		"5m": "60d", "15m": "60d", "60m": "2y", "1h": "2y",
+		"2h": "2y", "4h": "2y", "1d": "2y", "1wk": "10y",
+	}
+	interval := req.Interval
+	if interval == "" {
+		interval = "4h"
+	}
+	period, ok := periodMap[interval]
+	if !ok {
+		c.JSON(400, gin.H{"error": "Ungültiges Interval"})
+		return
+	}
+
+	ohlcv, err := fetchOHLCVFromYahoo(symbol, period, interval)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Daten konnten nicht geladen werden: " + err.Error()})
+		return
+	}
+	if len(ohlcv) < 50 {
+		c.JSON(400, gin.H{"error": "Nicht genug Daten für Backtest"})
+		return
+	}
+
+	// Helper to read params
+	pFloat := func(key string, def float64) float64 {
+		if v, ok := req.Params[key]; ok {
+			switch val := v.(type) {
+			case float64: return val
+			case int: return float64(val)
+			}
+		}
+		return def
+	}
+	pInt := func(key string, def int) int {
+		if v, ok := req.Params[key]; ok {
+			switch val := v.(type) {
+			case float64: return int(val)
+			case int: return val
+			}
+		}
+		return def
+	}
+	pBool := func(key string) bool {
+		if v, ok := req.Params[key]; ok {
+			switch val := v.(type) {
+			case bool: return val
+			case float64: return val != 0
+			}
+		}
+		return false
+	}
+
+	var strategy TradingStrategy
+	switch req.Strategy {
+	case "regression_scalping":
+		strategy = &RegressionScalpingStrategy{
+			Degree: pInt("degree", 0), Length: pInt("length", 0), Multiplier: pFloat("multiplier", 0),
+			RiskReward: pFloat("risk_reward", 0), SLLookback: pInt("sl_lookback", 0),
+			ConfirmationRequired: pInt("confirmation_required", 1),
+		}
+	case "hybrid_ai_trend":
+		strategy = &HybridAITrendStrategy{
+			BB1Period: pInt("bb1_period", 0), BB1Stdev: pFloat("bb1_stdev", 0),
+			BB2Period: pInt("bb2_period", 0), BB2Stdev: pFloat("bb2_stdev", 0),
+			BB3Period: pInt("bb3_period", 0), BB3Stdev: pFloat("bb3_stdev", 0),
+			BB4Period: pInt("bb4_period", 0), BB4Stdev: pFloat("bb4_stdev", 0),
+			NWBandwidth: pFloat("nw_bandwidth", 0), NWLookback: pInt("nw_lookback", 0),
+			SLBuffer: pFloat("sl_buffer", 0), RiskReward: pFloat("risk_reward", 0),
+			HybridFilter: pBool("hybrid_filter"),
+			HybridLongThresh: pFloat("hybrid_long_thresh", 0), HybridShortThresh: pFloat("hybrid_short_thresh", 0),
+		}
+	case "diamond_signals":
+		strategy = &DiamondSignalsStrategy{
+			PatternLength: pInt("pattern_length", 0), RSIPeriod: pInt("rsi_period", 0),
+			ConfluenceMin: pInt("confluence_min", 0), RSIOverbought: pFloat("rsi_overbought", 0),
+			RSIOversold: pFloat("rsi_oversold", 0), Cooldown: pInt("cooldown", 0), RiskReward: pFloat("risk_reward", 0),
+		}
+	default:
+		c.JSON(400, gin.H{"error": "Unbekannte Strategie"})
+		return
+	}
+
+	result := runArenaBacktest(ohlcv, strategy)
+	result.ChartData = ohlcv
+
+	// Compute indicators if strategy supports it
+	if provider, ok := strategy.(IndicatorProvider); ok {
+		result.Indicators = provider.ComputeIndicators(ohlcv)
+	}
+	// Compute overlays (bands on price chart)
+	if provider, ok := strategy.(OverlayProvider); ok {
+		result.Overlays = provider.ComputeOverlays(ohlcv)
+	}
+
+	// Persist result in DB
+	metricsJSON, _ := json.Marshal(result.Metrics)
+	tradesJSON, _ := json.Marshal(result.Trades)
+	markersJSON, _ := json.Marshal(result.Markers)
+
+	var existing ArenaBacktestHistory
+	if db.Where("symbol = ? AND strategy = ? AND interval = ?", symbol, req.Strategy, interval).First(&existing).Error == nil {
+		existing.MetricsJSON = string(metricsJSON)
+		existing.TradesJSON = string(tradesJSON)
+		existing.MarkersJSON = string(markersJSON)
+		existing.UpdatedAt = time.Now()
+		db.Save(&existing)
+	} else {
+		db.Create(&ArenaBacktestHistory{
+			Symbol:      symbol,
+			Strategy:    req.Strategy,
+			Interval:    interval,
+			MetricsJSON: string(metricsJSON),
+			TradesJSON:  string(tradesJSON),
+			MarkersJSON: string(markersJSON),
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+		})
+	}
+
+	c.JSON(200, result)
+}
+
+func getBacktestResultsHandler(c *gin.Context) {
+	symbol := strings.ToUpper(c.Param("symbol"))
+	if symbol == "" {
+		c.JSON(400, gin.H{"error": "Symbol erforderlich"})
+		return
+	}
+
+	var results []ArenaBacktestHistory
+	db.Where("symbol = ?", symbol).Find(&results)
+
+	out := make(map[string]interface{})
+	for _, r := range results {
+		var metrics ArenaBacktestMetrics
+		var trades []ArenaBacktestTrade
+		json.Unmarshal([]byte(r.MetricsJSON), &metrics)
+		json.Unmarshal([]byte(r.TradesJSON), &trades)
+		out[r.Strategy] = gin.H{
+			"metrics":    metrics,
+			"trades":     trades,
+			"interval":   r.Interval,
+			"updated_at": r.UpdatedAt.Format(time.RFC3339),
+		}
+	}
+	c.JSON(200, out)
+}
+
+var arenaBatchMutex sync.Mutex
+var arenaBatchRunning bool
+
+func backtestBatchHandler(c *gin.Context) {
+	arenaBatchMutex.Lock()
+	if arenaBatchRunning {
+		arenaBatchMutex.Unlock()
+		c.JSON(429, gin.H{"error": "Batch bereits aktiv"})
+		return
+	}
+	arenaBatchRunning = true
+	arenaBatchMutex.Unlock()
+
+	var stocks []Stock
+	db.Select("symbol").Find(&stocks)
+
+	strategies := []string{"regression_scalping", "hybrid_ai_trend", "diamond_signals"}
+	count := len(stocks) * len(strategies)
+
+	go func() {
+		defer func() {
+			arenaBatchMutex.Lock()
+			arenaBatchRunning = false
+			arenaBatchMutex.Unlock()
+		}()
+
+		interval := "4h"
+		period := "60d"
+
+		for _, stock := range stocks {
+			ohlcv, err := fetchOHLCVFromYahoo(stock.Symbol, period, interval)
+			if err != nil || len(ohlcv) < 50 {
+				continue
+			}
+
+			for _, stratName := range strategies {
+				var strategy TradingStrategy
+				switch stratName {
+				case "regression_scalping":
+					strategy = &RegressionScalpingStrategy{}
+				case "hybrid_ai_trend":
+					strategy = &HybridAITrendStrategy{}
+				case "diamond_signals":
+					strategy = &DiamondSignalsStrategy{}
+				}
+
+				result := runArenaBacktest(ohlcv, strategy)
+				if provider, ok := strategy.(IndicatorProvider); ok {
+					result.Indicators = provider.ComputeIndicators(ohlcv)
+				}
+
+				metricsJSON, _ := json.Marshal(result.Metrics)
+				tradesJSON, _ := json.Marshal(result.Trades)
+				markersJSON, _ := json.Marshal(result.Markers)
+
+				var existing ArenaBacktestHistory
+				if db.Where("symbol = ? AND strategy = ? AND interval = ?", stock.Symbol, stratName, interval).First(&existing).Error == nil {
+					existing.MetricsJSON = string(metricsJSON)
+					existing.TradesJSON = string(tradesJSON)
+					existing.MarkersJSON = string(markersJSON)
+					existing.UpdatedAt = time.Now()
+					db.Save(&existing)
+				} else {
+					db.Create(&ArenaBacktestHistory{
+						Symbol:      stock.Symbol,
+						Strategy:    stratName,
+						Interval:    interval,
+						MetricsJSON: string(metricsJSON),
+						TradesJSON:  string(tradesJSON),
+						MarkersJSON: string(markersJSON),
+						CreatedAt:   time.Now(),
+						UpdatedAt:   time.Now(),
+					})
+				}
+			}
+			time.Sleep(500 * time.Millisecond) // Rate limiting
+		}
+		log.Printf("[Arena] Batch backtest completed for %d stocks", len(stocks))
+	}()
+
+	c.JSON(200, gin.H{"status": "started", "count": count})
+}
+
+// --- Watchlist Batch Backtest ---
+
+type WatchlistBacktestTrade struct {
+	Symbol     string  `json:"symbol"`
+	Direction  string  `json:"direction"`
+	EntryPrice float64 `json:"entry_price"`
+	EntryTime  int64   `json:"entry_time"`
+	ExitPrice  float64 `json:"exit_price"`
+	ExitTime   int64   `json:"exit_time"`
+	ReturnPct  float64 `json:"return_pct"`
+	ExitReason string  `json:"exit_reason"`
+	IsOpen     bool    `json:"is_open"`
+}
+
+type WatchlistBacktestResult struct {
+	Metrics  ArenaBacktestMetrics            `json:"metrics"`
+	Trades   []WatchlistBacktestTrade        `json:"trades"`
+	PerStock map[string]ArenaBacktestMetrics `json:"per_stock"`
+}
+
+func backtestWatchlistHandler(c *gin.Context) {
+	var req struct {
+		Strategy string                 `json:"strategy"`
+		Interval string                 `json:"interval"`
+		Params   map[string]interface{} `json:"params"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "Ungültige Anfrage"})
+		return
+	}
+
+	periodMap := map[string]string{
+		"5m": "60d", "15m": "60d", "60m": "2y", "1h": "2y",
+		"2h": "2y", "4h": "2y", "1d": "2y", "1wk": "10y",
+	}
+	interval := req.Interval
+	if interval == "" {
+		interval = "4h"
+	}
+	period, ok := periodMap[interval]
+	if !ok {
+		c.JSON(400, gin.H{"error": "Ungültiges Interval"})
+		return
+	}
+
+	// Param helpers (same as runBacktestHandler)
+	pFloat := func(key string, def float64) float64 {
+		if v, ok := req.Params[key]; ok {
+			switch val := v.(type) {
+			case float64:
+				return val
+			case int:
+				return float64(val)
+			}
+		}
+		return def
+	}
+	pInt := func(key string, def int) int {
+		if v, ok := req.Params[key]; ok {
+			switch val := v.(type) {
+			case float64:
+				return int(val)
+			case int:
+				return val
+			}
+		}
+		return def
+	}
+
+	pBool := func(key string) bool {
+		if v, ok := req.Params[key]; ok {
+			switch val := v.(type) {
+			case bool:
+				return val
+			case float64:
+				return val != 0
+			}
+		}
+		return false
+	}
+
+	// Build strategy factory
+	createStrategy := func() TradingStrategy {
+		switch req.Strategy {
+		case "regression_scalping":
+			return &RegressionScalpingStrategy{
+				Degree: pInt("degree", 0), Length: pInt("length", 0), Multiplier: pFloat("multiplier", 0),
+				RiskReward: pFloat("risk_reward", 0), SLLookback: pInt("sl_lookback", 0),
+				ConfirmationRequired: pInt("confirmation_required", 1),
+			}
+		case "hybrid_ai_trend":
+			return &HybridAITrendStrategy{
+				BB1Period: pInt("bb1_period", 0), BB1Stdev: pFloat("bb1_stdev", 0),
+				BB2Period: pInt("bb2_period", 0), BB2Stdev: pFloat("bb2_stdev", 0),
+				BB3Period: pInt("bb3_period", 0), BB3Stdev: pFloat("bb3_stdev", 0),
+				BB4Period: pInt("bb4_period", 0), BB4Stdev: pFloat("bb4_stdev", 0),
+				NWBandwidth: pFloat("nw_bandwidth", 0), NWLookback: pInt("nw_lookback", 0),
+				SLBuffer: pFloat("sl_buffer", 0), RiskReward: pFloat("risk_reward", 0),
+				HybridFilter: pBool("hybrid_filter"),
+				HybridLongThresh: pFloat("hybrid_long_thresh", 0), HybridShortThresh: pFloat("hybrid_short_thresh", 0),
+			}
+		case "diamond_signals":
+			return &DiamondSignalsStrategy{
+				PatternLength: pInt("pattern_length", 0), RSIPeriod: pInt("rsi_period", 0),
+				ConfluenceMin: pInt("confluence_min", 0), RSIOverbought: pFloat("rsi_overbought", 0),
+				RSIOversold: pFloat("rsi_oversold", 0), Cooldown: pInt("cooldown", 0), RiskReward: pFloat("risk_reward", 0),
+			}
+		default:
+			return nil
+		}
+	}
+
+	if createStrategy() == nil {
+		c.JSON(400, gin.H{"error": "Unbekannte Strategie"})
+		return
+	}
+
+	// Get trading watchlist symbols
+	var watchlist []TradingWatchlistItem
+	db.Find(&watchlist)
+	if len(watchlist) == 0 {
+		c.JSON(400, gin.H{"error": "Trading Watchlist ist leer"})
+		return
+	}
+
+	type stockResult struct {
+		Symbol string
+		Trades []ArenaBacktestTrade
+	}
+
+	// SSE streaming for progress
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	total := len(watchlist)
+	var completed int64
+	results := make([]stockResult, total)
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 5) // max 5 concurrent
+
+	// Progress channel
+	type progressMsg struct {
+		Index  int
+		Symbol string
+	}
+	progressCh := make(chan progressMsg, total)
+
+	for idx, item := range watchlist {
+		wg.Add(1)
+		go func(i int, symbol string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			ohlcv, err := fetchOHLCVFromYahoo(symbol, period, interval)
+			if err != nil || len(ohlcv) < 50 {
+				progressCh <- progressMsg{Index: i, Symbol: symbol}
+				return
+			}
+			strategy := createStrategy()
+			result := runArenaBacktest(ohlcv, strategy)
+			closedTrades := make([]ArenaBacktestTrade, 0)
+			for _, t := range result.Trades {
+				if !t.IsOpen {
+					closedTrades = append(closedTrades, t)
+				}
+			}
+			results[i] = stockResult{Symbol: symbol, Trades: closedTrades}
+			progressCh <- progressMsg{Index: i, Symbol: symbol}
+		}(idx, item.Symbol)
+	}
+
+	// Drain progress in background, close channel when all done
+	go func() {
+		wg.Wait()
+		close(progressCh)
+	}()
+
+	for msg := range progressCh {
+		_ = msg
+		completed++
+		progressJSON, _ := json.Marshal(gin.H{
+			"type":    "progress",
+			"current": completed,
+			"total":   total,
+			"symbol":  msg.Symbol,
+		})
+		fmt.Fprintf(c.Writer, "data: %s\n\n", progressJSON)
+		c.Writer.Flush()
+	}
+
+	// Aggregate
+	var allTrades []WatchlistBacktestTrade
+	var allArena []ArenaBacktestTrade
+	perStock := make(map[string]ArenaBacktestMetrics)
+
+	for _, sr := range results {
+		if sr.Symbol == "" {
+			continue
+		}
+		for _, t := range sr.Trades {
+			allTrades = append(allTrades, WatchlistBacktestTrade{
+				Symbol: sr.Symbol, Direction: t.Direction,
+				EntryPrice: t.EntryPrice, EntryTime: t.EntryTime,
+				ExitPrice: t.ExitPrice, ExitTime: t.ExitTime,
+				ReturnPct: t.ReturnPct, ExitReason: t.ExitReason, IsOpen: t.IsOpen,
+			})
+			allArena = append(allArena, t)
+		}
+		perStock[sr.Symbol] = calculateBacktestLabMetrics(sr.Trades)
+	}
+
+	aggregated := calculateBacktestLabMetrics(allArena)
+
+	resultJSON, _ := json.Marshal(gin.H{
+		"type": "result",
+		"data": WatchlistBacktestResult{
+			Metrics:  aggregated,
+			Trades:   allTrades,
+			PerStock: perStock,
+		},
+	})
+	fmt.Fprintf(c.Writer, "data: %s\n\n", resultJSON)
+	c.Writer.Flush()
+}
+
+func getStrategySettings(c *gin.Context) {
+	symbol := c.Query("symbol") // optional: per-symbol settings
+
+	// Load global settings (symbol="")
+	var globalSettings []ArenaStrategySettings
+	db.Where("symbol = ?", "").Find(&globalSettings)
+
+	out := make(map[string]interface{})
+	for _, s := range globalSettings {
+		var params map[string]interface{}
+		json.Unmarshal([]byte(s.ParamsJSON), &params)
+		out[s.Strategy] = gin.H{
+			"params":   params,
+			"interval": s.Interval,
+			"symbol":   "",
+		}
+	}
+
+	// Overlay with per-symbol settings if requested
+	if symbol != "" {
+		var symbolSettings []ArenaStrategySettings
+		db.Where("symbol = ?", symbol).Find(&symbolSettings)
+		for _, s := range symbolSettings {
+			var params map[string]interface{}
+			json.Unmarshal([]byte(s.ParamsJSON), &params)
+			// Merge: start from global, overlay symbol-specific
+			if existing, ok := out[s.Strategy]; ok {
+				if existMap, ok := existing.(gin.H); ok {
+					if globalParams, ok := existMap["params"].(map[string]interface{}); ok {
+						for k, v := range globalParams {
+							if _, has := params[k]; !has {
+								params[k] = v
+							}
+						}
+					}
+				}
+			}
+			out[s.Strategy] = gin.H{
+				"params":   params,
+				"interval": s.Interval,
+				"symbol":   symbol,
+			}
+		}
+	}
+	c.JSON(200, out)
+}
+
+func saveStrategySettings(c *gin.Context) {
+	var req struct {
+		Symbol   string                 `json:"symbol"`
+		Strategy string                 `json:"strategy"`
+		Params   map[string]interface{} `json:"params"`
+		Interval string                 `json:"interval"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Strategy == "" {
+		c.JSON(400, gin.H{"error": "Strategie erforderlich"})
+		return
+	}
+
+	symbol := strings.ToUpper(strings.TrimSpace(req.Symbol)) // "" = global
+	paramsJSON, _ := json.Marshal(req.Params)
+
+	var existing ArenaStrategySettings
+	if db.Where("symbol = ? AND strategy = ?", symbol, req.Strategy).First(&existing).Error == nil {
+		existing.ParamsJSON = string(paramsJSON)
+		if req.Interval != "" {
+			existing.Interval = req.Interval
+		}
+		existing.UpdatedAt = time.Now()
+		db.Save(&existing)
+	} else {
+		db.Create(&ArenaStrategySettings{
+			Symbol:     symbol,
+			Strategy:   req.Strategy,
+			ParamsJSON: string(paramsJSON),
+			Interval:   req.Interval,
+			UpdatedAt:  time.Now(),
+		})
+	}
+	c.JSON(200, gin.H{"status": "ok"})
+}
+
+// fetchOHLCVFromYahoo fetches OHLCV data from Yahoo Finance
+func fetchOHLCVFromYahoo(symbol, period, interval string) ([]OHLCV, error) {
+	client, crumb, err := getYahooCrumbClient()
+	if err != nil {
+		return nil, err
+	}
+
+	yahooURL := fmt.Sprintf("https://query2.finance.yahoo.com/v8/finance/chart/%s?range=%s&interval=%s&crumb=%s",
+		symbol, period, interval, crumb)
+
+	req, _ := http.NewRequest("GET", yahooURL, nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			yahooCrumbMu.Lock()
+			yahooCrumb = ""
+			yahooAuthClient = nil
+			yahooCrumbMu.Unlock()
+		}
+		return nil, fmt.Errorf("yahoo returned status %d", resp.StatusCode)
+	}
+
+	var chartResp YahooChartResponse
+	if err := json.Unmarshal(body, &chartResp); err != nil {
+		return nil, err
+	}
+
+	if len(chartResp.Chart.Result) == 0 {
+		return nil, fmt.Errorf("no data for %s", symbol)
+	}
+
+	chartResult := chartResp.Chart.Result[0]
+	timestamps := chartResult.Timestamp
+	if len(timestamps) == 0 || chartResult.Indicators.Quote == nil || len(chartResult.Indicators.Quote) == 0 {
+		return nil, fmt.Errorf("empty data for %s", symbol)
+	}
+
+	quote := chartResult.Indicators.Quote[0]
+	var ohlcv []OHLCV
+
+	for i := range timestamps {
+		if i >= len(quote.Close) || quote.Close[i] == 0 {
+			continue
+		}
+		bar := OHLCV{
+			Time:   timestamps[i],
+			Open:   quote.Open[i],
+			High:   quote.High[i],
+			Low:    quote.Low[i],
+			Close:  quote.Close[i],
+			Volume: quote.Volume[i],
+		}
+		ohlcv = append(ohlcv, bar)
+	}
+
+	if interval == "2h" {
+		ohlcv = aggregateOHLCV(ohlcv, 2)
+	} else if interval == "4h" {
+		ohlcv = aggregateOHLCV(ohlcv, 4)
+	}
+
+	return ohlcv, nil
+}
+
+func getTradingPositions(c *gin.Context) {
+	var positions []TradingVirtualPosition
+	db.Where("is_closed = ?", false).Find(&positions)
+	c.JSON(200, positions)
+}
+
+// ========== Trading Scheduler ==========
+
+var (
+	tradingSchedulerRunning  bool
+	tradingSchedulerMu       sync.Mutex
+	tradingSchedulerStopChan chan struct{}
+)
+
+func getTradingSchedulerStatus(c *gin.Context) {
+	tradingSchedulerMu.Lock()
+	running := tradingSchedulerRunning
+	tradingSchedulerMu.Unlock()
+	c.JSON(200, gin.H{"running": running})
+}
+
+func toggleTradingScheduler(c *gin.Context) {
+	tradingSchedulerMu.Lock()
+	defer tradingSchedulerMu.Unlock()
+
+	if tradingSchedulerRunning {
+		if tradingSchedulerStopChan != nil {
+			close(tradingSchedulerStopChan)
+		}
+		tradingSchedulerRunning = false
+		fmt.Println("[TradingScheduler] Stopped")
+		c.JSON(200, gin.H{"running": false})
+	} else {
+		tradingSchedulerStopChan = make(chan struct{})
+		tradingSchedulerRunning = true
+		go runTradingScheduler(tradingSchedulerStopChan)
+		fmt.Println("[TradingScheduler] Started")
+		c.JSON(200, gin.H{"running": true})
+	}
+}
+
+func runTradingScheduler(stopChan chan struct{}) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	runTradingScan()
+
+	for {
+		select {
+		case <-ticker.C:
+			runTradingScan()
+		case <-stopChan:
+			return
+		}
+	}
+}
+
+func runTradingScan() {
+	var items []TradingWatchlistItem
+	db.Where("is_live = ?", true).Find(&items)
+	if len(items) == 0 {
+		return
+	}
+
+	fmt.Printf("[TradingScheduler] Scanning %d live symbols...\n", len(items))
+
+	strategies := []TradingStrategy{
+		&RegressionScalpingStrategy{},
+		&HybridAITrendStrategy{},
+		&DiamondSignalsStrategy{},
+	}
+
+	for _, item := range items {
+		ohlcv, err := fetchOHLCVFromYahoo(item.Symbol, "5d", "5m")
+		if err != nil {
+			fmt.Printf("[TradingScheduler] Error fetching %s: %v\n", item.Symbol, err)
+			continue
+		}
+
+		for _, strategy := range strategies {
+			signals := strategy.Analyze(ohlcv)
+			if len(signals) == 0 {
+				continue
+			}
+
+			lastSignal := signals[len(signals)-1]
+			if lastSignal.Index < len(ohlcv)-2 {
+				continue
+			}
+
+			var existingPos TradingVirtualPosition
+			if db.Where("symbol = ? AND strategy = ? AND is_closed = ?", item.Symbol, strategy.Name(), false).First(&existingPos).Error == nil {
+				continue
+			}
+
+			pos := TradingVirtualPosition{
+				Symbol:       item.Symbol,
+				Strategy:     strategy.Name(),
+				Direction:    lastSignal.Direction,
+				EntryPrice:   lastSignal.EntryPrice,
+				EntryTime:    time.Now(),
+				StopLoss:     lastSignal.StopLoss,
+				TakeProfit:   lastSignal.TakeProfit,
+				CurrentPrice: lastSignal.EntryPrice,
+				CreatedAt:    time.Now(),
+			}
+			db.Create(&pos)
+			fmt.Printf("[TradingScheduler] Opened %s %s on %s @ %.2f\n", lastSignal.Direction, strategy.Name(), item.Symbol, lastSignal.EntryPrice)
+		}
+
+		var openPositions []TradingVirtualPosition
+		db.Where("symbol = ? AND is_closed = ?", item.Symbol, false).Find(&openPositions)
+		if len(ohlcv) > 0 {
+			lastBar := ohlcv[len(ohlcv)-1]
+			for _, pos := range openPositions {
+				pos.CurrentPrice = lastBar.Close
+				shouldClose := false
+				reason := ""
+				if pos.Direction == "LONG" {
+					if lastBar.Low <= pos.StopLoss {
+						shouldClose = true
+						reason = "SL"
+						pos.ClosePrice = pos.StopLoss
+					} else if lastBar.High >= pos.TakeProfit {
+						shouldClose = true
+						reason = "TP"
+						pos.ClosePrice = pos.TakeProfit
+					}
+					pos.ProfitLossPct = (pos.CurrentPrice - pos.EntryPrice) / pos.EntryPrice * 100
+				} else {
+					if lastBar.High >= pos.StopLoss {
+						shouldClose = true
+						reason = "SL"
+						pos.ClosePrice = pos.StopLoss
+					} else if lastBar.Low <= pos.TakeProfit {
+						shouldClose = true
+						reason = "TP"
+						pos.ClosePrice = pos.TakeProfit
+					}
+					pos.ProfitLossPct = (pos.EntryPrice - pos.CurrentPrice) / pos.EntryPrice * 100
+				}
+				if shouldClose {
+					now := time.Now()
+					pos.IsClosed = true
+					pos.CloseTime = &now
+					pos.CloseReason = reason
+					if pos.Direction == "LONG" {
+						pos.ProfitLossPct = (pos.ClosePrice - pos.EntryPrice) / pos.EntryPrice * 100
+					} else {
+						pos.ProfitLossPct = (pos.EntryPrice - pos.ClosePrice) / pos.EntryPrice * 100
+					}
+					fmt.Printf("[TradingScheduler] Closed %s %s on %s: %s (%.1f%%)\n", pos.Direction, pos.Strategy, pos.Symbol, reason, pos.ProfitLossPct)
+				}
+				db.Save(&pos)
+			}
+		}
+	}
+}
+
+// ==================== Live Trading ====================
+
+var (
+	liveSchedulerRunning bool
+	liveSchedulerMu      sync.Mutex
+	liveSchedulerStop    chan struct{}
+	liveSchedulerPolling bool
+	liveSchedulerPollMu  sync.Mutex
+	liveActiveSessionID  uint
+	liveScanProgress     int
+	liveScanTotal        int
+	liveCurrentSymbol    string
+)
+
+func logLiveEvent(sessionID uint, level, symbol, message string) {
+	db.Create(&LiveTradingLog{
+		SessionID: sessionID,
+		Level:     level,
+		Symbol:    symbol,
+		Message:   message,
+		CreatedAt: time.Now(),
+	})
+	fmt.Printf("[LiveTrading] [%s] %s: %s\n", level, symbol, message)
+}
+
+func intervalToDuration(iv string) time.Duration {
+	switch iv {
+	case "5m":
+		return 5 * time.Minute
+	case "15m":
+		return 15 * time.Minute
+	case "1h", "60m":
+		return 1 * time.Hour
+	case "2h":
+		return 2 * time.Hour
+	case "4h":
+		return 4 * time.Hour
+	case "1d", "1D":
+		return 24 * time.Hour
+	case "1wk", "1W":
+		return 7 * 24 * time.Hour
+	default:
+		return 5 * time.Minute
+	}
+}
+
+func createStrategyFromJSON(strategyName, paramsJSON string) TradingStrategy {
+	var params map[string]interface{}
+	if paramsJSON != "" {
+		json.Unmarshal([]byte(paramsJSON), &params)
+	}
+	if params == nil {
+		params = map[string]interface{}{}
+	}
+
+	pFloat := func(key string, def float64) float64 {
+		if v, ok := params[key]; ok {
+			switch val := v.(type) {
+			case float64:
+				return val
+			case int:
+				return float64(val)
+			}
+		}
+		return def
+	}
+	pInt := func(key string, def int) int {
+		if v, ok := params[key]; ok {
+			switch val := v.(type) {
+			case float64:
+				return int(val)
+			case int:
+				return val
+			}
+		}
+		return def
+	}
+	pBool := func(key string) bool {
+		if v, ok := params[key]; ok {
+			switch val := v.(type) {
+			case bool:
+				return val
+			case float64:
+				return val != 0
+			}
+		}
+		return false
+	}
+
+	switch strategyName {
+	case "regression_scalping":
+		return &RegressionScalpingStrategy{
+			Degree: pInt("degree", 2), Length: pInt("length", 100), Multiplier: pFloat("multiplier", 3.0),
+			RiskReward: pFloat("risk_reward", 2.5), SLLookback: pInt("sl_lookback", 30),
+			ConfirmationRequired: pInt("confirmation_required", 1),
+		}
+	case "hybrid_ai_trend":
+		return &HybridAITrendStrategy{
+			BB1Period: pInt("bb1_period", 20), BB1Stdev: pFloat("bb1_stdev", 3.0),
+			BB2Period: pInt("bb2_period", 75), BB2Stdev: pFloat("bb2_stdev", 3.0),
+			BB3Period: pInt("bb3_period", 100), BB3Stdev: pFloat("bb3_stdev", 4.0),
+			BB4Period: pInt("bb4_period", 100), BB4Stdev: pFloat("bb4_stdev", 4.25),
+			NWBandwidth: pFloat("nw_bandwidth", 6.0), NWLookback: pInt("nw_lookback", 499),
+			SLBuffer: pFloat("sl_buffer", 1.5), RiskReward: pFloat("risk_reward", 2.0),
+			HybridFilter: pBool("hybrid_filter"),
+			HybridLongThresh: pFloat("hybrid_long_thresh", 75), HybridShortThresh: pFloat("hybrid_short_thresh", 25),
+		}
+	case "diamond_signals":
+		return &DiamondSignalsStrategy{
+			PatternLength: pInt("pattern_length", 20), RSIPeriod: pInt("rsi_period", 14),
+			ConfluenceMin: pInt("confluence_min", 3), RSIOverbought: pFloat("rsi_overbought", 65),
+			RSIOversold: pFloat("rsi_oversold", 35), Cooldown: pInt("cooldown", 5), RiskReward: pFloat("risk_reward", 2.0),
+		}
+	default:
+		return nil
+	}
+}
+
+func saveLiveTradingConfig(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	uid := userID.(uint)
+
+	var req struct {
+		Strategy      string                 `json:"strategy"`
+		Interval      string                 `json:"interval"`
+		Params        map[string]interface{} `json:"params"`
+		Symbols       []string               `json:"symbols"`
+		LongOnly      bool                   `json:"long_only"`
+		TradeAmount   float64                `json:"trade_amount"`
+		Filters       map[string]interface{} `json:"filters"`
+		FiltersActive bool                   `json:"filters_active"`
+		Currency      string                 `json:"currency"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "Ungültige Anfrage"})
+		return
+	}
+
+	paramsBytes, _ := json.Marshal(req.Params)
+	symbolsBytes, _ := json.Marshal(req.Symbols)
+	filtersBytes, _ := json.Marshal(req.Filters)
+
+	currency := req.Currency
+	if currency == "" {
+		currency = "EUR"
+	}
+
+	var config LiveTradingConfig
+	db.Where("user_id = ?", uid).FirstOrCreate(&config, LiveTradingConfig{UserID: uid})
+	config.Strategy = req.Strategy
+	config.Interval = req.Interval
+	config.ParamsJSON = string(paramsBytes)
+	config.Symbols = string(symbolsBytes)
+	config.LongOnly = req.LongOnly
+	config.TradeAmount = req.TradeAmount
+	config.FiltersJSON = string(filtersBytes)
+	config.FiltersActive = req.FiltersActive
+	config.Currency = currency
+	config.UpdatedAt = time.Now()
+	db.Save(&config)
+
+	c.JSON(200, gin.H{
+		"id":             config.ID,
+		"strategy":       config.Strategy,
+		"interval":       config.Interval,
+		"params":         req.Params,
+		"symbols":        req.Symbols,
+		"long_only":      config.LongOnly,
+		"trade_amount":   config.TradeAmount,
+		"filters":        req.Filters,
+		"filters_active": config.FiltersActive,
+		"currency":       config.Currency,
+		"updated_at":     config.UpdatedAt,
+	})
+}
+
+func getLiveTradingConfig(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	uid := userID.(uint)
+
+	var config LiveTradingConfig
+	if db.Where("user_id = ?", uid).First(&config).Error != nil {
+		c.JSON(200, gin.H{"config": nil})
+		return
+	}
+
+	var params map[string]interface{}
+	json.Unmarshal([]byte(config.ParamsJSON), &params)
+	var symbols []string
+	json.Unmarshal([]byte(config.Symbols), &symbols)
+	var filters map[string]interface{}
+	json.Unmarshal([]byte(config.FiltersJSON), &filters)
+
+	c.JSON(200, gin.H{
+		"id":             config.ID,
+		"strategy":       config.Strategy,
+		"interval":       config.Interval,
+		"params":         params,
+		"symbols":        symbols,
+		"long_only":      config.LongOnly,
+		"trade_amount":   config.TradeAmount,
+		"filters":        filters,
+		"filters_active": config.FiltersActive,
+		"currency":       config.Currency,
+		"updated_at":     config.UpdatedAt,
+	})
+}
+
+func startLiveTrading(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	uid := userID.(uint)
+
+	// Check no active session
+	var existing LiveTradingSession
+	if db.Where("user_id = ? AND is_active = ?", uid, true).First(&existing).Error == nil {
+		c.JSON(400, gin.H{"error": "Es läuft bereits eine aktive Session"})
+		return
+	}
+
+	// Load config
+	var config LiveTradingConfig
+	if db.Where("user_id = ?", uid).First(&config).Error != nil {
+		c.JSON(400, gin.H{"error": "Keine Konfiguration gefunden. Bitte zuerst in der Trading Arena 'Start Live Trading' drücken."})
+		return
+	}
+
+	now := time.Now()
+	session := LiveTradingSession{
+		UserID:      uid,
+		ConfigID:    config.ID,
+		Strategy:    config.Strategy,
+		Interval:    config.Interval,
+		ParamsJSON:  config.ParamsJSON,
+		Symbols:     config.Symbols,
+		LongOnly:    config.LongOnly,
+		TradeAmount: config.TradeAmount,
+		Currency:    config.Currency,
+		IsActive:    true,
+		StartedAt:   now,
+		CreatedAt:   now,
+	}
+	db.Create(&session)
+
+	// Start scheduler
+	liveSchedulerMu.Lock()
+	if liveSchedulerRunning && liveSchedulerStop != nil {
+		close(liveSchedulerStop)
+	}
+	liveSchedulerStop = make(chan struct{})
+	liveSchedulerRunning = true
+	liveActiveSessionID = session.ID
+	go runLiveScheduler(liveSchedulerStop, session.ID)
+	liveSchedulerMu.Unlock()
+
+	logLiveEvent(session.ID, "INFO", "-", fmt.Sprintf("Session gestartet — Strategie: %s, Intervall: %s", session.Strategy, session.Interval))
+
+	c.JSON(200, gin.H{"session": session, "status": "started"})
+}
+
+func stopLiveTrading(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	uid := userID.(uint)
+
+	var session LiveTradingSession
+	if db.Where("user_id = ? AND is_active = ?", uid, true).First(&session).Error != nil {
+		c.JSON(400, gin.H{"error": "Keine aktive Session gefunden"})
+		return
+	}
+
+	// Stop scheduler
+	liveSchedulerMu.Lock()
+	if liveSchedulerRunning && liveSchedulerStop != nil {
+		close(liveSchedulerStop)
+		liveSchedulerRunning = false
+	}
+	liveSchedulerMu.Unlock()
+
+	// Close all open positions
+	var openPositions []LiveTradingPosition
+	db.Where("session_id = ? AND is_closed = ?", session.ID, false).Find(&openPositions)
+	now := time.Now()
+	for _, pos := range openPositions {
+		pos.IsClosed = true
+		pos.ClosePrice = pos.CurrentPrice
+		pos.CloseTime = &now
+		pos.CloseReason = "MANUAL"
+		if pos.NativeCurrency != "USD" {
+			pos.ClosePriceUSD = convertToUSD(pos.CurrentPrice, pos.NativeCurrency)
+		} else {
+			pos.ClosePriceUSD = pos.CurrentPrice
+		}
+		if pos.Direction == "LONG" {
+			pos.ProfitLossPct = (pos.ClosePrice - pos.EntryPrice) / pos.EntryPrice * 100
+		} else {
+			pos.ProfitLossPct = (pos.EntryPrice - pos.ClosePrice) / pos.EntryPrice * 100
+		}
+		pos.ProfitLossAmt = pos.InvestedAmount * pos.ProfitLossPct / 100
+		db.Save(&pos)
+		logLiveEvent(session.ID, "CLOSE", pos.Symbol, fmt.Sprintf("MANUAL geschlossen %s @ %.4f (%.2f%%, %.2f EUR)", pos.Direction, pos.ClosePrice, pos.ProfitLossPct, pos.ProfitLossAmt))
+	}
+
+	session.IsActive = false
+	session.StoppedAt = &now
+	db.Save(&session)
+
+	logLiveEvent(session.ID, "INFO", "-", "Session gestoppt")
+	c.JSON(200, gin.H{"session": session, "status": "stopped"})
+}
+
+func getLiveTradingStatus(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	uid := userID.(uint)
+
+	liveSchedulerMu.Lock()
+	running := liveSchedulerRunning
+	liveSchedulerMu.Unlock()
+
+	liveSchedulerPollMu.Lock()
+	polling := liveSchedulerPolling
+	scanProgress := liveScanProgress
+	scanTotal := liveScanTotal
+	currentSymbol := liveCurrentSymbol
+	liveSchedulerPollMu.Unlock()
+
+	result := gin.H{
+		"is_running":            running,
+		"is_polling":            polling,
+		"current_symbol":        currentSymbol,
+		"scan_progress_current": scanProgress,
+		"scan_progress_total":   scanTotal,
+	}
+
+	var session LiveTradingSession
+	if db.Where("user_id = ? AND is_active = ?", uid, true).First(&session).Error == nil {
+		var symbols []string
+		json.Unmarshal([]byte(session.Symbols), &symbols)
+
+		var openCount, closedCount int64
+		var totalPnl float64
+		db.Model(&LiveTradingPosition{}).Where("session_id = ? AND is_closed = ?", session.ID, false).Count(&openCount)
+		db.Model(&LiveTradingPosition{}).Where("session_id = ? AND is_closed = ?", session.ID, true).Count(&closedCount)
+		db.Model(&LiveTradingPosition{}).Where("session_id = ?", session.ID).Select("COALESCE(SUM(profit_loss_amt), 0)").Row().Scan(&totalPnl)
+
+		result["session_id"] = session.ID
+		result["interval"] = session.Interval
+		result["strategy"] = session.Strategy
+		result["started_at"] = session.StartedAt
+		result["last_poll_at"] = session.LastPollAt
+		result["next_poll_at"] = session.NextPollAt
+		result["total_polls"] = session.TotalPolls
+		result["symbols_count"] = len(symbols)
+		result["open_positions"] = openCount
+		result["closed_positions"] = closedCount
+		result["total_pnl"] = totalPnl
+		result["currency"] = session.Currency
+
+		var symbolPrices map[string]float64
+		if json.Unmarshal([]byte(session.SymbolPricesJSON), &symbolPrices) == nil && symbolPrices != nil {
+			result["symbol_prices"] = symbolPrices
+		}
+	}
+
+	// If not running, check for last session that can be resumed
+	if !running {
+		var lastSession LiveTradingSession
+		if db.Where("user_id = ? AND is_active = ?", uid, false).Order("stopped_at DESC").First(&lastSession).Error == nil {
+			// Check if config still matches
+			var config LiveTradingConfig
+			canResume := false
+			if db.Where("user_id = ?", uid).First(&config).Error == nil {
+				canResume = lastSession.Strategy == config.Strategy &&
+					lastSession.Interval == config.Interval &&
+					lastSession.ParamsJSON == config.ParamsJSON &&
+					lastSession.Symbols == config.Symbols &&
+					lastSession.LongOnly == config.LongOnly &&
+					lastSession.TradeAmount == config.TradeAmount
+			}
+
+			var symbols []string
+			json.Unmarshal([]byte(lastSession.Symbols), &symbols)
+
+			var openCount int64
+			db.Model(&LiveTradingPosition{}).Where("session_id = ? AND is_closed = ?", lastSession.ID, false).Count(&openCount)
+
+			result["last_session"] = gin.H{
+				"id":              lastSession.ID,
+				"strategy":        lastSession.Strategy,
+				"interval":        lastSession.Interval,
+				"started_at":      lastSession.StartedAt,
+				"stopped_at":      lastSession.StoppedAt,
+				"total_polls":     lastSession.TotalPolls,
+				"symbols_count":   len(symbols),
+				"open_positions":  openCount,
+				"can_resume":      canResume,
+			}
+		}
+	}
+
+	c.JSON(200, result)
+}
+
+func getLiveTradingSessions(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	uid := userID.(uint)
+
+	var sessions []LiveTradingSession
+	db.Where("user_id = ?", uid).Order("started_at DESC").Find(&sessions)
+
+	// Load current config for resume check
+	var config LiveTradingConfig
+	hasConfig := db.Where("user_id = ?", uid).First(&config).Error == nil
+
+	liveSchedulerMu.Lock()
+	running := liveSchedulerRunning
+	liveSchedulerMu.Unlock()
+
+	results := []gin.H{}
+	for _, s := range sessions {
+		var symbols []string
+		json.Unmarshal([]byte(s.Symbols), &symbols)
+
+		var totalTrades int64
+		var totalPnl float64
+		var wins int64
+		db.Model(&LiveTradingPosition{}).Where("session_id = ?", s.ID).Count(&totalTrades)
+		db.Model(&LiveTradingPosition{}).Where("session_id = ?", s.ID).Select("COALESCE(SUM(profit_loss_amt), 0)").Row().Scan(&totalPnl)
+		db.Model(&LiveTradingPosition{}).Where("session_id = ? AND profit_loss_pct > 0", s.ID).Count(&wins)
+
+		winRate := 0.0
+		if totalTrades > 0 {
+			winRate = float64(wins) / float64(totalTrades) * 100
+		}
+
+		// Check if this stopped session can be resumed
+		canResume := false
+		if !s.IsActive && !running && hasConfig {
+			canResume = s.Strategy == config.Strategy &&
+				s.Interval == config.Interval &&
+				s.ParamsJSON == config.ParamsJSON &&
+				s.Symbols == config.Symbols &&
+				s.LongOnly == config.LongOnly &&
+				s.TradeAmount == config.TradeAmount
+		}
+
+		results = append(results, gin.H{
+			"id":            s.ID,
+			"strategy":      s.Strategy,
+			"interval":      s.Interval,
+			"symbols_count": len(symbols),
+			"is_active":     s.IsActive,
+			"started_at":    s.StartedAt,
+			"stopped_at":    s.StoppedAt,
+			"total_polls":   s.TotalPolls,
+			"total_trades":  totalTrades,
+			"total_pnl":     totalPnl,
+			"win_rate":      winRate,
+			"currency":      s.Currency,
+			"can_resume":    canResume,
+		})
+	}
+
+	c.JSON(200, gin.H{"sessions": results})
+}
+
+func getLiveTradingSession(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	uid := userID.(uint)
+	id := c.Param("id")
+
+	var session LiveTradingSession
+	if db.Where("id = ? AND user_id = ?", id, uid).First(&session).Error != nil {
+		c.JSON(404, gin.H{"error": "Session nicht gefunden"})
+		return
+	}
+
+	var symbols []string
+	json.Unmarshal([]byte(session.Symbols), &symbols)
+	var params map[string]interface{}
+	json.Unmarshal([]byte(session.ParamsJSON), &params)
+
+	var positions []LiveTradingPosition
+	db.Where("session_id = ?", session.ID).Order("created_at DESC").Find(&positions)
+
+	result := gin.H{
+		"session":   session,
+		"symbols":   symbols,
+		"params":    params,
+		"positions": positions,
+	}
+
+	var symbolPrices map[string]float64
+	if json.Unmarshal([]byte(session.SymbolPricesJSON), &symbolPrices) == nil && symbolPrices != nil {
+		result["symbol_prices"] = symbolPrices
+	}
+
+	c.JSON(200, result)
+}
+
+func resumeLiveTrading(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	uid := userID.(uint)
+	id := c.Param("id")
+
+	// Check no scheduler currently running
+	liveSchedulerMu.Lock()
+	if liveSchedulerRunning {
+		liveSchedulerMu.Unlock()
+		c.JSON(400, gin.H{"error": "Es läuft bereits eine aktive Session"})
+		return
+	}
+	liveSchedulerMu.Unlock()
+
+	// Load session
+	var session LiveTradingSession
+	if db.Where("id = ? AND user_id = ?", id, uid).First(&session).Error != nil {
+		c.JSON(404, gin.H{"error": "Session nicht gefunden"})
+		return
+	}
+
+	if session.IsActive {
+		c.JSON(400, gin.H{"error": "Session ist bereits aktiv"})
+		return
+	}
+
+	// Compare with current config
+	var config LiveTradingConfig
+	if db.Where("user_id = ?", uid).First(&config).Error != nil {
+		c.JSON(400, gin.H{"error": "Keine aktuelle Konfiguration gefunden"})
+		return
+	}
+
+	if session.Strategy != config.Strategy || session.Interval != config.Interval ||
+		session.ParamsJSON != config.ParamsJSON || session.Symbols != config.Symbols ||
+		session.LongOnly != config.LongOnly || session.TradeAmount != config.TradeAmount {
+		c.JSON(400, gin.H{"error": "Konfiguration hat sich geändert. Session kann nicht fortgesetzt werden."})
+		return
+	}
+
+	// Reactivate session
+	db.Model(&session).Updates(map[string]interface{}{
+		"is_active":  true,
+		"stopped_at": nil,
+	})
+
+	// Start scheduler
+	liveSchedulerMu.Lock()
+	liveSchedulerStop = make(chan struct{})
+	liveSchedulerRunning = true
+	liveActiveSessionID = session.ID
+	go runLiveScheduler(liveSchedulerStop, session.ID)
+	liveSchedulerMu.Unlock()
+
+	logLiveEvent(session.ID, "INFO", "-", "Session fortgesetzt")
+	c.JSON(200, gin.H{"session": session, "status": "resumed"})
+}
+
+// Live Scheduler
+func runLiveScheduler(stopChan chan struct{}, sessionID uint) {
+	var session LiveTradingSession
+	if db.First(&session, sessionID).Error != nil {
+		return
+	}
+
+	dur := intervalToDuration(session.Interval)
+	ticker := time.NewTicker(dur)
+	defer ticker.Stop()
+
+	// First scan immediately
+	runLiveScan(sessionID)
+
+	for {
+		select {
+		case <-ticker.C:
+			runLiveScan(sessionID)
+		case <-stopChan:
+			return
+		}
+	}
+}
+
+func runLiveScan(sessionID uint) {
+	liveSchedulerPollMu.Lock()
+	liveSchedulerPolling = true
+	liveSchedulerPollMu.Unlock()
+	defer func() {
+		liveSchedulerPollMu.Lock()
+		liveSchedulerPolling = false
+		liveSchedulerPollMu.Unlock()
+	}()
+
+	var session LiveTradingSession
+	if db.First(&session, sessionID).Error != nil || !session.IsActive {
+		return
+	}
+
+	var symbols []string
+	json.Unmarshal([]byte(session.Symbols), &symbols)
+
+	strategy := createStrategyFromJSON(session.Strategy, session.ParamsJSON)
+	if strategy == nil {
+		logLiveEvent(sessionID, "SKIP", "-", fmt.Sprintf("Unbekannte Strategie: %s", session.Strategy))
+		return
+	}
+
+	periodMap := map[string]string{
+		"5m": "60d", "15m": "60d", "60m": "2y", "1h": "2y",
+		"2h": "2y", "4h": "2y", "1d": "2y", "1wk": "10y",
+	}
+	yahooInterval := session.Interval
+	intervalMap := map[string]string{"1h": "60m", "1D": "1d", "1W": "1wk"}
+	if mapped, ok := intervalMap[yahooInterval]; ok {
+		yahooInterval = mapped
+	}
+	period := periodMap[yahooInterval]
+	if period == "" {
+		period = "60d"
+	}
+
+	liveSchedulerPollMu.Lock()
+	liveScanTotal = len(symbols)
+	liveScanProgress = 0
+	liveCurrentSymbol = ""
+	liveSchedulerPollMu.Unlock()
+
+	logLiveEvent(sessionID, "SCAN", "-", fmt.Sprintf("Poll gestartet — prüfe %d Aktien", len(symbols)))
+
+	priceMap := map[string]float64{}
+	for i, symbol := range symbols {
+		liveSchedulerPollMu.Lock()
+		liveScanProgress = i + 1
+		liveCurrentSymbol = symbol
+		liveSchedulerPollMu.Unlock()
+
+		if price, ok := processLiveSymbol(session, symbol, strategy, period, yahooInterval); ok {
+			priceMap[symbol] = price
+		}
+	}
+
+	liveSchedulerPollMu.Lock()
+	liveCurrentSymbol = ""
+	liveSchedulerPollMu.Unlock()
+
+	logLiveEvent(sessionID, "SCAN", "-", fmt.Sprintf("Poll abgeschlossen — %d Aktien geprüft", len(symbols)))
+
+	// Update session poll stats + symbol prices
+	now := time.Now()
+	next := now.Add(intervalToDuration(session.Interval))
+	pricesJSON, _ := json.Marshal(priceMap)
+	db.Model(&session).Updates(map[string]interface{}{
+		"last_poll_at":       now,
+		"next_poll_at":       next,
+		"total_polls":        gorm.Expr("total_polls + 1"),
+		"symbol_prices_json": string(pricesJSON),
+	})
+}
+
+func processLiveSymbol(session LiveTradingSession, symbol string, strategy TradingStrategy, period, yahooInterval string) (float64, bool) {
+	ohlcv, err := fetchOHLCVFromYahoo(symbol, period, yahooInterval)
+	if err != nil || len(ohlcv) < 50 {
+		logLiveEvent(session.ID, "SKIP", symbol, "OHLCV nicht verfügbar")
+		return 0, false
+	}
+	lastPrice := ohlcv[len(ohlcv)-1].Close
+
+	nativeCurrency := getStockCurrency(symbol)
+	if nativeCurrency == "" {
+		nativeCurrency = "USD"
+	}
+
+	signals := strategy.Analyze(ohlcv)
+	sessionStartUnix := session.StartedAt.Unix()
+
+	// Get existing open position for this symbol in this session
+	var existingPos LiveTradingPosition
+	hasOpenPos := db.Where("session_id = ? AND symbol = ? AND is_closed = ?", session.ID, symbol, false).First(&existingPos).Error == nil
+
+	// Process new signals (only after session start)
+	for _, sig := range signals {
+		if sig.Index < 0 || sig.Index >= len(ohlcv) {
+			continue
+		}
+		signalBarTime := ohlcv[sig.Index].Time
+		if signalBarTime < sessionStartUnix {
+			continue
+		}
+
+		// Check if this signal was already processed
+		var duplicate LiveTradingPosition
+		if db.Where("session_id = ? AND symbol = ? AND signal_index = ?", session.ID, symbol, sig.Index).First(&duplicate).Error == nil {
+			continue
+		}
+
+		if !hasOpenPos {
+			// LongOnly filter
+			if session.LongOnly && sig.Direction == "SHORT" {
+				logLiveEvent(session.ID, "SKIP", symbol, "SHORT Signal übersprungen (Long Only)")
+				continue
+			}
+
+			entryPriceNative := sig.EntryPrice
+			entryPriceUSD := entryPriceNative
+			if nativeCurrency != "USD" {
+				entryPriceUSD = convertToUSD(entryPriceNative, nativeCurrency)
+			}
+
+			pos := LiveTradingPosition{
+				SessionID:      session.ID,
+				Symbol:         symbol,
+				Direction:      sig.Direction,
+				EntryPrice:     entryPriceNative,
+				EntryPriceUSD:  entryPriceUSD,
+				EntryTime:      time.Unix(ohlcv[sig.Index].Time, 0),
+				StopLoss:       sig.StopLoss,
+				TakeProfit:     sig.TakeProfit,
+				CurrentPrice:   entryPriceNative,
+				NativeCurrency: nativeCurrency,
+				InvestedAmount: session.TradeAmount,
+				SignalIndex:    sig.Index,
+				CreatedAt:      time.Now(),
+			}
+			db.Create(&pos)
+			hasOpenPos = true
+			existingPos = pos
+			slInfo := ""
+			tpInfo := ""
+			if sig.StopLoss > 0 {
+				slInfo = fmt.Sprintf(", SL: %.2f", sig.StopLoss)
+			}
+			if sig.TakeProfit > 0 {
+				tpInfo = fmt.Sprintf(", TP: %.2f", sig.TakeProfit)
+			}
+			logLiveEvent(session.ID, "OPEN", symbol, fmt.Sprintf("%s eröffnet @ %.4f %s%s%s", sig.Direction, entryPriceNative, nativeCurrency, slInfo, tpInfo))
+
+		} else if hasOpenPos && existingPos.Direction != sig.Direction {
+			// Close on opposing signal
+			closePriceNative := ohlcv[sig.Index].Open
+			closeLivePosition(&existingPos, closePriceNative, "SIGNAL", nativeCurrency)
+			logLiveEvent(session.ID, "CLOSE", symbol, fmt.Sprintf("Gegensignal — %s geschlossen @ %.4f (%.2f%%, %.2f EUR)", existingPos.Direction, closePriceNative, existingPos.ProfitLossPct, existingPos.ProfitLossAmt))
+			hasOpenPos = false
+		}
+	}
+
+	// SL/TP intrabar check for open position
+	if hasOpenPos {
+		entryUnix := existingPos.EntryTime.Unix()
+		for _, bar := range ohlcv {
+			if bar.Time <= entryUnix {
+				continue
+			}
+			closed := false
+			if existingPos.Direction == "LONG" {
+				// SL checked BEFORE TP (matches backtest engine)
+				if existingPos.StopLoss > 0 && bar.Low <= existingPos.StopLoss {
+					closeLivePosition(&existingPos, existingPos.StopLoss, "SL", nativeCurrency)
+					closed = true
+				} else if existingPos.TakeProfit > 0 && bar.High >= existingPos.TakeProfit {
+					closeLivePosition(&existingPos, existingPos.TakeProfit, "TP", nativeCurrency)
+					closed = true
+				}
+			} else {
+				if existingPos.StopLoss > 0 && bar.High >= existingPos.StopLoss {
+					closeLivePosition(&existingPos, existingPos.StopLoss, "SL", nativeCurrency)
+					closed = true
+				} else if existingPos.TakeProfit > 0 && bar.Low <= existingPos.TakeProfit {
+					closeLivePosition(&existingPos, existingPos.TakeProfit, "TP", nativeCurrency)
+					closed = true
+				}
+			}
+			if closed {
+				hasOpenPos = false
+				break
+			}
+		}
+
+		// Update current price if still open
+		if hasOpenPos && len(ohlcv) > 0 {
+			lastBar := ohlcv[len(ohlcv)-1]
+			existingPos.CurrentPrice = lastBar.Close
+			if existingPos.Direction == "LONG" {
+				existingPos.ProfitLossPct = (lastBar.Close - existingPos.EntryPrice) / existingPos.EntryPrice * 100
+			} else {
+				existingPos.ProfitLossPct = (existingPos.EntryPrice - lastBar.Close) / existingPos.EntryPrice * 100
+			}
+			existingPos.ProfitLossAmt = existingPos.InvestedAmount * existingPos.ProfitLossPct / 100
+			db.Save(&existingPos)
+		}
+	}
+	return lastPrice, true
+}
+
+func closeLivePosition(pos *LiveTradingPosition, closePriceNative float64, reason, nativeCurrency string) {
+	now := time.Now()
+	pos.IsClosed = true
+	pos.ClosePrice = closePriceNative
+	pos.CloseTime = &now
+	pos.CloseReason = reason
+	pos.CurrentPrice = closePriceNative
+
+	if nativeCurrency != "USD" {
+		pos.ClosePriceUSD = convertToUSD(closePriceNative, nativeCurrency)
+	} else {
+		pos.ClosePriceUSD = closePriceNative
+	}
+
+	if pos.Direction == "LONG" {
+		pos.ProfitLossPct = (closePriceNative - pos.EntryPrice) / pos.EntryPrice * 100
+	} else {
+		pos.ProfitLossPct = (pos.EntryPrice - closePriceNative) / pos.EntryPrice * 100
+	}
+	pos.ProfitLossAmt = pos.InvestedAmount * pos.ProfitLossPct / 100
+
+	db.Save(pos)
+	if reason == "SL" || reason == "TP" {
+		logLiveEvent(pos.SessionID, reason, pos.Symbol, fmt.Sprintf("%s ausgelöst — %s geschlossen @ %.4f (%.2f%%, %.2f EUR)", reason, pos.Direction, closePriceNative, pos.ProfitLossPct, pos.ProfitLossAmt))
+	}
+}
+
+func getLiveTradingLogs(c *gin.Context) {
+	sessionID := c.Param("sessionId")
+
+	afterID := uint(0)
+	if v := c.Query("after_id"); v != "" {
+		if parsed, err := strconv.ParseUint(v, 10, 32); err == nil {
+			afterID = uint(parsed)
+		}
+	}
+
+	var logs []LiveTradingLog
+	q := db.Where("session_id = ?", sessionID)
+	if afterID > 0 {
+		q = q.Where("id > ?", afterID)
+	}
+	q.Order("created_at DESC, id DESC").Limit(500).Find(&logs)
+
+	var total int64
+	db.Model(&LiveTradingLog{}).Where("session_id = ?", sessionID).Count(&total)
+
+	c.JSON(200, gin.H{"logs": logs, "total": total})
+}
+
+// ==================== Backtest Lab ====================
+
+func runBacktestLabHandler(c *gin.Context) {
+	var req BacktestLabRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "Ungültige Anfrage: " + err.Error()})
+		return
+	}
+
+	symbol := strings.ToUpper(strings.TrimSpace(req.Symbol))
+	if symbol == "" {
+		c.JSON(400, gin.H{"error": "Symbol erforderlich"})
+		return
+	}
+
+	tslPercent := req.TSL // 0 = kein TSL
+
+	// Load config for base mode
+	var defConfig, aggConfig BXtrenderConfig
+	var quantConfig BXtrenderQuantConfig
+	var ditzConfig BXtrenderDitzConfig
+	var traderConfig BXtrenderTraderConfig
+
+	switch req.BaseMode {
+	case "defensive":
+		db.Where("mode = ?", "defensive").First(&defConfig)
+		if defConfig.ID == 0 {
+			defConfig = BXtrenderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15}
+		}
+	case "aggressive":
+		db.Where("mode = ?", "aggressive").First(&aggConfig)
+		if aggConfig.ID == 0 {
+			aggConfig = BXtrenderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15}
+		}
+	case "quant":
+		db.First(&quantConfig)
+		if quantConfig.ID == 0 {
+			quantConfig = BXtrenderQuantConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: true, MaLength: 200, MaType: "EMA", TslPercent: 20.0}
+		}
+	case "ditz":
+		db.First(&ditzConfig)
+		if ditzConfig.ID == 0 {
+			ditzConfig = BXtrenderDitzConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: true, MaLength: 200, MaType: "EMA", TslPercent: 20.0}
+		}
+	case "trader":
+		db.First(&traderConfig)
+		if traderConfig.ID == 0 {
+			traderConfig = BXtrenderTraderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: false, MaLength: 200, MaType: "EMA", TslPercent: 20.0}
+		}
+	default:
+		c.JSON(400, gin.H{"error": "Unbekannter Base Mode: " + req.BaseMode})
+		return
+	}
+
+	// Fetch monthly OHLCV
+	monthlyOHLCV, err := fetchHistoricalDataServer(symbol)
+	if err != nil || len(monthlyOHLCV) < 50 {
+		c.JSON(500, gin.H{"error": "Monthly-Daten konnten nicht geladen werden"})
+		return
+	}
+
+	// Fetch weekly OHLCV
+	weeklyOHLCV, err := fetchOHLCVFromYahoo(symbol, "10y", "1wk")
+	if err != nil || len(weeklyOHLCV) < 50 {
+		c.JSON(500, gin.H{"error": "Weekly-Daten konnten nicht geladen werden"})
+		return
+	}
+
+	// Calculate BXtrender on both timeframes
+	var monthlyResult, weeklyResult BXtrenderResult
+	switch req.BaseMode {
+	case "defensive":
+		monthlyResult = calculateBXtrenderServer(monthlyOHLCV, false, defConfig, 0, 0)
+		weeklyResult = calculateBXtrenderServer(weeklyOHLCV, false, defConfig, 0, 0)
+	case "aggressive":
+		monthlyResult = calculateBXtrenderServer(monthlyOHLCV, true, aggConfig, 0, 0)
+		weeklyResult = calculateBXtrenderServer(weeklyOHLCV, true, aggConfig, 0, 0)
+	case "quant":
+		monthlyResult = calculateBXtrenderQuantServer(monthlyOHLCV, quantConfig, 0, 0)
+		weeklyResult = calculateBXtrenderQuantServer(weeklyOHLCV, quantConfig, 0, 0)
+	case "ditz":
+		monthlyResult = calculateBXtrenderDitzServer(monthlyOHLCV, ditzConfig, 0, 0)
+		weeklyResult = calculateBXtrenderDitzServer(weeklyOHLCV, ditzConfig, 0, 0)
+	case "trader":
+		monthlyResult = calculateBXtrenderTraderServer(monthlyOHLCV, traderConfig, 0, 0)
+		weeklyResult = calculateBXtrenderTraderServer(weeklyOHLCV, traderConfig, 0, 0)
+	}
+
+	if monthlyResult.Signal == "NO_DATA" {
+		c.JSON(500, gin.H{"error": "Nicht genug Monthly-Daten für BXtrender-Berechnung"})
+		return
+	}
+
+	// Build response data
+	monthlyBars := make([]BacktestLabOHLCV, len(monthlyOHLCV))
+	for i, bar := range monthlyOHLCV {
+		monthlyBars[i] = BacktestLabOHLCV{Time: bar.Time, Open: bar.Open, High: bar.High, Low: bar.Low, Close: bar.Close, Volume: bar.Volume}
+	}
+	weeklyBars := make([]BacktestLabOHLCV, len(weeklyOHLCV))
+	for i, bar := range weeklyOHLCV {
+		weeklyBars[i] = BacktestLabOHLCV{Time: bar.Time, Open: bar.Open, High: bar.High, Low: bar.Low, Close: bar.Close, Volume: bar.Volume}
+	}
+
+	monthlyShortTV := buildTimeValues(monthlyOHLCV, monthlyResult.Short)
+	monthlyLongTV := buildTimeValues(monthlyOHLCV, monthlyResult.Long)
+	weeklyShortTV := buildTimeValues(weeklyOHLCV, weeklyResult.Short)
+	weeklyLongTV := buildTimeValues(weeklyOHLCV, weeklyResult.Long)
+
+	// If no custom rules, return base mode results
+	if len(req.Rules) == 0 {
+		trades, markers := convertServerTradesToArena(monthlyResult.Trades)
+		metrics := calculateBacktestLabMetrics(trades)
+		c.JSON(200, BacktestLabResponse{
+			Metrics:      metrics,
+			Trades:       trades,
+			Markers:      markers,
+			MonthlyBars:  monthlyBars,
+			MonthlyShort: monthlyShortTV,
+			MonthlyLong:  monthlyLongTV,
+			WeeklyBars:   weeklyBars,
+			WeeklyShort:  weeklyShortTV,
+			WeeklyLong:   weeklyLongTV,
+		})
+		return
+	}
+
+	// Run custom rule evaluation
+	trades, markers := evaluateBacktestLabRules(
+		monthlyOHLCV, weeklyOHLCV,
+		monthlyResult, weeklyResult,
+		req.BaseMode, req.Rules, tslPercent,
+	)
+	metrics := calculateBacktestLabMetrics(trades)
+
+	c.JSON(200, BacktestLabResponse{
+		Metrics:      metrics,
+		Trades:       trades,
+		Markers:      markers,
+		MonthlyBars:  monthlyBars,
+		MonthlyShort: monthlyShortTV,
+		MonthlyLong:  monthlyLongTV,
+		WeeklyBars:   weeklyBars,
+		WeeklyShort:  weeklyShortTV,
+		WeeklyLong:   weeklyLongTV,
+	})
+}
+
+func buildTimeValues(ohlcv []OHLCV, values []float64) []BacktestLabTimeValue {
+	result := make([]BacktestLabTimeValue, 0, len(ohlcv))
+	for i, bar := range ohlcv {
+		if i < len(values) {
+			result = append(result, BacktestLabTimeValue{Time: bar.Time, Value: values[i]})
+		}
+	}
+	return result
+}
+
+func convertServerTradesToArena(serverTrades []ServerTrade) ([]ArenaBacktestTrade, []ChartMarker) {
+	trades := []ArenaBacktestTrade{}
+	markers := []ChartMarker{}
+	var currentBuy *ServerTrade
+
+	for _, st := range serverTrades {
+		if st.Type == "BUY" {
+			currentBuy = &ServerTrade{Type: st.Type, Time: st.Time, Price: st.Price}
+			markers = append(markers, ChartMarker{
+				Time: st.Time, Position: "belowBar", Color: "#22c55e", Shape: "arrowUp", Text: "BUY",
+			})
+		} else if st.Type == "SELL" && currentBuy != nil {
+			returnPct := st.Return
+			trades = append(trades, ArenaBacktestTrade{
+				Direction: "LONG", EntryPrice: currentBuy.Price, EntryTime: currentBuy.Time,
+				ExitPrice: st.Price, ExitTime: st.Time, ReturnPct: returnPct,
+				ExitReason: "SIGNAL", IsOpen: false,
+			})
+			color := "#22c55e"
+			if returnPct < 0 {
+				color = "#ef4444"
+			}
+			markers = append(markers, ChartMarker{
+				Time: st.Time, Position: "aboveBar", Color: color, Shape: "arrowDown", Text: "SELL",
+			})
+			currentBuy = nil
+		}
+	}
+	// Open position
+	if currentBuy != nil {
+		trades = append(trades, ArenaBacktestTrade{
+			Direction: "LONG", EntryPrice: currentBuy.Price, EntryTime: currentBuy.Time,
+			IsOpen: true,
+		})
+	}
+	return trades, markers
+}
+
+func calculateBacktestLabMetrics(trades []ArenaBacktestTrade) ArenaBacktestMetrics {
+	wins, losses := 0, 0
+	totalReturn := 0.0
+	totalWinReturn := 0.0
+	totalLossReturn := 0.0
+	maxDrawdown := 0.0
+	cumReturn := 0.0
+	peak := 0.0
+
+	for _, t := range trades {
+		if t.IsOpen {
+			continue
+		}
+		cumReturn += t.ReturnPct
+		if cumReturn > peak {
+			peak = cumReturn
+		}
+		dd := peak - cumReturn
+		if dd > maxDrawdown {
+			maxDrawdown = dd
+		}
+		if t.ReturnPct > 0 {
+			wins++
+			totalWinReturn += t.ReturnPct
+		} else {
+			losses++
+			totalLossReturn += math.Abs(t.ReturnPct)
+		}
+		totalReturn += t.ReturnPct
+	}
+
+	totalTrades := wins + losses
+	winRate := 0.0
+	if totalTrades > 0 {
+		winRate = float64(wins) / float64(totalTrades) * 100
+	}
+	riskReward := 0.0
+	if losses > 0 && totalLossReturn > 0 {
+		avgWin := totalWinReturn / math.Max(float64(wins), 1)
+		avgLoss := totalLossReturn / float64(losses)
+		riskReward = avgWin / avgLoss
+	}
+	avgReturn := 0.0
+	if totalTrades > 0 {
+		avgReturn = totalReturn / float64(totalTrades)
+	}
+	netProfit := totalReturn // on 100 units
+
+	return ArenaBacktestMetrics{
+		WinRate: winRate, RiskReward: riskReward, TotalReturn: totalReturn,
+		AvgReturn: avgReturn, MaxDrawdown: maxDrawdown, NetProfit: netProfit,
+		TotalTrades: totalTrades, Wins: wins, Losses: losses,
+	}
+}
+
+// getBarSignalState determines the signal state at a given bar index using BXtrender values
+func getBarSignalState(idx int, short, long []float64, baseMode string, inPosition bool) string {
+	if idx < 1 || idx >= len(short) {
+		return "WAIT"
+	}
+	shortCurr := short[idx]
+	shortPrev := short[idx-1]
+	longCurr := long[idx]
+	longPrev := long[idx-1]
+
+	switch baseMode {
+	case "defensive":
+		isBullish := shortCurr > 0
+		wasBullish := shortPrev > 0
+		isLightRed := shortCurr < 0 && shortCurr > shortPrev
+		isDarkRed := shortCurr < 0 && shortCurr <= shortPrev
+
+		// Count consecutive light red bars
+		consecutiveLightRed := 0
+		if isLightRed {
+			consecutiveLightRed = 1
+			for j := idx - 1; j >= 1; j-- {
+				if short[j] < 0 && short[j] > short[j-1] {
+					consecutiveLightRed++
+				} else {
+					break
+				}
+			}
+		}
+		justTurnedGreen := isBullish && !wasBullish
+
+		if !inPosition && (justTurnedGreen || (isLightRed && consecutiveLightRed == 4)) {
+			return "BUY"
+		}
+		if inPosition && isDarkRed {
+			return "SELL"
+		}
+		if inPosition {
+			return "HOLD"
+		}
+		return "WAIT"
+
+	case "aggressive":
+		isBullish := shortCurr > 0
+		wasBullish := shortPrev > 0
+		isLightRed := shortCurr < 0 && shortCurr > shortPrev
+		isDarkRed := shortCurr < 0 && shortCurr <= shortPrev
+
+		consecutiveLightRed := 0
+		if isLightRed {
+			consecutiveLightRed = 1
+			for j := idx - 1; j >= 1; j-- {
+				if short[j] < 0 && short[j] > short[j-1] {
+					consecutiveLightRed++
+				} else {
+					break
+				}
+			}
+		}
+		justTurnedGreen := isBullish && !wasBullish
+		_ = consecutiveLightRed
+
+		if !inPosition && ((isLightRed && consecutiveLightRed == 1) || justTurnedGreen) {
+			return "BUY"
+		}
+		if inPosition && isDarkRed {
+			return "SELL"
+		}
+		if inPosition {
+			return "HOLD"
+		}
+		return "WAIT"
+
+	case "quant":
+		bothPositiveNow := shortCurr > 0 && longCurr > 0
+		bothPositivePrev := shortPrev > 0 && longPrev > 0
+
+		if !inPosition && bothPositiveNow && !bothPositivePrev {
+			return "BUY"
+		}
+		if inPosition && (shortCurr < 0 || longCurr < 0) {
+			return "SELL"
+		}
+		if inPosition {
+			return "HOLD"
+		}
+		return "WAIT"
+
+	case "ditz":
+		bothPositiveNow := shortCurr > 0 && longCurr > 0
+		bothPositivePrev := shortPrev > 0 && longPrev > 0
+		bothNegativeNow := shortCurr < 0 && longCurr < 0
+
+		if !inPosition && bothPositiveNow && !bothPositivePrev {
+			return "BUY"
+		}
+		if inPosition && bothNegativeNow {
+			return "SELL"
+		}
+		if inPosition {
+			return "HOLD"
+		}
+		return "WAIT"
+
+	case "trader":
+		// T3 signal line direction not available here directly from short/long arrays
+		// For trader, we check short xtrender trend
+		if !inPosition && shortCurr > shortPrev && shortPrev <= short[max(0, idx-2)] {
+			return "BUY"
+		}
+		if inPosition && shortCurr < shortPrev && shortPrev >= short[max(0, idx-2)] {
+			return "SELL"
+		}
+		if inPosition {
+			return "HOLD"
+		}
+		return "WAIT"
+	}
+	return "WAIT"
+}
+
+// getBarConditionState checks a specific condition against BXtrender values
+func getBarConditionState(condition string, idx int, short, long []float64, baseMode string, inPosition bool) bool {
+	if condition == "ANY" {
+		return true
+	}
+
+	shortCurr := short[idx]
+	shortPrev := 0.0
+	if idx > 0 {
+		shortPrev = short[idx-1]
+	}
+
+	switch condition {
+	case "FIRST_LIGHT_RED":
+		if idx < 1 {
+			return false
+		}
+		isLightRed := shortCurr < 0 && shortCurr > shortPrev
+		if !isLightRed {
+			return false
+		}
+		// Check it's the first light red (previous was not light red)
+		if idx >= 2 {
+			prevWasLightRed := short[idx-1] < 0 && short[idx-1] > short[idx-2]
+			return !prevWasLightRed
+		}
+		return true
+
+	case "BUY_TO_HOLD":
+		// Previous bar was BUY, current bar is HOLD
+		if idx < 2 {
+			return false
+		}
+		prevSignal := getBarSignalState(idx-1, short, long, baseMode, false)
+		currSignal := getBarSignalState(idx, short, long, baseMode, true) // assume in position for HOLD check
+		return prevSignal == "BUY" && currSignal == "HOLD"
+
+	case "BUY":
+		// Check if bar would trigger BUY (needs inPosition=false)
+		return getBarSignalState(idx, short, long, baseMode, false) == "BUY"
+
+	case "SELL":
+		// Check if bar would trigger SELL (needs inPosition=true)
+		return getBarSignalState(idx, short, long, baseMode, true) == "SELL"
+
+	case "HOLD":
+		// Check if bar would be HOLD (in position, no sell signal)
+		return getBarSignalState(idx, short, long, baseMode, true) == "HOLD"
+
+	case "WAIT":
+		// Check if bar would be WAIT (no position, no buy signal)
+		return getBarSignalState(idx, short, long, baseMode, false) == "WAIT"
+
+	default:
+		return false
+	}
+}
+
+// findWeeklyIndexForMonthlyBar finds the last weekly bar that ended before or at the monthly bar time
+func findWeeklyIndexForMonthlyBar(monthlyTime int64, weeklyOHLCV []OHLCV) int {
+	bestIdx := -1
+	for i, bar := range weeklyOHLCV {
+		if bar.Time <= monthlyTime {
+			bestIdx = i
+		} else {
+			break
+		}
+	}
+	return bestIdx
+}
+
+// findMonthlyIndexForWeeklyBar finds the last monthly bar with Time <= weeklyTime
+func findMonthlyIndexForWeeklyBar(weeklyTime int64, monthlyOHLCV []OHLCV) int {
+	bestIdx := -1
+	for i, bar := range monthlyOHLCV {
+		if bar.Time <= weeklyTime {
+			bestIdx = i
+		} else {
+			break
+		}
+	}
+	return bestIdx
+}
+
+// evaluateBacktestLabRules iterates WEEKLY bars as primary timeframe.
+// For each weekly bar, the monthly signal state is looked up from the last completed monthly bar.
+// Trades execute at the NEXT WEEKLY bar's open price.
+func evaluateBacktestLabRules(
+	monthlyOHLCV, weeklyOHLCV []OHLCV,
+	monthlyResult, weeklyResult BXtrenderResult,
+	baseMode string,
+	rules []BacktestLabRule,
+	tslPercent float64,
+) ([]ArenaBacktestTrade, []ChartMarker) {
+	trades := []ArenaBacktestTrade{}
+	markers := []ChartMarker{}
+
+	inPosition := false
+	var entryPrice, highestPrice float64
+	var entryTime int64
+
+	// Separate entry and exit rules
+	entryRules := []BacktestLabRule{}
+	exitRules := []BacktestLabRule{}
+	for _, r := range rules {
+		if r.Type == "exit" {
+			exitRules = append(exitRules, r)
+		} else {
+			entryRules = append(entryRules, r)
+		}
+	}
+
+	// Determine start index (skip warmup for weekly bars)
+	startIdx := 50
+	if startIdx >= len(weeklyOHLCV) {
+		return trades, markers
+	}
+
+	for i := startIdx; i < len(weeklyOHLCV); i++ {
+		bar := weeklyOHLCV[i]
+		price := bar.Close
+
+		// Update highest price for TSL (checked every week)
+		if inPosition && price > highestPrice {
+			highestPrice = price
+		}
+
+		// Check TSL (disabled when tslPercent == 0)
+		tslTriggered := false
+		if tslPercent > 0 && inPosition && highestPrice > 0 {
+			stopPrice := highestPrice * (1 - tslPercent/100)
+			if price <= stopPrice {
+				tslTriggered = true
+			}
+		}
+
+		// Find corresponding monthly index for this weekly bar
+		monthlyIdx := findMonthlyIndexForWeeklyBar(bar.Time, monthlyOHLCV)
+
+		// Check entry rules (weekly is primary, monthly is state lookup)
+		if !inPosition && len(entryRules) > 0 {
+			for _, rule := range entryRules {
+				// Monthly condition: check against last completed monthly bar
+				monthlyMatch := true
+				if monthlyIdx >= 1 && monthlyIdx < len(monthlyResult.Short) {
+					monthlyMatch = getBarConditionState(rule.MonthlyCondition, monthlyIdx, monthlyResult.Short, monthlyResult.Long, baseMode, false)
+				} else if rule.MonthlyCondition != "ANY" {
+					monthlyMatch = false
+				}
+
+				// Weekly condition: check against current weekly bar
+				weeklyMatch := getBarConditionState(rule.WeeklyCondition, i, weeklyResult.Short, weeklyResult.Long, baseMode, false)
+
+				triggered := false
+				if rule.Operator == "OR" {
+					triggered = monthlyMatch || weeklyMatch
+				} else {
+					triggered = monthlyMatch && weeklyMatch
+				}
+
+				if triggered {
+					// Execute at next weekly bar's open
+					var execPrice float64
+					var execTime int64
+					if i+1 < len(weeklyOHLCV) && weeklyOHLCV[i+1].Open > 0 {
+						execPrice = weeklyOHLCV[i+1].Open
+						execTime = weeklyOHLCV[i+1].Time
+					}
+					if execPrice > 0 {
+						entryPrice = execPrice
+						entryTime = execTime
+						highestPrice = execPrice
+						inPosition = true
+						markers = append(markers, ChartMarker{
+							Time: execTime, Position: "belowBar", Color: "#22c55e", Shape: "arrowUp", Text: "BUY",
+						})
+						break
+					}
+				}
+			}
+		}
+
+		// Check exit rules + TSL
+		if inPosition {
+			shouldExit := false
+			exitReason := ""
+
+			if tslTriggered {
+				shouldExit = true
+				exitReason = "TSL"
+			}
+
+			if !shouldExit && len(exitRules) > 0 {
+				for _, rule := range exitRules {
+					// Monthly condition: check against last completed monthly bar
+					monthlyMatch := true
+					if monthlyIdx >= 1 && monthlyIdx < len(monthlyResult.Short) {
+						monthlyMatch = getBarConditionState(rule.MonthlyCondition, monthlyIdx, monthlyResult.Short, monthlyResult.Long, baseMode, true)
+					} else if rule.MonthlyCondition != "ANY" {
+						monthlyMatch = false
+					}
+
+					// Weekly condition: check against current weekly bar
+					weeklyMatch := getBarConditionState(rule.WeeklyCondition, i, weeklyResult.Short, weeklyResult.Long, baseMode, true)
+
+					triggered := false
+					if rule.Operator == "OR" {
+						triggered = monthlyMatch || weeklyMatch
+					} else {
+						triggered = monthlyMatch && weeklyMatch
+					}
+
+					if triggered {
+						shouldExit = true
+						exitReason = "SIGNAL"
+						break
+					}
+				}
+			}
+
+			// If no exit rules defined, use base mode's sell signal on weekly
+			if !shouldExit && len(exitRules) == 0 {
+				baseSignal := getBarSignalState(i, weeklyResult.Short, weeklyResult.Long, baseMode, true)
+				if baseSignal == "SELL" {
+					shouldExit = true
+					exitReason = "SIGNAL"
+				}
+			}
+
+			if shouldExit {
+				var execPrice float64
+				var execTime int64
+				if exitReason == "TSL" {
+					// TSL triggers at stop price
+					execPrice = highestPrice * (1 - tslPercent/100)
+					execTime = bar.Time
+				} else if i+1 < len(weeklyOHLCV) && weeklyOHLCV[i+1].Open > 0 {
+					execPrice = weeklyOHLCV[i+1].Open
+					execTime = weeklyOHLCV[i+1].Time
+				}
+				if execPrice > 0 {
+					returnPct := (execPrice - entryPrice) / entryPrice * 100
+					trades = append(trades, ArenaBacktestTrade{
+						Direction: "LONG", EntryPrice: entryPrice, EntryTime: entryTime,
+						ExitPrice: execPrice, ExitTime: execTime, ReturnPct: returnPct,
+						ExitReason: exitReason, IsOpen: false,
+					})
+					color := "#22c55e"
+					if returnPct < 0 {
+						color = "#ef4444"
+					}
+					markers = append(markers, ChartMarker{
+						Time: execTime, Position: "aboveBar", Color: color, Shape: "arrowDown", Text: exitReason,
+					})
+					inPosition = false
+					entryPrice = 0
+					highestPrice = 0
+				}
+			}
+		}
+	}
+
+	// Open position at end
+	if inPosition {
+		trades = append(trades, ArenaBacktestTrade{
+			Direction: "LONG", EntryPrice: entryPrice, EntryTime: entryTime,
+			IsOpen: true,
+		})
+	}
+
+	return trades, markers
+}
+
+// ==================== Backtest Lab Batch ====================
+
+// getWeeklyOHLCVCached returns weekly OHLCV data from DB cache if fresh (<24h), otherwise fetches from Yahoo and caches
+func getWeeklyOHLCVCached(symbol string) ([]OHLCV, string, error) {
+	var cache WeeklyOHLCVCache
+	result := db.Where("symbol = ?", symbol).First(&cache)
+
+	if result.Error == nil && time.Since(cache.UpdatedAt).Hours() < 24 {
+		// Cache hit and fresh
+		var ohlcv []OHLCV
+		if err := json.Unmarshal([]byte(cache.DataJSON), &ohlcv); err == nil && len(ohlcv) >= 50 {
+			return ohlcv, "cache", nil
+		}
+	}
+
+	// Fetch from Yahoo (no fallback)
+	ohlcv, err := fetchOHLCVFromYahoo(symbol, "10y", "1wk")
+	if err != nil {
+		return nil, "yahoo", err
+	}
+	if len(ohlcv) < 50 {
+		return nil, "yahoo", fmt.Errorf("nur %d Weekly-Bars (min. 50 benötigt)", len(ohlcv))
+	}
+
+	// Save to cache
+	dataBytes, _ := json.Marshal(ohlcv)
+	if result.Error == nil {
+		// Update existing
+		db.Model(&cache).Updates(map[string]interface{}{
+			"data_json":  string(dataBytes),
+			"updated_at": time.Now(),
+		})
+	} else {
+		// Create new
+		db.Create(&WeeklyOHLCVCache{
+			Symbol:   symbol,
+			DataJSON: string(dataBytes),
+		})
+	}
+
+	return ohlcv, "yahoo", nil
+}
+
+func runBacktestLabBatchHandler(c *gin.Context) {
+	var req BacktestLabBatchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "Ungültige Anfrage: " + err.Error()})
+		return
+	}
+
+	validModes := map[string]bool{"defensive": true, "aggressive": true, "quant": true, "ditz": true, "trader": true}
+	if !validModes[req.BaseMode] {
+		c.JSON(400, gin.H{"error": "Unbekannter Base Mode: " + req.BaseMode})
+		return
+	}
+
+	tslPercent := req.TSL // 0 = kein TSL
+
+	// Get cutoff timestamp from time_range
+	cutoffTime := int64(0)
+	if req.TimeRange != "" && req.TimeRange != "all" {
+		now := time.Now().Unix()
+		year := int64(365 * 24 * 60 * 60)
+		switch req.TimeRange {
+		case "1y":
+			cutoffTime = now - year
+		case "2y":
+			cutoffTime = now - 2*year
+		case "3y":
+			cutoffTime = now - 3*year
+		case "5y":
+			cutoffTime = now - 5*year
+		case "10y":
+			cutoffTime = now - 10*year
+		}
+	}
+
+	// Load all stocks
+	var stocks []Stock
+	db.Find(&stocks)
+	if len(stocks) == 0 {
+		c.JSON(200, BacktestLabBatchResponse{})
+		return
+	}
+
+	// Load performance data for filtering (based on mode)
+	perfMap := loadPerformanceMapForMode(req.BaseMode)
+
+	// Load config for base mode
+	defConfig, aggConfig, quantConfig, ditzConfig, traderConfig := loadAllConfigs()
+
+	// SSE streaming for progress
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Flush()
+
+	sendProgress := func(current, total int, symbol, status string) {
+		msg := fmt.Sprintf(`{"current":%d,"total":%d,"symbol":"%s","status":"%s"}`, current, total, symbol, status)
+		fmt.Fprintf(c.Writer, "event: progress\ndata: %s\n\n", msg)
+		c.Writer.Flush()
+	}
+
+	// Pre-filter stocks
+	type stockCandidate struct {
+		Symbol string
+		Name   string
+	}
+	var candidates []stockCandidate
+	filteredCount := 0
+
+	for _, stock := range stocks {
+		symbol := stock.Symbol
+		if perf, ok := perfMap[symbol]; ok {
+			if req.MinWinrate != nil && perf.WinRate < *req.MinWinrate {
+				filteredCount++
+				continue
+			}
+			if req.MaxWinrate != nil && perf.WinRate > *req.MaxWinrate {
+				filteredCount++
+				continue
+			}
+			if req.MinRR != nil && perf.RiskReward < *req.MinRR {
+				filteredCount++
+				continue
+			}
+			if req.MaxRR != nil && perf.RiskReward > *req.MaxRR {
+				filteredCount++
+				continue
+			}
+			if req.MinAvgReturn != nil && perf.AvgReturn < *req.MinAvgReturn {
+				filteredCount++
+				continue
+			}
+			if req.MaxAvgReturn != nil && perf.AvgReturn > *req.MaxAvgReturn {
+				filteredCount++
+				continue
+			}
+			if req.MinMarketCap != nil {
+				minCapValue := *req.MinMarketCap * 1e9
+				if float64(perf.MarketCap) < minCapValue {
+					filteredCount++
+					continue
+				}
+			}
+		} else if req.MinWinrate != nil || req.MinRR != nil || req.MinAvgReturn != nil || req.MinMarketCap != nil {
+			filteredCount++
+			continue
+		}
+		candidates = append(candidates, stockCandidate{Symbol: symbol, Name: stock.Name})
+	}
+
+	totalCandidates := len(candidates)
+	sendProgress(0, totalCandidates, "", "Starte Batch-Backtest...")
+
+	var stockResults []BacktestLabBatchStockResult
+	var skippedStocks []BacktestLabSkippedStock
+
+	for i, cand := range candidates {
+		symbol := cand.Symbol
+		name := cand.Name
+
+		sendProgress(i+1, totalCandidates, symbol, "Verarbeite...")
+
+		// Fetch monthly OHLCV
+		monthlyOHLCV, err := fetchHistoricalDataServer(symbol)
+		if err != nil || len(monthlyOHLCV) < 50 {
+			skippedStocks = append(skippedStocks, BacktestLabSkippedStock{
+				Symbol: symbol, Name: name, Reason: "Keine ausreichenden Monthly-Daten",
+			})
+			continue
+		}
+
+		// Fetch weekly OHLCV — Yahoo ONLY, with DB cache (24h TTL)
+		weeklyOHLCV, source, err := getWeeklyOHLCVCached(symbol)
+		if err != nil {
+			reason := "Yahoo Weekly-Daten nicht verfügbar: " + err.Error()
+			skippedStocks = append(skippedStocks, BacktestLabSkippedStock{
+				Symbol: symbol, Name: name, Reason: reason,
+			})
+			continue
+		}
+
+		// Calculate BXtrender on both timeframes
+		var monthlyResult, weeklyResult BXtrenderResult
+		switch req.BaseMode {
+		case "defensive":
+			monthlyResult = calculateBXtrenderServer(monthlyOHLCV, false, defConfig, 0, 0)
+			weeklyResult = calculateBXtrenderServer(weeklyOHLCV, false, defConfig, 0, 0)
+		case "aggressive":
+			monthlyResult = calculateBXtrenderServer(monthlyOHLCV, true, aggConfig, 0, 0)
+			weeklyResult = calculateBXtrenderServer(weeklyOHLCV, true, aggConfig, 0, 0)
+		case "quant":
+			monthlyResult = calculateBXtrenderQuantServer(monthlyOHLCV, quantConfig, 0, 0)
+			weeklyResult = calculateBXtrenderQuantServer(weeklyOHLCV, quantConfig, 0, 0)
+		case "ditz":
+			monthlyResult = calculateBXtrenderDitzServer(monthlyOHLCV, ditzConfig, 0, 0)
+			weeklyResult = calculateBXtrenderDitzServer(weeklyOHLCV, ditzConfig, 0, 0)
+		case "trader":
+			monthlyResult = calculateBXtrenderTraderServer(monthlyOHLCV, traderConfig, 0, 0)
+			weeklyResult = calculateBXtrenderTraderServer(weeklyOHLCV, traderConfig, 0, 0)
+		}
+
+		if monthlyResult.Signal == "NO_DATA" {
+			skippedStocks = append(skippedStocks, BacktestLabSkippedStock{
+				Symbol: symbol, Name: name, Reason: "BXtrender-Berechnung fehlgeschlagen (zu wenig Daten)",
+			})
+			continue
+		}
+
+		// Run backtest
+		var trades []ArenaBacktestTrade
+		if len(req.Rules) == 0 {
+			trades, _ = convertServerTradesToArena(monthlyResult.Trades)
+		} else {
+			trades, _ = evaluateBacktestLabRules(
+				monthlyOHLCV, weeklyOHLCV,
+				monthlyResult, weeklyResult,
+				req.BaseMode, req.Rules, tslPercent,
+			)
+		}
+
+		// Filter trades by time range
+		if cutoffTime > 0 {
+			var filteredTrades []ArenaBacktestTrade
+			for _, t := range trades {
+				if t.EntryTime >= cutoffTime || t.IsOpen {
+					filteredTrades = append(filteredTrades, t)
+				}
+			}
+			trades = filteredTrades
+		}
+
+		// Only include stocks that had trades
+		closedTrades := 0
+		for _, t := range trades {
+			if !t.IsOpen {
+				closedTrades++
+			}
+		}
+		if closedTrades == 0 {
+			skippedStocks = append(skippedStocks, BacktestLabSkippedStock{
+				Symbol: symbol, Name: name, Reason: "Keine Trades im gewählten Zeitraum/Regelset",
+			})
+			continue
+		}
+
+		metrics := calculateBacktestLabMetrics(trades)
+		stockResults = append(stockResults, BacktestLabBatchStockResult{
+			Symbol:  symbol,
+			Name:    name,
+			Metrics: metrics,
+			Trades:  trades,
+		})
+
+		// Rate limit Yahoo requests only (not cached)
+		if source == "yahoo" {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+
+	// Calculate total aggregated metrics
+	totalMetrics := aggregateBatchMetrics(stockResults)
+
+	// Send final result as SSE event
+	resultData := BacktestLabBatchResponse{
+		TotalMetrics:   totalMetrics,
+		StockResults:   stockResults,
+		SkippedStocks:  skippedStocks,
+		TotalStocks:    len(stocks),
+		TestedStocks:   len(stockResults),
+		FilteredStocks: filteredCount,
+	}
+	resultJSON, _ := json.Marshal(resultData)
+	fmt.Fprintf(c.Writer, "event: result\ndata: %s\n\n", string(resultJSON))
+	c.Writer.Flush()
+
+	// Auto-save to history
+	userID, _ := c.Get("userID")
+	if uid, ok := userID.(uint); ok && len(stockResults) > 0 {
+		rulesJSON, _ := json.Marshal(req.Rules)
+		filtersJSON, _ := json.Marshal(map[string]interface{}{
+			"min_winrate": req.MinWinrate, "max_winrate": req.MaxWinrate,
+			"min_rr": req.MinRR, "max_rr": req.MaxRR,
+			"min_avg_return": req.MinAvgReturn, "max_avg_return": req.MaxAvgReturn,
+			"min_market_cap": req.MinMarketCap,
+		})
+		metricsJSON, _ := json.Marshal(totalMetrics)
+		var stockSummaries []BacktestLabHistoryStockSummary
+		for _, sr := range stockResults {
+			stockSummaries = append(stockSummaries, BacktestLabHistoryStockSummary{
+				Symbol: sr.Symbol, Name: sr.Name,
+				WinRate: sr.Metrics.WinRate, TotalReturn: sr.Metrics.TotalReturn,
+				AvgReturn: sr.Metrics.AvgReturn, RiskReward: sr.Metrics.RiskReward,
+				TotalTrades: sr.Metrics.TotalTrades,
+			})
+		}
+		stockSummaryJSON, _ := json.Marshal(stockSummaries)
+
+		db.Create(&BacktestLabHistory{
+			UserID:           uid,
+			Name:             fmt.Sprintf("%s — %s", strings.ToUpper(req.BaseMode[:1])+req.BaseMode[1:], req.TimeRange),
+			BaseMode:         req.BaseMode,
+			RulesJSON:        string(rulesJSON),
+			TSL:              req.TSL,
+			TimeRange:        req.TimeRange,
+			FiltersJSON:      string(filtersJSON),
+			MetricsJSON:      string(metricsJSON),
+			StockSummaryJSON: string(stockSummaryJSON),
+			TestedStocks:     len(stockResults),
+			SkippedCount:     len(skippedStocks),
+			TotalStocks:      len(stocks),
+			FilteredStocks:   filteredCount,
+		})
+	}
+}
+
+func getBacktestLabHistory(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	uid, _ := userID.(uint)
+	isAdmin, _ := c.Get("isAdmin")
+	admin, _ := isAdmin.(bool)
+
+	var histories []BacktestLabHistory
+	if admin {
+		db.Order("created_at DESC").Limit(100).Find(&histories)
+	} else {
+		db.Where("user_id = ?", uid).Order("created_at DESC").Limit(50).Find(&histories)
+	}
+
+	type HistoryItem struct {
+		ID             uint                             `json:"id"`
+		Name           string                           `json:"name"`
+		BaseMode       string                           `json:"base_mode"`
+		Rules          []BacktestLabRule                `json:"rules"`
+		TSL            float64                          `json:"tsl"`
+		TimeRange      string                           `json:"time_range"`
+		Metrics        ArenaBacktestMetrics             `json:"metrics"`
+		StockSummary   []BacktestLabHistoryStockSummary `json:"stock_summary"`
+		TestedStocks   int                              `json:"tested_stocks"`
+		SkippedCount   int                              `json:"skipped_count"`
+		TotalStocks    int                              `json:"total_stocks"`
+		FilteredStocks int                              `json:"filtered_stocks"`
+		CreatedAt      time.Time                        `json:"created_at"`
+	}
+
+	var items []HistoryItem
+	for _, h := range histories {
+		item := HistoryItem{
+			ID: h.ID, Name: h.Name, BaseMode: h.BaseMode, TSL: h.TSL,
+			TimeRange: h.TimeRange, TestedStocks: h.TestedStocks,
+			SkippedCount: h.SkippedCount, TotalStocks: h.TotalStocks,
+			FilteredStocks: h.FilteredStocks, CreatedAt: h.CreatedAt,
+		}
+		json.Unmarshal([]byte(h.RulesJSON), &item.Rules)
+		json.Unmarshal([]byte(h.MetricsJSON), &item.Metrics)
+		json.Unmarshal([]byte(h.StockSummaryJSON), &item.StockSummary)
+		items = append(items, item)
+	}
+
+	c.JSON(200, items)
+}
+
+func deleteBacktestLabHistory(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	uid, _ := userID.(uint)
+	isAdmin, _ := c.Get("isAdmin")
+	admin, _ := isAdmin.(bool)
+	id := c.Param("id")
+
+	var result *gorm.DB
+	if admin {
+		result = db.Where("id = ?", id).Delete(&BacktestLabHistory{})
+	} else {
+		result = db.Where("id = ? AND user_id = ?", id, uid).Delete(&BacktestLabHistory{})
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(404, gin.H{"error": "Nicht gefunden"})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+func loadPerformanceMapForMode(mode string) map[string]struct {
+	WinRate    float64
+	RiskReward float64
+	AvgReturn  float64
+	MarketCap  int64
+} {
+	result := make(map[string]struct {
+		WinRate    float64
+		RiskReward float64
+		AvgReturn  float64
+		MarketCap  int64
+	})
+
+	switch mode {
+	case "defensive":
+		var perfs []StockPerformance
+		db.Find(&perfs)
+		for _, p := range perfs {
+			result[p.Symbol] = struct {
+				WinRate    float64
+				RiskReward float64
+				AvgReturn  float64
+				MarketCap  int64
+			}{p.WinRate, p.RiskReward, p.AvgReturn, p.MarketCap}
+		}
+	case "aggressive":
+		var perfs []AggressiveStockPerformance
+		db.Find(&perfs)
+		for _, p := range perfs {
+			result[p.Symbol] = struct {
+				WinRate    float64
+				RiskReward float64
+				AvgReturn  float64
+				MarketCap  int64
+			}{p.WinRate, p.RiskReward, p.AvgReturn, p.MarketCap}
+		}
+	case "quant":
+		var perfs []QuantStockPerformance
+		db.Find(&perfs)
+		for _, p := range perfs {
+			result[p.Symbol] = struct {
+				WinRate    float64
+				RiskReward float64
+				AvgReturn  float64
+				MarketCap  int64
+			}{p.WinRate, p.RiskReward, p.AvgReturn, p.MarketCap}
+		}
+	case "ditz":
+		var perfs []DitzStockPerformance
+		db.Find(&perfs)
+		for _, p := range perfs {
+			result[p.Symbol] = struct {
+				WinRate    float64
+				RiskReward float64
+				AvgReturn  float64
+				MarketCap  int64
+			}{p.WinRate, p.RiskReward, p.AvgReturn, p.MarketCap}
+		}
+	case "trader":
+		var perfs []TraderStockPerformance
+		db.Find(&perfs)
+		for _, p := range perfs {
+			result[p.Symbol] = struct {
+				WinRate    float64
+				RiskReward float64
+				AvgReturn  float64
+				MarketCap  int64
+			}{p.WinRate, p.RiskReward, p.AvgReturn, p.MarketCap}
+		}
+	}
+	return result
+}
+
+func loadAllConfigs() (BXtrenderConfig, BXtrenderConfig, BXtrenderQuantConfig, BXtrenderDitzConfig, BXtrenderTraderConfig) {
+	var defConfig, aggConfig BXtrenderConfig
+	db.Where("mode = ?", "defensive").First(&defConfig)
+	db.Where("mode = ?", "aggressive").First(&aggConfig)
+	var quantConfig BXtrenderQuantConfig
+	db.First(&quantConfig)
+	var ditzConfig BXtrenderDitzConfig
+	db.First(&ditzConfig)
+	var traderConfig BXtrenderTraderConfig
+	db.First(&traderConfig)
+
+	if defConfig.ID == 0 {
+		defConfig = BXtrenderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15}
+	}
+	if aggConfig.ID == 0 {
+		aggConfig = BXtrenderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15}
+	}
+	if quantConfig.ID == 0 {
+		quantConfig = BXtrenderQuantConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: true, MaLength: 200, MaType: "EMA", TslPercent: 20.0}
+	}
+	if ditzConfig.ID == 0 {
+		ditzConfig = BXtrenderDitzConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: true, MaLength: 200, MaType: "EMA", TslPercent: 20.0}
+	}
+	if traderConfig.ID == 0 {
+		traderConfig = BXtrenderTraderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: false, MaLength: 200, MaType: "EMA", TslPercent: 20.0}
+	}
+	return defConfig, aggConfig, quantConfig, ditzConfig, traderConfig
+}
+
+func aggregateBatchMetrics(results []BacktestLabBatchStockResult) ArenaBacktestMetrics {
+	totalWins, totalLosses := 0, 0
+	totalReturn := 0.0
+	totalWinReturn := 0.0
+	totalLossReturn := 0.0
+	maxDrawdown := 0.0
+
+	for _, r := range results {
+		totalWins += r.Metrics.Wins
+		totalLosses += r.Metrics.Losses
+		for _, t := range r.Trades {
+			if t.IsOpen {
+				continue
+			}
+			totalReturn += t.ReturnPct
+			if t.ReturnPct > 0 {
+				totalWinReturn += t.ReturnPct
+			} else {
+				totalLossReturn += math.Abs(t.ReturnPct)
+			}
+		}
+		if r.Metrics.MaxDrawdown > maxDrawdown {
+			maxDrawdown = r.Metrics.MaxDrawdown
+		}
+	}
+
+	totalTrades := totalWins + totalLosses
+	winRate := 0.0
+	if totalTrades > 0 {
+		winRate = float64(totalWins) / float64(totalTrades) * 100
+	}
+	riskReward := 0.0
+	if totalLosses > 0 && totalLossReturn > 0 {
+		avgWin := totalWinReturn / math.Max(float64(totalWins), 1)
+		avgLoss := totalLossReturn / float64(totalLosses)
+		riskReward = avgWin / avgLoss
+	}
+	avgReturn := 0.0
+	if totalTrades > 0 {
+		avgReturn = totalReturn / float64(totalTrades)
+	}
+
+	return ArenaBacktestMetrics{
+		WinRate: winRate, RiskReward: riskReward, TotalReturn: totalReturn,
+		AvgReturn: avgReturn, MaxDrawdown: maxDrawdown, NetProfit: totalReturn,
+		TotalTrades: totalTrades, Wins: totalWins, Losses: totalLosses,
 	}
 }
