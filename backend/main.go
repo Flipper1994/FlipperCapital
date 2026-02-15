@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -815,10 +816,14 @@ type LiveTradingConfig struct {
 	LongOnly      bool      `json:"long_only" gorm:"default:true"`
 	TradeAmount   float64   `json:"trade_amount" gorm:"default:500"`
 	FiltersJSON   string    `json:"filters_json" gorm:"type:text"`
-	FiltersActive bool      `json:"filters_active"`
-	Currency      string    `json:"currency" gorm:"default:'EUR'"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	FiltersActive   bool      `json:"filters_active"`
+	Currency        string    `json:"currency" gorm:"default:'EUR'"`
+	AlpacaApiKey    string    `json:"alpaca_api_key" gorm:"type:text"`
+	AlpacaSecretKey string    `json:"alpaca_secret_key" gorm:"type:text"`
+	AlpacaEnabled   bool      `json:"alpaca_enabled" gorm:"default:false"`
+	AlpacaPaper     bool      `json:"alpaca_paper" gorm:"default:true"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type LiveTradingSession struct {
@@ -863,6 +868,7 @@ type LiveTradingPosition struct {
 	ProfitLossAmt  float64    `json:"profit_loss_amt"`
 	NativeCurrency string     `json:"native_currency"`
 	SignalIndex    int        `json:"signal_index"`
+	AlpacaOrderID  string     `json:"alpaca_order_id"`
 	CreatedAt      time.Time  `json:"created_at"`
 }
 
@@ -967,6 +973,145 @@ var latestPriceCache sync.Map // key: symbol (string), value: float64
 var sessions = make(map[string]Session) // Legacy in-memory cache, DB is source of truth
 var httpClient = &http.Client{Timeout: 10 * time.Second}
 var twelveDataAPIKey string
+
+// ==================== Alpaca Broker Integration ====================
+
+func alpacaBaseURL(paper bool) string {
+	if paper {
+		return "https://paper-api.alpaca.markets"
+	}
+	return "https://api.alpaca.markets"
+}
+
+func alpacaRequest(method, path string, body interface{}, config LiveTradingConfig) (map[string]interface{}, error) {
+	baseURL := alpacaBaseURL(config.AlpacaPaper)
+	var reqBody io.Reader
+	if body != nil {
+		jsonBytes, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("alpaca marshal error: %v", err)
+		}
+		reqBody = bytes.NewReader(jsonBytes)
+	}
+	req, err := http.NewRequest(method, baseURL+path, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("alpaca request error: %v", err)
+	}
+	req.Header.Set("APCA-API-KEY-ID", config.AlpacaApiKey)
+	req.Header.Set("APCA-API-SECRET-KEY", config.AlpacaSecretKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("alpaca request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("alpaca read error: %v", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("alpaca error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("alpaca unmarshal error: %v", err)
+	}
+	return result, nil
+}
+
+func alpacaGetAccount(config LiveTradingConfig) (map[string]interface{}, error) {
+	return alpacaRequest("GET", "/v2/account", nil, config)
+}
+
+type AlpacaOrderResult struct {
+	OrderID        string
+	FilledAvgPrice float64
+	Status         string
+}
+
+func alpacaPlaceOrder(symbol string, qty int, side string, config LiveTradingConfig) (*AlpacaOrderResult, error) {
+	if qty <= 0 {
+		return nil, fmt.Errorf("alpaca: qty must be > 0, got %d", qty)
+	}
+	orderBody := map[string]interface{}{
+		"symbol":        symbol,
+		"qty":           fmt.Sprintf("%d", qty),
+		"side":          side,
+		"type":          "market",
+		"time_in_force": "day",
+	}
+	result, err := alpacaRequest("POST", "/v2/orders", orderBody, config)
+	if err != nil {
+		return nil, err
+	}
+
+	orderID, _ := result["id"].(string)
+	status, _ := result["status"].(string)
+	filledPrice := 0.0
+	if fp, ok := result["filled_avg_price"].(string); ok && fp != "" {
+		filledPrice, _ = strconv.ParseFloat(fp, 64)
+	}
+
+	return &AlpacaOrderResult{
+		OrderID:        orderID,
+		FilledAvgPrice: filledPrice,
+		Status:         status,
+	}, nil
+}
+
+func alpacaGetPositions(config LiveTradingConfig) ([]map[string]interface{}, error) {
+	baseURL := alpacaBaseURL(config.AlpacaPaper)
+	req, err := http.NewRequest("GET", baseURL+"/v2/positions", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("APCA-API-KEY-ID", config.AlpacaApiKey)
+	req.Header.Set("APCA-API-SECRET-KEY", config.AlpacaSecretKey)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("alpaca error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var positions []map[string]interface{}
+	json.Unmarshal(body, &positions)
+	return positions, nil
+}
+
+func alpacaGetOrders(config LiveTradingConfig) ([]map[string]interface{}, error) {
+	baseURL := alpacaBaseURL(config.AlpacaPaper)
+	req, err := http.NewRequest("GET", baseURL+"/v2/orders?status=closed&limit=50&direction=desc", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("APCA-API-KEY-ID", config.AlpacaApiKey)
+	req.Header.Set("APCA-API-SECRET-KEY", config.AlpacaSecretKey)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("alpaca error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var orders []map[string]interface{}
+	json.Unmarshal(body, &orders)
+	return orders, nil
+}
 
 // Yahoo Finance crumb-based auth client
 var (
@@ -1115,6 +1260,12 @@ func main() {
 
 	// Ensure existing users are visible in ranking (new column defaults to false in SQLite)
 	db.Exec("UPDATE users SET visible_in_ranking = 1 WHERE visible_in_ranking = 0 OR visible_in_ranking IS NULL")
+
+	// Ensure default invite code exists
+	var inviteSetting SystemSetting
+	if db.Where("key = ?", "invite_code").First(&inviteSetting).Error != nil {
+		db.Create(&SystemSetting{Key: "invite_code", Value: "KommInDieGruppe"})
+	}
 
 	// Ensure "Sonstiges" category exists
 	ensureSonstigesCategory()
@@ -1308,6 +1459,8 @@ func main() {
 		api.POST("/admin/run-full-update", authMiddleware(), adminOnly(), runFullUpdateHandler)
 		api.GET("/admin/scheduler-time", authMiddleware(), adminOnly(), getSchedulerTimeHandler)
 		api.PUT("/admin/scheduler-time", authMiddleware(), adminOnly(), setSchedulerTimeHandler)
+		api.GET("/admin/invite-code", authMiddleware(), adminOnly(), getInviteCodeHandler)
+		api.PUT("/admin/invite-code", authMiddleware(), adminOnly(), setInviteCodeHandler)
 		api.GET("/admin/bot-allowlist", authMiddleware(), adminOnly(), getBotAllowlist)
 		api.PUT("/admin/bot-allowlist", authMiddleware(), adminOnly(), updateBotAllowlist)
 		api.GET("/admin/bot-filter-config", authMiddleware(), adminOnly(), getBotFilterConfig)
@@ -1340,6 +1493,8 @@ func main() {
 		api.GET("/trading/live/session/:id", authMiddleware(), getLiveTradingSession)
 		api.POST("/trading/live/session/:id/resume", authMiddleware(), adminOnly(), resumeLiveTrading)
 		api.GET("/trading/live/logs/:sessionId", authMiddleware(), getLiveTradingLogs)
+		api.POST("/trading/live/alpaca/validate", authMiddleware(), adminOnly(), validateAlpacaKeys)
+		api.GET("/trading/live/alpaca/portfolio", authMiddleware(), getAlpacaPortfolio)
 
 		// Backtest Lab
 		api.POST("/backtest-lab", authMiddleware(), runBacktestLabHandler)
@@ -1553,14 +1708,24 @@ func checkPassword(password, hash string) bool {
 
 func register(c *gin.Context) {
 	var req struct {
-		Email    string `json:"email" binding:"required"`
-		Username string `json:"username" binding:"required"`
-		Password string `json:"password" binding:"required"`
+		Email      string `json:"email" binding:"required"`
+		Username   string `json:"username" binding:"required"`
+		Password   string `json:"password" binding:"required"`
+		InviteCode string `json:"invite_code"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Email, username and password are required"})
 		return
+	}
+
+	// Validate invite code
+	var inviteSetting SystemSetting
+	if db.Where("key = ?", "invite_code").First(&inviteSetting).Error == nil && inviteSetting.Value != "" {
+		if req.InviteCode != inviteSetting.Value {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Ungültiger Invite-Code"})
+			return
+		}
 	}
 
 	// Validate email format
@@ -1915,10 +2080,37 @@ func optionalAuthMiddleware() gin.HandlerFunc {
 	}
 }
 
+// liveOwnerUID returns the user ID to use for live trading read-access.
+// Admins see their own data; regular users see the first admin's data.
+func liveOwnerUID(c *gin.Context) uint {
+	userID, _ := c.Get("userID")
+	uid := userID.(uint)
+	isAdmin, _ := c.Get("isAdmin")
+	if isAdminBool, ok := isAdmin.(bool); ok && isAdminBool {
+		return uid
+	}
+	// Find admin who has a live trading config
+	var config LiveTradingConfig
+	if db.Joins("JOIN users ON users.id = live_trading_configs.user_id AND users.is_admin = ?", true).First(&config).Error == nil {
+		return config.UserID
+	}
+	return uid
+}
+
+func maskKey(key string) string {
+	if len(key) > 4 {
+		return "****" + key[len(key)-4:]
+	} else if key != "" {
+		return "****"
+	}
+	return ""
+}
+
 func adminOnly() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		isAdmin, exists := c.Get("isAdmin")
-		if !exists || !isAdmin.(bool) {
+		isAdminBool, ok := isAdmin.(bool)
+		if !exists || !ok || !isAdminBool {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Admin access required"})
 			c.Abort()
 			return
@@ -12691,6 +12883,43 @@ func setSchedulerTimeHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"time": req.Time, "message": "Scheduler time updated"})
 }
 
+// getInviteCodeHandler returns the current invite code
+func getInviteCodeHandler(c *gin.Context) {
+	var setting SystemSetting
+	code := "KommInDieGruppe"
+	if err := db.Where("key = ?", "invite_code").First(&setting).Error; err == nil {
+		code = setting.Value
+	}
+	c.JSON(http.StatusOK, gin.H{"code": code})
+}
+
+// setInviteCodeHandler updates the invite code
+func setInviteCodeHandler(c *gin.Context) {
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+	if strings.TrimSpace(req.Code) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invite-Code darf nicht leer sein"})
+		return
+	}
+
+	var setting SystemSetting
+	if err := db.Where("key = ?", "invite_code").First(&setting).Error; err != nil {
+		setting = SystemSetting{Key: "invite_code", Value: req.Code, UpdatedAt: time.Now()}
+		db.Create(&setting)
+	} else {
+		setting.Value = req.Code
+		setting.UpdatedAt = time.Now()
+		db.Save(&setting)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"code": req.Code, "message": "Invite-Code aktualisiert"})
+}
+
 // runFullStockUpdate performs the full stock update for all watchlist stocks
 func runFullStockUpdate(triggeredBy string) {
 	fmt.Printf("[FullUpdate] Starting full stock update triggered by: %s\n", triggeredBy)
@@ -22039,15 +22268,19 @@ func saveLiveTradingConfig(c *gin.Context) {
 	uid := userID.(uint)
 
 	var req struct {
-		Strategy      string                 `json:"strategy"`
-		Interval      string                 `json:"interval"`
-		Params        map[string]interface{} `json:"params"`
-		Symbols       []string               `json:"symbols"`
-		LongOnly      bool                   `json:"long_only"`
-		TradeAmount   float64                `json:"trade_amount"`
-		Filters       map[string]interface{} `json:"filters"`
-		FiltersActive bool                   `json:"filters_active"`
-		Currency      string                 `json:"currency"`
+		Strategy        string                 `json:"strategy"`
+		Interval        string                 `json:"interval"`
+		Params          map[string]interface{} `json:"params"`
+		Symbols         []string               `json:"symbols"`
+		LongOnly        bool                   `json:"long_only"`
+		TradeAmount     float64                `json:"trade_amount"`
+		Filters         map[string]interface{} `json:"filters"`
+		FiltersActive   bool                   `json:"filters_active"`
+		Currency        string                 `json:"currency"`
+		AlpacaApiKey    *string                `json:"alpaca_api_key"`
+		AlpacaSecretKey *string                `json:"alpaca_secret_key"`
+		AlpacaEnabled   *bool                  `json:"alpaca_enabled"`
+		AlpacaPaper     *bool                  `json:"alpaca_paper"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "Ungültige Anfrage"})
@@ -22074,6 +22307,18 @@ func saveLiveTradingConfig(c *gin.Context) {
 	config.FiltersJSON = string(filtersBytes)
 	config.FiltersActive = req.FiltersActive
 	config.Currency = currency
+	if req.AlpacaApiKey != nil && !strings.HasPrefix(*req.AlpacaApiKey, "****") {
+		config.AlpacaApiKey = *req.AlpacaApiKey
+	}
+	if req.AlpacaSecretKey != nil && !strings.HasPrefix(*req.AlpacaSecretKey, "****") {
+		config.AlpacaSecretKey = *req.AlpacaSecretKey
+	}
+	if req.AlpacaEnabled != nil {
+		config.AlpacaEnabled = *req.AlpacaEnabled
+	}
+	if req.AlpacaPaper != nil {
+		config.AlpacaPaper = *req.AlpacaPaper
+	}
 	config.UpdatedAt = time.Now()
 	db.Save(&config)
 
@@ -22092,9 +22337,144 @@ func saveLiveTradingConfig(c *gin.Context) {
 	})
 }
 
+func validateAlpacaKeys(c *gin.Context) {
+	var req struct {
+		ApiKey    string `json:"api_key"`
+		SecretKey string `json:"secret_key"`
+		Paper     bool   `json:"paper"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.ApiKey == "" || req.SecretKey == "" {
+		c.JSON(400, gin.H{"error": "API Key und Secret Key erforderlich"})
+		return
+	}
+
+	tempConfig := LiveTradingConfig{
+		AlpacaApiKey:    req.ApiKey,
+		AlpacaSecretKey: req.SecretKey,
+		AlpacaPaper:     req.Paper,
+	}
+	account, err := alpacaGetAccount(tempConfig)
+	if err != nil {
+		c.JSON(400, gin.H{"error": fmt.Sprintf("Verbindung fehlgeschlagen: %v", err)})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"status":        account["status"],
+		"buying_power":  account["buying_power"],
+		"cash":          account["cash"],
+		"account_number": account["account_number"],
+		"paper":         req.Paper,
+	})
+}
+
+func getAlpacaPortfolio(c *gin.Context) {
+	uid := liveOwnerUID(c)
+
+	var config LiveTradingConfig
+	if db.Where("user_id = ?", uid).First(&config).Error != nil || !config.AlpacaEnabled || config.AlpacaApiKey == "" {
+		c.JSON(400, gin.H{"error": "Alpaca nicht konfiguriert"})
+		return
+	}
+
+	account, err := alpacaGetAccount(config)
+	if err != nil {
+		c.JSON(400, gin.H{"error": fmt.Sprintf("Account-Abfrage fehlgeschlagen: %v", err)})
+		return
+	}
+
+	positions, err := alpacaGetPositions(config)
+	if err != nil {
+		positions = []map[string]interface{}{}
+	}
+
+	orders, err := alpacaGetOrders(config)
+	if err != nil {
+		orders = []map[string]interface{}{}
+	}
+
+	// Build clean position list
+	cleanPositions := []gin.H{}
+	for _, p := range positions {
+		avgEntry, _ := strconv.ParseFloat(fmt.Sprintf("%v", p["avg_entry_price"]), 64)
+		currentPrice, _ := strconv.ParseFloat(fmt.Sprintf("%v", p["current_price"]), 64)
+		marketValue, _ := strconv.ParseFloat(fmt.Sprintf("%v", p["market_value"]), 64)
+		unrealizedPL, _ := strconv.ParseFloat(fmt.Sprintf("%v", p["unrealized_pl"]), 64)
+		unrealizedPLPct, _ := strconv.ParseFloat(fmt.Sprintf("%v", p["unrealized_plpc"]), 64)
+		qty, _ := strconv.ParseFloat(fmt.Sprintf("%v", p["qty"]), 64)
+
+		cleanPositions = append(cleanPositions, gin.H{
+			"symbol":            p["symbol"],
+			"qty":               qty,
+			"side":              p["side"],
+			"avg_entry_price":   avgEntry,
+			"current_price":     currentPrice,
+			"market_value":      marketValue,
+			"unrealized_pl":     unrealizedPL,
+			"unrealized_pl_pct": unrealizedPLPct * 100,
+		})
+	}
+
+	// Build clean order list (last 20)
+	cleanOrders := []gin.H{}
+	limit := 20
+	if len(orders) < limit {
+		limit = len(orders)
+	}
+	for _, o := range orders[:limit] {
+		filledPrice := 0.0
+		if fp, ok := o["filled_avg_price"].(string); ok && fp != "" {
+			filledPrice, _ = strconv.ParseFloat(fp, 64)
+		}
+		filledQty := ""
+		if fq, ok := o["filled_qty"].(string); ok {
+			filledQty = fq
+		}
+		cleanOrders = append(cleanOrders, gin.H{
+			"id":               o["id"],
+			"symbol":           o["symbol"],
+			"side":             o["side"],
+			"qty":              o["qty"],
+			"filled_qty":       filledQty,
+			"filled_avg_price": filledPrice,
+			"status":           o["status"],
+			"created_at":       o["created_at"],
+			"filled_at":        o["filled_at"],
+		})
+	}
+
+	equity, _ := strconv.ParseFloat(fmt.Sprintf("%v", account["equity"]), 64)
+	buyingPower, _ := strconv.ParseFloat(fmt.Sprintf("%v", account["buying_power"]), 64)
+	cash, _ := strconv.ParseFloat(fmt.Sprintf("%v", account["cash"]), 64)
+	portfolioValue, _ := strconv.ParseFloat(fmt.Sprintf("%v", account["portfolio_value"]), 64)
+	lastEquity, _ := strconv.ParseFloat(fmt.Sprintf("%v", account["last_equity"]), 64)
+	dayChange := equity - lastEquity
+	dayChangePct := 0.0
+	if lastEquity > 0 {
+		dayChangePct = dayChange / lastEquity * 100
+	}
+
+	c.JSON(200, gin.H{
+		"account": gin.H{
+			"equity":          equity,
+			"buying_power":    buyingPower,
+			"cash":            cash,
+			"portfolio_value": portfolioValue,
+			"last_equity":     lastEquity,
+			"day_change":      dayChange,
+			"day_change_pct":  dayChangePct,
+			"status":          account["status"],
+			"paper":           config.AlpacaPaper,
+		},
+		"positions": cleanPositions,
+		"orders":    cleanOrders,
+	})
+}
+
 func getLiveTradingConfig(c *gin.Context) {
-	userID, _ := c.Get("userID")
-	uid := userID.(uint)
+	uid := liveOwnerUID(c)
+	isAdmin, _ := c.Get("isAdmin")
+	isAdminBool, _ := isAdmin.(bool)
 
 	var config LiveTradingConfig
 	if db.Where("user_id = ?", uid).First(&config).Error != nil {
@@ -22109,7 +22489,7 @@ func getLiveTradingConfig(c *gin.Context) {
 	var filters map[string]interface{}
 	json.Unmarshal([]byte(config.FiltersJSON), &filters)
 
-	c.JSON(200, gin.H{
+	result := gin.H{
 		"id":             config.ID,
 		"strategy":       config.Strategy,
 		"interval":       config.Interval,
@@ -22121,7 +22501,17 @@ func getLiveTradingConfig(c *gin.Context) {
 		"filters_active": config.FiltersActive,
 		"currency":       config.Currency,
 		"updated_at":     config.UpdatedAt,
-	})
+		"alpaca_enabled": config.AlpacaEnabled,
+		"alpaca_paper":   config.AlpacaPaper,
+	}
+
+	// Only admins see API keys (masked)
+	if isAdminBool {
+		result["alpaca_api_key"] = maskKey(config.AlpacaApiKey)
+		result["alpaca_secret_key"] = maskKey(config.AlpacaSecretKey)
+	}
+
+	c.JSON(200, result)
 }
 
 func startLiveTrading(c *gin.Context) {
@@ -22226,8 +22616,7 @@ func stopLiveTrading(c *gin.Context) {
 }
 
 func getLiveTradingStatus(c *gin.Context) {
-	userID, _ := c.Get("userID")
-	uid := userID.(uint)
+	uid := liveOwnerUID(c)
 
 	liveSchedulerMu.Lock()
 	running := liveSchedulerRunning
@@ -22278,8 +22667,10 @@ func getLiveTradingStatus(c *gin.Context) {
 		}
 	}
 
-	// If not running, check for last session that can be resumed
-	if !running {
+	// If not running, check for last session that can be resumed (admin only)
+	isAdmin, _ := c.Get("isAdmin")
+	isAdminBool, _ := isAdmin.(bool)
+	if !running && isAdminBool {
 		var lastSession LiveTradingSession
 		if db.Where("user_id = ? AND is_active = ?", uid, false).Order("stopped_at DESC").First(&lastSession).Error == nil {
 			// Check if config still matches
@@ -22318,8 +22709,7 @@ func getLiveTradingStatus(c *gin.Context) {
 }
 
 func getLiveTradingSessions(c *gin.Context) {
-	userID, _ := c.Get("userID")
-	uid := userID.(uint)
+	uid := liveOwnerUID(c)
 
 	var sessions []LiveTradingSession
 	db.Where("user_id = ?", uid).Order("started_at DESC").Find(&sessions)
@@ -22381,8 +22771,7 @@ func getLiveTradingSessions(c *gin.Context) {
 }
 
 func getLiveTradingSession(c *gin.Context) {
-	userID, _ := c.Get("userID")
-	uid := userID.(uint)
+	uid := liveOwnerUID(c)
 	id := c.Param("id")
 
 	var session LiveTradingSession
@@ -22524,6 +22913,10 @@ func runLiveScan(sessionID uint) {
 	var symbols []string
 	json.Unmarshal([]byte(session.Symbols), &symbols)
 
+	// Load config for Alpaca integration
+	var liveConfig LiveTradingConfig
+	db.Where("user_id = ?", session.UserID).First(&liveConfig)
+
 	strategy := createStrategyFromJSON(session.Strategy, session.ParamsJSON)
 	if strategy == nil {
 		logLiveEvent(sessionID, "SKIP", "-", fmt.Sprintf("Unbekannte Strategie: %s", session.Strategy))
@@ -22559,7 +22952,7 @@ func runLiveScan(sessionID uint) {
 		liveCurrentSymbol = symbol
 		liveSchedulerPollMu.Unlock()
 
-		if price, ok := processLiveSymbol(session, symbol, strategy, period, yahooInterval); ok {
+		if price, ok := processLiveSymbol(session, symbol, strategy, period, yahooInterval, liveConfig); ok {
 			priceMap[symbol] = price
 		}
 	}
@@ -22585,7 +22978,7 @@ func runLiveScan(sessionID uint) {
 	})
 }
 
-func processLiveSymbol(session LiveTradingSession, symbol string, strategy TradingStrategy, period, yahooInterval string) (float64, bool) {
+func processLiveSymbol(session LiveTradingSession, symbol string, strategy TradingStrategy, period, yahooInterval string, config LiveTradingConfig) (float64, bool) {
 	ohlcv, err := fetchOHLCVFromYahoo(symbol, period, yahooInterval)
 	if err != nil || len(ohlcv) < 50 {
 		logLiveEvent(session.ID, "SKIP", symbol, "OHLCV nicht verfügbar")
@@ -22662,6 +23055,29 @@ func processLiveSymbol(session LiveTradingSession, symbol string, strategy Tradi
 				CreatedAt:      time.Now(),
 			}
 			db.Create(&pos)
+
+			// Alpaca: Place order if enabled
+			if config.AlpacaEnabled && config.AlpacaApiKey != "" {
+				priceForQty := entryPriceUSD
+				if priceForQty <= 0 {
+					priceForQty = entryPriceNative
+				}
+				tradeAmountUSD := convertToUSD(session.TradeAmount, session.Currency)
+				qty := int(math.Floor(tradeAmountUSD / priceForQty))
+				side := "buy"
+				if sig.Direction == "SHORT" {
+					side = "sell"
+				}
+				orderResult, err := alpacaPlaceOrder(symbol, qty, side, config)
+				if err != nil {
+					logLiveEvent(session.ID, "ERROR", symbol, fmt.Sprintf("Alpaca Order fehlgeschlagen: %v", err))
+				} else {
+					pos.AlpacaOrderID = orderResult.OrderID
+					db.Model(&pos).Update("alpaca_order_id", orderResult.OrderID)
+					logLiveEvent(session.ID, "ALPACA", symbol, fmt.Sprintf("Order platziert: %s %dx %s (ID: %s, Status: %s)", side, qty, symbol, orderResult.OrderID, orderResult.Status))
+				}
+			}
+
 			hasOpenPos = true
 			existingPos = pos
 			slInfo := ""
@@ -22677,7 +23093,7 @@ func processLiveSymbol(session LiveTradingSession, symbol string, strategy Tradi
 		} else if hasOpenPos && existingPos.Direction != sig.Direction {
 			// Close on opposing signal
 			closePriceNative := ohlcv[sig.Index].Open
-			closeLivePosition(&existingPos, closePriceNative, "SIGNAL", nativeCurrency)
+			closeLivePosition(&existingPos, closePriceNative, "SIGNAL", nativeCurrency, config)
 			logLiveEvent(session.ID, "CLOSE", symbol, fmt.Sprintf("Gegensignal — %s geschlossen @ %.4f (%.2f%%, %.2f EUR)", existingPos.Direction, closePriceNative, existingPos.ProfitLossPct, existingPos.ProfitLossAmt))
 			hasOpenPos = false
 		}
@@ -22694,18 +23110,18 @@ func processLiveSymbol(session LiveTradingSession, symbol string, strategy Tradi
 			if existingPos.Direction == "LONG" {
 				// SL checked BEFORE TP (matches backtest engine)
 				if existingPos.StopLoss > 0 && bar.Low <= existingPos.StopLoss {
-					closeLivePosition(&existingPos, existingPos.StopLoss, "SL", nativeCurrency)
+					closeLivePosition(&existingPos, existingPos.StopLoss, "SL", nativeCurrency, config)
 					closed = true
 				} else if existingPos.TakeProfit > 0 && bar.High >= existingPos.TakeProfit {
-					closeLivePosition(&existingPos, existingPos.TakeProfit, "TP", nativeCurrency)
+					closeLivePosition(&existingPos, existingPos.TakeProfit, "TP", nativeCurrency, config)
 					closed = true
 				}
 			} else {
 				if existingPos.StopLoss > 0 && bar.High >= existingPos.StopLoss {
-					closeLivePosition(&existingPos, existingPos.StopLoss, "SL", nativeCurrency)
+					closeLivePosition(&existingPos, existingPos.StopLoss, "SL", nativeCurrency, config)
 					closed = true
 				} else if existingPos.TakeProfit > 0 && bar.Low <= existingPos.TakeProfit {
-					closeLivePosition(&existingPos, existingPos.TakeProfit, "TP", nativeCurrency)
+					closeLivePosition(&existingPos, existingPos.TakeProfit, "TP", nativeCurrency, config)
 					closed = true
 				}
 			}
@@ -22731,7 +23147,7 @@ func processLiveSymbol(session LiveTradingSession, symbol string, strategy Tradi
 	return lastPrice, true
 }
 
-func closeLivePosition(pos *LiveTradingPosition, closePriceNative float64, reason, nativeCurrency string) {
+func closeLivePosition(pos *LiveTradingPosition, closePriceNative float64, reason, nativeCurrency string, config ...LiveTradingConfig) {
 	now := time.Now()
 	pos.IsClosed = true
 	pos.ClosePrice = closePriceNative
@@ -22755,6 +23171,25 @@ func closeLivePosition(pos *LiveTradingPosition, closePriceNative float64, reaso
 	db.Save(pos)
 	if reason == "SL" || reason == "TP" {
 		logLiveEvent(pos.SessionID, reason, pos.Symbol, fmt.Sprintf("%s ausgelöst — %s geschlossen @ %.4f (%.2f%%, %.2f EUR)", reason, pos.Direction, closePriceNative, pos.ProfitLossPct, pos.ProfitLossAmt))
+	}
+
+	// Alpaca: Close position if order was placed
+	if len(config) > 0 && pos.AlpacaOrderID != "" && config[0].AlpacaEnabled {
+		side := "sell"
+		if pos.Direction == "SHORT" {
+			side = "buy"
+		}
+		investedUSD := convertToUSD(pos.InvestedAmount, config[0].Currency)
+		qty := int(math.Floor(investedUSD / pos.EntryPriceUSD))
+		if qty <= 0 {
+			qty = 1
+		}
+		orderResult, err := alpacaPlaceOrder(pos.Symbol, qty, side, config[0])
+		if err != nil {
+			logLiveEvent(pos.SessionID, "ERROR", pos.Symbol, fmt.Sprintf("Alpaca Close-Order fehlgeschlagen: %v", err))
+		} else {
+			logLiveEvent(pos.SessionID, "ALPACA", pos.Symbol, fmt.Sprintf("Close-Order: %s %dx %s (ID: %s, P&L: %.2f%%)", side, qty, pos.Symbol, orderResult.OrderID, pos.ProfitLossPct))
+		}
 	}
 }
 

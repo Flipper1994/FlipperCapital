@@ -117,13 +117,10 @@ function Sidebar({ isLoggedIn, isAdmin, user, isOpen, onClose }) {
               // Only Admin Panel is hidden for non-admins
               if (item.requiresAdmin && !isAdmin) return null
 
-              // For redirectIfNotAuth items: redirect to register if not logged in
-              const linkPath = (item.redirectIfNotAuth && !isLoggedIn) ? item.redirectIfNotAuth : item.path
-
               return (
                 <li key={item.path}>
                     <NavLink
-                      to={linkPath}
+                      to={item.path}
                       onClick={handleNavClick}
                       className={({ isActive }) =>
                         `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${

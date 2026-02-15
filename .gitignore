@@ -57,3 +57,6 @@ markos_cutout_fixed.png
 
 # Test import files
 europe150_import.json
+
+# Integration tests (enthalten Credentials)
+frontend/src/tests/live_trading_integration.test.mjs

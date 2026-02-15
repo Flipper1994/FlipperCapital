@@ -21,6 +21,17 @@ function LiveTrading({ isAdmin, token }) {
   const [debugLogs, setDebugLogs] = useState([])
   const [lastLogId, setLastLogId] = useState(0)
   const [notificationsEnabled, setNotificationsEnabled] = useState(false)
+  const [showAlpaca, setShowAlpaca] = useState(false)
+  const [alpacaKey, setAlpacaKey] = useState('')
+  const [alpacaSecret, setAlpacaSecret] = useState('')
+  const [alpacaEnabled, setAlpacaEnabled] = useState(false)
+  const [alpacaPaper, setAlpacaPaper] = useState(true)
+  const [alpacaValidation, setAlpacaValidation] = useState(null)
+  const [alpacaValidating, setAlpacaValidating] = useState(false)
+  const [tradeAmount, setTradeAmount] = useState(500)
+  const [alpacaPortfolio, setAlpacaPortfolio] = useState(null)
+  const [alpacaPortfolioLoading, setAlpacaPortfolioLoading] = useState(false)
+  const [showAlpacaOrders, setShowAlpacaOrders] = useState(false)
   const { formatPrice, currency } = useCurrency()
   const pollRef = useRef(null)
   const posPollRef = useRef(null)
@@ -36,6 +47,11 @@ function LiveTrading({ isAdmin, token }) {
       if (res.ok) {
         const data = await res.json()
         if (data.symbols) setConfig(data)
+        if (data.alpaca_api_key) setAlpacaKey(data.alpaca_api_key)
+        if (data.alpaca_secret_key) setAlpacaSecret(data.alpaca_secret_key)
+        if (data.alpaca_enabled != null) setAlpacaEnabled(data.alpaca_enabled)
+        if (data.alpaca_paper != null) setAlpacaPaper(data.alpaca_paper)
+        if (data.trade_amount) setTradeAmount(data.trade_amount)
       }
     } catch { /* ignore */ }
   }, [token])
@@ -73,12 +89,35 @@ function LiveTrading({ isAdmin, token }) {
     } catch { /* ignore */ }
   }, [token])
 
+  const fetchAlpacaPortfolio = useCallback(async () => {
+    try {
+      const res = await fetch('/api/trading/live/alpaca/portfolio', { headers })
+      if (res.ok) {
+        const data = await res.json()
+        setAlpacaPortfolio(data)
+      }
+    } catch { /* ignore */ }
+  }, [token])
+
   // Load on mount
   useEffect(() => {
     fetchConfig()
     fetchStatus()
     fetchSessions()
   }, [])
+
+  // Fetch Alpaca portfolio when enabled
+  const alpacaPollRef = useRef(null)
+  useEffect(() => {
+    if (!alpacaEnabled) {
+      if (alpacaPollRef.current) clearInterval(alpacaPollRef.current)
+      setAlpacaPortfolio(null)
+      return
+    }
+    fetchAlpacaPortfolio()
+    alpacaPollRef.current = setInterval(fetchAlpacaPortfolio, 30000)
+    return () => clearInterval(alpacaPollRef.current)
+  }, [alpacaEnabled])
 
   // Poll status when session is active
   useEffect(() => {
@@ -421,26 +460,337 @@ function LiveTrading({ isAdmin, token }) {
         )}
       </div>
 
-      {/* Resume Banner */}
-      {isAdmin && !status?.is_running && status?.last_session?.can_resume && (
-        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 mb-4 flex items-center justify-between">
-          <div>
-            <div className="text-sm font-medium text-amber-400">
-              Session #{status.last_session.id} wurde unterbrochen
+      {/* Alpaca Broker Section — Admin only */}
+      {isAdmin && (
+        <div className="bg-dark-800 rounded-lg border border-dark-600 mb-4">
+          <button
+            onClick={() => setShowAlpaca(!showAlpaca)}
+            className="w-full flex items-center justify-between p-4 text-sm hover:bg-dark-700 transition-colors rounded-lg"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-gray-300 font-medium">Broker-Anbindung</span>
+              {alpacaEnabled && (
+                <span className="px-2 py-0.5 rounded text-xs bg-green-500/20 text-green-400 border border-green-500/30">
+                  {alpacaPaper ? 'Paper' : 'Live'}
+                </span>
+              )}
+              {!alpacaEnabled && <span className="text-gray-600 text-xs">Optional</span>}
             </div>
-            <div className="text-xs text-amber-400/70 mt-0.5">
+            <svg className={`w-4 h-4 text-gray-500 transition-transform ${showAlpaca ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          {showAlpaca && (
+            <div className="px-4 pb-4 space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-gray-500 block mb-1">Alpaca API Key</label>
+                  <input
+                    type="text"
+                    value={alpacaKey}
+                    onChange={e => setAlpacaKey(e.target.value)}
+                    placeholder="PK..."
+                    className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-accent-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 block mb-1">Secret Key</label>
+                  <input
+                    type="password"
+                    value={alpacaSecret}
+                    onChange={e => setAlpacaSecret(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-accent-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">Betrag pro Trade ({currency || 'EUR'})</label>
+                <input
+                  type="number"
+                  value={tradeAmount}
+                  onChange={e => setTradeAmount(Number(e.target.value) || 0)}
+                  min="1"
+                  step="50"
+                  className="w-full md:w-48 bg-dark-700 border border-dark-500 rounded px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-accent-500 focus:outline-none"
+                />
+              </div>
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={async () => {
+                    setAlpacaValidating(true)
+                    setAlpacaValidation(null)
+                    try {
+                      const res = await fetch('/api/trading/live/alpaca/validate', {
+                        method: 'POST',
+                        headers: { ...headers, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ api_key: alpacaKey, secret_key: alpacaSecret, paper: alpacaPaper })
+                      })
+                      const data = await res.json()
+                      if (res.ok) {
+                        setAlpacaValidation({ ok: true, ...data })
+                      } else {
+                        setAlpacaValidation({ ok: false, error: data.error })
+                      }
+                    } catch {
+                      setAlpacaValidation({ ok: false, error: 'Verbindungsfehler' })
+                    }
+                    setAlpacaValidating(false)
+                  }}
+                  disabled={!alpacaKey || !alpacaSecret || alpacaValidating}
+                  className="px-3 py-1.5 text-xs bg-accent-600 hover:bg-accent-500 disabled:bg-dark-600 disabled:text-gray-600 text-white rounded transition-colors"
+                >
+                  {alpacaValidating ? 'Prüfe...' : 'Verbindung testen'}
+                </button>
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={alpacaEnabled}
+                    onChange={e => setAlpacaEnabled(e.target.checked)}
+                    className="rounded bg-dark-700 border-dark-500 text-accent-500 focus:ring-accent-500"
+                  />
+                  <span className="text-gray-300">Orders an Alpaca senden</span>
+                </label>
+              </div>
+              {alpacaValidation && (
+                <div className={`text-xs p-2 rounded ${alpacaValidation.ok ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
+                  {alpacaValidation.ok
+                    ? `Verbunden — Status: ${alpacaValidation.status} | Kaufkraft: $${Number(alpacaValidation.buying_power).toLocaleString('de-DE')} | ${alpacaValidation.paper ? 'Paper Trading' : 'LIVE'}`
+                    : `Fehler: ${alpacaValidation.error}`
+                  }
+                </div>
+              )}
+              {alpacaEnabled && (
+                <div className="text-xs text-yellow-400/70 bg-yellow-500/5 border border-yellow-500/10 rounded p-2">
+                  {alpacaPaper
+                    ? 'Paper-Trading aktiv — keine echten Trades. Orders werden an die Alpaca Paper-API gesendet.'
+                    : 'LIVE-Trading aktiv — echte Orders werden ausgeführt!'
+                  }
+                </div>
+              )}
+              <div className="flex justify-end">
+                <button
+                  onClick={async () => {
+                    try {
+                      await fetch('/api/trading/live/config', {
+                        method: 'POST',
+                        headers: { ...headers, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          ...config,
+                          alpaca_api_key: alpacaKey,
+                          alpaca_secret_key: alpacaSecret,
+                          alpaca_enabled: alpacaEnabled,
+                          alpaca_paper: alpacaPaper,
+                          trade_amount: tradeAmount,
+                        })
+                      })
+                      setShowAlpaca(false)
+                    } catch { alert('Speichern fehlgeschlagen') }
+                  }}
+                  className="px-4 py-1.5 text-xs bg-dark-600 hover:bg-dark-500 text-white rounded transition-colors"
+                >
+                  Speichern
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Alpaca Portfolio */}
+      {alpacaEnabled && alpacaPortfolio && (
+        <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold text-white">Alpaca Portfolio</h3>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded ${alpacaPortfolio.account.paper ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'bg-green-500/20 text-green-400 border border-green-500/30'}`}>
+                {alpacaPortfolio.account.paper ? 'PAPER' : 'LIVE'}
+              </span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded ${alpacaPortfolio.account.status === 'ACTIVE' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                {alpacaPortfolio.account.status}
+              </span>
+            </div>
+            <button
+              onClick={() => { setAlpacaPortfolioLoading(true); fetchAlpacaPortfolio().finally(() => setAlpacaPortfolioLoading(false)) }}
+              className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+              title="Aktualisieren"
+            >
+              {alpacaPortfolioLoading ? '...' : '↻'}
+            </button>
+          </div>
+
+          {/* Account Overview */}
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-4">
+            {[
+              { label: 'Gesamtwert', value: `$${alpacaPortfolio.account.equity.toLocaleString('de-DE', { minimumFractionDigits: 2 })}`, color: 'text-white' },
+              { label: 'Kaufkraft', value: `$${alpacaPortfolio.account.buying_power.toLocaleString('de-DE', { minimumFractionDigits: 2 })}`, color: 'text-accent-400' },
+              { label: 'Bargeld', value: `$${alpacaPortfolio.account.cash.toLocaleString('de-DE', { minimumFractionDigits: 2 })}`, color: 'text-gray-300' },
+              { label: 'Tagesänderung', value: `${alpacaPortfolio.account.day_change >= 0 ? '+' : ''}$${alpacaPortfolio.account.day_change.toLocaleString('de-DE', { minimumFractionDigits: 2 })}`, color: alpacaPortfolio.account.day_change >= 0 ? 'text-green-400' : 'text-red-400' },
+              { label: 'Tages %', value: `${alpacaPortfolio.account.day_change_pct >= 0 ? '+' : ''}${alpacaPortfolio.account.day_change_pct.toFixed(2)}%`, color: alpacaPortfolio.account.day_change_pct >= 0 ? 'text-green-400' : 'text-red-400' },
+            ].map((item, i) => (
+              <div key={i} className="bg-dark-700 rounded-lg p-3">
+                <div className="text-[10px] text-gray-500 uppercase tracking-wider">{item.label}</div>
+                <div className={`text-sm font-bold mt-1 ${item.color}`}>{item.value}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Open Positions */}
+          {alpacaPortfolio.positions.length > 0 && (
+            <div className="mb-4">
+              <h4 className="text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">Offene Positionen ({alpacaPortfolio.positions.length})</h4>
+
+              {/* Mobile Cards */}
+              <div className="md:hidden space-y-2">
+                {alpacaPortfolio.positions.map((p, i) => (
+                  <div key={i} className="bg-dark-700 rounded-lg p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-accent-400">{p.symbol}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${p.side === 'long' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{p.side.toUpperCase()}</span>
+                        <span className="text-[10px] text-gray-500">{p.qty}x</span>
+                      </div>
+                      <span className={`text-sm font-bold ${p.unrealized_pl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {p.unrealized_pl >= 0 ? '+' : ''}{p.unrealized_pl_pct.toFixed(2)}%
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-[10px]">
+                      <div><span className="text-gray-500">Einstieg:</span> <span className="text-gray-300">${p.avg_entry_price.toFixed(2)}</span></div>
+                      <div><span className="text-gray-500">Aktuell:</span> <span className="text-gray-300">${p.current_price.toFixed(2)}</span></div>
+                      <div><span className="text-gray-500">G/V:</span> <span className={p.unrealized_pl >= 0 ? 'text-green-400' : 'text-red-400'}>{p.unrealized_pl >= 0 ? '+' : ''}${p.unrealized_pl.toFixed(2)}</span></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Desktop Table */}
+              <div className="hidden md:block overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-gray-500 text-left">
+                      <th className="pb-2 pr-3">Symbol</th>
+                      <th className="pb-2 pr-3">Seite</th>
+                      <th className="pb-2 pr-3 text-right">Stück</th>
+                      <th className="pb-2 pr-3 text-right">Einstieg</th>
+                      <th className="pb-2 pr-3 text-right">Aktuell</th>
+                      <th className="pb-2 pr-3 text-right">Marktwert</th>
+                      <th className="pb-2 pr-3 text-right">G/V $</th>
+                      <th className="pb-2 text-right">G/V %</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {alpacaPortfolio.positions.map((p, i) => (
+                      <tr key={i} className="border-t border-dark-600/50">
+                        <td className="py-2 pr-3 font-medium text-accent-400">{p.symbol}</td>
+                        <td className={`py-2 pr-3 font-medium ${p.side === 'long' ? 'text-green-400' : 'text-red-400'}`}>{p.side.toUpperCase()}</td>
+                        <td className="py-2 pr-3 text-right text-gray-300">{p.qty}</td>
+                        <td className="py-2 pr-3 text-right text-gray-400">${p.avg_entry_price.toFixed(2)}</td>
+                        <td className="py-2 pr-3 text-right text-gray-300">${p.current_price.toFixed(2)}</td>
+                        <td className="py-2 pr-3 text-right text-gray-300">${p.market_value.toLocaleString('de-DE', { minimumFractionDigits: 2 })}</td>
+                        <td className={`py-2 pr-3 text-right font-medium ${p.unrealized_pl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {p.unrealized_pl >= 0 ? '+' : ''}${p.unrealized_pl.toFixed(2)}
+                        </td>
+                        <td className={`py-2 text-right font-medium ${p.unrealized_pl_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {p.unrealized_pl_pct >= 0 ? '+' : ''}{p.unrealized_pl_pct.toFixed(2)}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t border-dark-500">
+                      <td colSpan={5} className="py-2 pr-3 text-gray-400 font-medium">Gesamt</td>
+                      <td className="py-2 pr-3 text-right text-white font-medium">
+                        ${alpacaPortfolio.positions.reduce((s, p) => s + p.market_value, 0).toLocaleString('de-DE', { minimumFractionDigits: 2 })}
+                      </td>
+                      <td className={`py-2 pr-3 text-right font-bold ${alpacaPortfolio.positions.reduce((s, p) => s + p.unrealized_pl, 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {alpacaPortfolio.positions.reduce((s, p) => s + p.unrealized_pl, 0) >= 0 ? '+' : ''}${alpacaPortfolio.positions.reduce((s, p) => s + p.unrealized_pl, 0).toFixed(2)}
+                      </td>
+                      <td></td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {alpacaPortfolio.positions.length === 0 && (
+            <div className="text-center py-4 text-gray-600 text-sm">Keine offenen Positionen</div>
+          )}
+
+          {/* Recent Orders */}
+          {alpacaPortfolio.orders.length > 0 && (
+            <div>
+              <button
+                onClick={() => setShowAlpacaOrders(!showAlpacaOrders)}
+                className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors mb-2"
+              >
+                <svg className={`w-3 h-3 transition-transform ${showAlpacaOrders ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+                Letzte Orders ({alpacaPortfolio.orders.length})
+              </button>
+              {showAlpacaOrders && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[10px]">
+                    <thead>
+                      <tr className="text-gray-600">
+                        <th className="text-left pb-1">Symbol</th>
+                        <th className="text-left pb-1">Seite</th>
+                        <th className="text-right pb-1">Stück</th>
+                        <th className="text-right pb-1">Preis</th>
+                        <th className="text-left pb-1">Status</th>
+                        <th className="text-left pb-1">Datum</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {alpacaPortfolio.orders.map((o, i) => (
+                        <tr key={i} className="border-t border-dark-700/50">
+                          <td className="py-1 text-gray-300">{o.symbol}</td>
+                          <td className={o.side === 'buy' ? 'text-green-400' : 'text-red-400'}>{o.side.toUpperCase()}</td>
+                          <td className="py-1 text-right text-gray-400">{o.filled_qty || o.qty}</td>
+                          <td className="py-1 text-right text-gray-400">{o.filled_avg_price > 0 ? `$${o.filled_avg_price.toFixed(2)}` : '-'}</td>
+                          <td className={`py-1 ${o.status === 'filled' ? 'text-green-400' : o.status === 'canceled' ? 'text-gray-600' : 'text-amber-400'}`}>{o.status}</td>
+                          <td className="py-1 text-gray-600">{o.filled_at ? new Date(o.filled_at).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Resume Banner */}
+      {isAdmin && !status?.is_running && status?.last_session && (
+        <div className={`rounded-lg p-4 mb-4 flex items-center justify-between ${
+          status.last_session.can_resume
+            ? 'bg-amber-500/10 border border-amber-500/30'
+            : 'bg-dark-700 border border-dark-500'
+        }`}>
+          <div>
+            <div className={`text-sm font-medium ${status.last_session.can_resume ? 'text-amber-400' : 'text-gray-400'}`}>
+              Session #{status.last_session.id} wurde {status.last_session.can_resume ? 'unterbrochen' : 'beendet'}
+            </div>
+            <div className={`text-xs mt-0.5 ${status.last_session.can_resume ? 'text-amber-400/70' : 'text-gray-500'}`}>
               {STRATEGY_LABELS[status.last_session.strategy] || status.last_session.strategy} | {status.last_session.interval} | {status.last_session.symbols_count} Aktien | {status.last_session.total_polls} Polls
               {status.last_session.open_positions > 0 && (
-                <span className="text-amber-300 ml-2">{status.last_session.open_positions} offene Position(en)</span>
+                <span className={`ml-2 ${status.last_session.can_resume ? 'text-amber-300' : 'text-yellow-500'}`}>{status.last_session.open_positions} offene Position(en)</span>
+              )}
+              {!status.last_session.can_resume && (
+                <span className="text-gray-600 ml-2">Config geändert — nicht fortsetzbar</span>
               )}
             </div>
           </div>
-          <button
-            onClick={() => resumeSession(status.last_session.id)}
-            className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium rounded-lg transition-colors"
-          >
-            Fortsetzen
-          </button>
+          {status.last_session.can_resume && (
+            <button
+              onClick={() => resumeSession(status.last_session.id)}
+              className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium rounded-lg transition-colors"
+            >
+              Fortsetzen
+            </button>
+          )}
         </div>
       )}
 
@@ -513,6 +863,7 @@ function LiveTrading({ isAdmin, token }) {
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-bold text-accent-400">{p.symbol}</span>
                     <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${p.direction === 'LONG' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{p.direction}</span>
+                    {p.alpaca_order_id && <span className="text-[10px] px-1 py-0.5 rounded bg-purple-500/20 text-purple-400 border border-purple-500/30" title={`Order: ${p.alpaca_order_id}`}>ALPACA</span>}
                   </div>
                   <span className={`text-sm font-bold ${p.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                     {p.profit_loss_pct >= 0 ? '+' : ''}{p.profit_loss_pct?.toFixed(2)}%
@@ -547,7 +898,10 @@ function LiveTrading({ isAdmin, token }) {
               <tbody>
                 {openPositions.map(p => (
                   <tr key={p.id} className="border-b border-dark-700/50">
-                    <td className="py-2 pr-3 font-medium text-accent-400">{p.symbol}</td>
+                    <td className="py-2 pr-3 font-medium text-accent-400">
+                      {p.symbol}
+                      {p.alpaca_order_id && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-purple-500/20 text-purple-400" title={`Order: ${p.alpaca_order_id}`}>A</span>}
+                    </td>
                     <td className={`py-2 pr-3 font-medium ${p.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>{p.direction}</td>
                     <td className="py-2 pr-3 text-gray-400">
                       <div>{formatPrice(p.entry_price_usd, p.symbol)}</div>
@@ -710,9 +1064,18 @@ function LiveTrading({ isAdmin, token }) {
                           <span className="text-[10px] text-gray-500">{s.symbols_count} Aktien</span>
                           {s.is_active && <span className="text-[10px] text-green-400 font-medium">AKTIV</span>}
                           {!s.is_active && s.can_resume && <span className="text-[10px] text-amber-400 font-medium">FORTSETZBAR</span>}
+                          {!s.is_active && !s.can_resume && <span className="text-[10px] text-gray-500 font-medium">BEENDET</span>}
                         </div>
                         <div className="flex items-center gap-2">
-                          <span className="text-[10px] text-gray-500">{formatTime(s.started_at)}</span>
+                          {s.stopped_at && !s.is_active && (
+                            <span className="text-[10px] text-gray-600">Gestoppt {formatTime(s.stopped_at)}</span>
+                          )}
+                          {!s.stopped_at && !s.is_active && (
+                            <span className="text-[10px] text-gray-600">Gestartet {formatTime(s.started_at)}</span>
+                          )}
+                          {s.is_active && (
+                            <span className="text-[10px] text-gray-500">Seit {formatTime(s.started_at)}</span>
+                          )}
                           {isAdmin && !s.is_active && s.can_resume && !status?.is_running && (
                             <button
                               onClick={(e) => { e.stopPropagation(); resumeSession(s.id) }}
@@ -740,7 +1103,6 @@ function LiveTrading({ isAdmin, token }) {
                           {s.win_rate?.toFixed(0)}% Win
                         </span>
                         <span className="text-gray-500">{s.total_polls} Polls</span>
-                        {s.stopped_at && <span className="text-gray-600">bis {formatTime(s.stopped_at)}</span>}
                       </div>
                     </div>
                     {/* Expanded session trades */}

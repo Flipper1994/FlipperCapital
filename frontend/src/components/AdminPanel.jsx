@@ -62,6 +62,8 @@ function AdminPanel() {
   const [quantRefreshing, setQuantRefreshing] = useState(false)
   const [schedulerTime, setSchedulerTime] = useState('00:00')
   const [savingSchedulerTime, setSavingSchedulerTime] = useState(false)
+  const [inviteCode, setInviteCode] = useState('')
+  const [savingInviteCode, setSavingInviteCode] = useState(false)
   const [schedulerCountdown, setSchedulerCountdown] = useState('')
   const [quantRefreshLogs, setQuantRefreshLogs] = useState([])
   const [quantSortColumn, setQuantSortColumn] = useState('symbol')
@@ -423,6 +425,10 @@ function AdminPanel() {
         fetchTraderSimulatedData()
         fetchLastTraderRefresh()
         fetchTraderUnreadCount()
+      }
+      if (activeTab === 'settings') {
+        fetch('/api/admin/invite-code', { headers: { Authorization: `Bearer ${token}` } })
+          .then(r => r.json()).then(d => setInviteCode(d.code || '')).catch(() => {})
       }
     }
   }, [isAdmin, activeTab, activityFilter])
@@ -2074,7 +2080,8 @@ function AdminPanel() {
             { key: 'ditz', label: 'Ditz' },
             { key: 'trader', label: 'Trader' },
             { key: 'botfilter', label: 'Bot Filter' },
-            { key: 'allowlist', label: 'Aktien Listen' }
+            { key: 'allowlist', label: 'Aktien Listen' },
+            { key: 'settings', label: 'Einstellungen' }
           ].map(tab => (
             <button
               key={tab.key}
@@ -6874,6 +6881,50 @@ function AdminPanel() {
           </div>
         </div>
       )}
+
+            {activeTab === 'settings' && (
+              <div className="bg-dark-800 rounded-xl border border-dark-600 p-6">
+                <h2 className="text-lg font-bold text-white mb-4">Einstellungen</h2>
+
+                <div className="space-y-6">
+                  {/* Invite Code */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Invite-Code für Registrierung</label>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="text"
+                        value={inviteCode}
+                        onChange={e => setInviteCode(e.target.value)}
+                        className="flex-1 max-w-md px-4 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-accent-500 transition-colors text-sm"
+                        placeholder="Invite-Code"
+                      />
+                      <button
+                        onClick={async () => {
+                          setSavingInviteCode(true)
+                          try {
+                            const res = await fetch('/api/admin/invite-code', {
+                              method: 'PUT',
+                              headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ code: inviteCode })
+                            })
+                            if (!res.ok) {
+                              const data = await res.json()
+                              alert(data.error || 'Fehler beim Speichern')
+                            }
+                          } catch { alert('Verbindungsfehler') }
+                          setSavingInviteCode(false)
+                        }}
+                        disabled={savingInviteCode || !inviteCode.trim()}
+                        className="px-4 py-2 bg-accent-500 hover:bg-accent-600 disabled:bg-accent-500/50 text-white text-sm font-medium rounded-lg transition-colors"
+                      >
+                        {savingInviteCode ? 'Speichern...' : 'Speichern'}
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">Neue Nutzer müssen diesen Code bei der Registrierung eingeben.</p>
+                  </div>
+                </div>
+              </div>
+            )}
 
       {selectedPosition && (
         <StockDetailOverlay

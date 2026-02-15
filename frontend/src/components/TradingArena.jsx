@@ -452,9 +452,15 @@ function TradingArena({ isAdmin, token }) {
 
   // Load global settings on mount
   useEffect(() => {
+    // Non-admins: force allowed strategy
+    if (!isAdmin && backtestStrategy !== 'hybrid_ai_trend') {
+      setBacktestStrategy('hybrid_ai_trend')
+      setStrategyParams(getDefaultParams('hybrid_ai_trend'))
+    }
     loadSettings().then(data => {
       if (!data) return
-      const saved = data[backtestStrategy]
+      const strat = (!isAdmin && backtestStrategy !== 'hybrid_ai_trend') ? 'hybrid_ai_trend' : backtestStrategy
+      const saved = data[strat]
       if (saved?.params) {
         setStrategyParams(prev => ({ ...prev, ...saved.params }))
       }
@@ -766,6 +772,7 @@ function TradingArena({ isAdmin, token }) {
 
   // Auto-backtest on strategy change
   const handleStrategyChange = (newStrategy) => {
+    if (!isAdmin && newStrategy !== 'hybrid_ai_trend') return
     setBacktestStrategy(newStrategy)
     // Load saved params for this strategy, or use defaults
     const saved = savedSettingsRef.current[newStrategy]
@@ -997,9 +1004,14 @@ function TradingArena({ isAdmin, token }) {
             onChange={e => handleStrategyChange(e.target.value)}
             className="bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent-500"
           >
-            {STRATEGIES.map(s => (
-              <option key={s.value} value={s.value}>{s.label}</option>
-            ))}
+            {STRATEGIES.map(s => {
+              const locked = !isAdmin && s.value !== 'hybrid_ai_trend'
+              return (
+                <option key={s.value} value={s.value} disabled={locked}>
+                  {s.label}{locked ? ' (in Entwicklung)' : ''}
+                </option>
+              )
+            })}
           </select>
 
           {/* Params toggle */}
@@ -1074,7 +1086,8 @@ function TradingArena({ isAdmin, token }) {
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
               </svg>
-              Pro Abo
+              Start Live Trading
+              <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-400 text-[10px] font-bold rounded">PRO</span>
             </span>
           )}
         </div>
@@ -1272,7 +1285,19 @@ function TradingArena({ isAdmin, token }) {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               {STRATEGIES.map(strat => {
+                const locked = !isAdmin && strat.value !== 'hybrid_ai_trend'
                 const data = allStrategyResults[strat.value]
+                if (locked) return (
+                  <div key={strat.value} className="bg-dark-700 rounded-lg p-3 opacity-40 relative">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <svg className="w-3 h-3 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                      </svg>
+                      <span className="text-xs text-gray-500">{strat.label}</span>
+                    </div>
+                    <div className="text-gray-600 text-[10px]">In Entwicklung</div>
+                  </div>
+                )
                 if (!data?.metrics) return (
                   <div key={strat.value} className="bg-dark-700 rounded-lg p-3 opacity-50">
                     <div className="text-xs text-gray-500 mb-1">{strat.label}</div>

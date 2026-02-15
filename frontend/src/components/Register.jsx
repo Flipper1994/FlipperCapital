@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 
 function Register({ onLogin }) {
+  const [inviteCode, setInviteCode] = useState('')
   const [email, setEmail] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -30,7 +31,7 @@ function Register({ onLogin }) {
       const res = await fetch('/api/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, username, password })
+        body: JSON.stringify({ email, username, password, invite_code: inviteCode })
       })
 
       const data = await res.json()
@@ -63,6 +64,23 @@ function Register({ onLogin }) {
                 {error}
               </div>
             )}
+
+            <div>
+              <label className="block text-sm font-medium text-gray-400 mb-2">
+                Invite-Code
+              </label>
+              <input
+                type="text"
+                value={inviteCode}
+                onChange={(e) => setInviteCode(e.target.value)}
+                className="w-full px-4 py-3 bg-dark-700 border border-dark-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-accent-500 transition-colors"
+                placeholder="Invite-Code eingeben"
+                required
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Du benötigst einen Invite-Code. Diesen kannst du kaufen oder beim Inhaber anfragen.
+              </p>
+            </div>
 
             <div>
               <label className="block text-sm font-medium text-gray-400 mb-2">
