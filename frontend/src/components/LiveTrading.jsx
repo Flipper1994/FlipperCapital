@@ -20,10 +20,13 @@ function LiveTrading({ isAdmin, token }) {
   const [showDebug, setShowDebug] = useState(false)
   const [debugLogs, setDebugLogs] = useState([])
   const [lastLogId, setLastLogId] = useState(0)
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false)
   const { formatPrice, currency } = useCurrency()
   const pollRef = useRef(null)
   const posPollRef = useRef(null)
   const debugPollRef = useRef(null)
+  const notifyPollRef = useRef(null)
+  const lastNotifyLogId = useRef(0)
 
   const headers = token ? { 'Authorization': `Bearer ${token}` } : {}
 
@@ -141,6 +144,85 @@ function LiveTrading({ isAdmin, token }) {
     return () => clearInterval(debugPollRef.current)
   }, [showDebug, status?.session_id])
 
+  // Trade event notification polling (independent of debug panel)
+  const playNotificationSound = useCallback((isWin) => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)()
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      gain.gain.value = 0.3
+      if (isWin) {
+        // Rising tone for wins/opens
+        osc.frequency.value = 600
+        osc.type = 'sine'
+        osc.start()
+        osc.frequency.linearRampToValueAtTime(900, ctx.currentTime + 0.15)
+      } else {
+        // Falling tone for losses
+        osc.frequency.value = 500
+        osc.type = 'sine'
+        osc.start()
+        osc.frequency.linearRampToValueAtTime(300, ctx.currentTime + 0.15)
+      }
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.3)
+      osc.stop(ctx.currentTime + 0.3)
+    } catch { /* Audio not available */ }
+  }, [])
+
+  const enableNotifications = useCallback(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().then(p => {
+        if (p === 'granted') setNotificationsEnabled(true)
+      })
+    } else if ('Notification' in window && Notification.permission === 'granted') {
+      setNotificationsEnabled(true)
+    }
+    setNotificationsEnabled(true) // enable sound even without browser notification permission
+  }, [])
+
+  useEffect(() => {
+    if (notifyPollRef.current) clearInterval(notifyPollRef.current)
+    if (!notificationsEnabled || !status?.is_running || !status?.session_id) return
+    const TRADE_LEVELS = new Set(['OPEN', 'CLOSE', 'SL', 'TP'])
+    const checkTradeEvents = async () => {
+      try {
+        const afterId = lastNotifyLogId.current
+        const url = `/api/trading/live/logs/${status.session_id}${afterId ? `?after_id=${afterId}` : ''}`
+        const res = await fetch(url, { headers })
+        if (!res.ok) return
+        const data = await res.json()
+        const logs = data.logs || []
+        if (logs.length === 0) return
+        const maxId = Math.max(...logs.map(l => l.id))
+        if (afterId === 0) {
+          // First fetch — just set the baseline, don't notify for old events
+          lastNotifyLogId.current = maxId
+          return
+        }
+        lastNotifyLogId.current = maxId
+        const tradeEvents = logs.filter(l => TRADE_LEVELS.has(l.level))
+        for (const evt of tradeEvents) {
+          const isOpen = evt.level === 'OPEN'
+          const isWin = evt.level === 'TP' || (evt.level === 'CLOSE' && evt.message.includes('+'))
+          playNotificationSound(isOpen || isWin)
+          if ('Notification' in window && Notification.permission === 'granted') {
+            const icon = isOpen ? 'OPEN' : evt.level === 'TP' ? 'TP' : evt.level === 'SL' ? 'SL' : 'CLOSE'
+            new Notification(`${icon} ${evt.symbol}`, {
+              body: evt.message,
+              icon: isOpen || isWin ? undefined : undefined,
+              tag: `trade-${evt.id}`,
+            })
+          }
+        }
+      } catch { /* ignore */ }
+    }
+    checkTradeEvents()
+    notifyPollRef.current = setInterval(checkTradeEvents, 5000)
+    return () => clearInterval(notifyPollRef.current)
+  }, [notificationsEnabled, status?.is_running, status?.session_id])
+
   const goLive = async () => {
     try {
       const res = await fetch('/api/trading/live/start', { method: 'POST', headers })
@@ -227,15 +309,26 @@ function LiveTrading({ isAdmin, token }) {
         <div>
           <h1 className="text-2xl font-bold text-white">Live Trading</h1>
           {config && (
-            <div className="flex items-center gap-3 mt-1 text-sm text-gray-400">
-              <span>{STRATEGY_LABELS[config.strategy] || config.strategy}</span>
-              <span className="text-gray-600">|</span>
-              <span>{config.interval}</span>
-              <span className="text-gray-600">|</span>
-              <span>{symbols.length} Aktien</span>
-              {config.long_only && <span className="text-accent-400 text-xs">Long Only</span>}
-              <span className="text-gray-600">|</span>
-              <span>{config.trade_amount} {config.currency || 'EUR'}/Trade</span>
+            <div>
+              <div className="flex items-center gap-3 mt-1 text-sm text-gray-400">
+                <span>{STRATEGY_LABELS[config.strategy] || config.strategy}</span>
+                <span className="text-gray-600">|</span>
+                <span>{config.interval}</span>
+                <span className="text-gray-600">|</span>
+                <span>{symbols.length} Aktien</span>
+                {config.long_only && <span className="text-accent-400 text-xs">Long Only</span>}
+                <span className="text-gray-600">|</span>
+                <span>{config.trade_amount} {config.currency || 'EUR'}/Trade</span>
+              </div>
+              {config.params && Object.keys(config.params).length > 0 && (
+                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  {Object.entries(config.params).map(([key, val]) => (
+                    <span key={key} className="text-[10px] bg-dark-700 text-gray-400 px-1.5 py-0.5 rounded">
+                      {key.replace(/_/g, ' ')}: <span className="text-white">{typeof val === 'boolean' ? (val ? 'an' : 'aus') : val}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -254,6 +347,19 @@ function LiveTrading({ isAdmin, token }) {
             </span>
             {status?.is_polling && (
               <span className="text-xs text-accent-400 animate-pulse">Aktualisiere...</span>
+            )}
+            {status?.is_running && (
+              <button
+                onClick={() => notificationsEnabled ? setNotificationsEnabled(false) : enableNotifications()}
+                className={`ml-2 px-2 py-1 text-xs rounded transition-colors ${
+                  notificationsEnabled
+                    ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+                    : 'bg-dark-600 text-gray-500 hover:text-gray-300 border border-dark-500'
+                }`}
+                title={notificationsEnabled ? 'Benachrichtigungen aktiv' : 'Benachrichtigungen aktivieren'}
+              >
+                {notificationsEnabled ? 'Alerts AN' : 'Alerts AUS'}
+              </button>
             )}
           </div>
           {isAdmin ? (
@@ -399,7 +505,32 @@ function LiveTrading({ isAdmin, token }) {
       {openPositions.length > 0 && (
         <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
           <h3 className="text-sm font-medium text-white mb-3">Offene Positionen ({openPositions.length})</h3>
-          <div className="overflow-auto">
+          {/* Mobile: Cards */}
+          <div className="md:hidden grid grid-cols-1 gap-2">
+            {openPositions.map(p => (
+              <div key={p.id} className="bg-dark-700 rounded-lg p-3 border border-dark-600">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-accent-400">{p.symbol}</span>
+                    <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${p.direction === 'LONG' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{p.direction}</span>
+                  </div>
+                  <span className={`text-sm font-bold ${p.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {p.profit_loss_pct >= 0 ? '+' : ''}{p.profit_loss_pct?.toFixed(2)}%
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+                  <div><span className="text-gray-500">Entry:</span> <span className="text-gray-300">{p.entry_price?.toFixed(2)}</span></div>
+                  <div><span className="text-gray-500">Aktuell:</span> <span className="text-white font-medium">{p.current_price?.toFixed(2)}</span></div>
+                  <div><span className="text-gray-500">SL:</span> <span className="text-red-400/60">{p.stop_loss?.toFixed(2)}</span></div>
+                  <div><span className="text-gray-500">TP:</span> <span className="text-green-400/60">{p.take_profit?.toFixed(2)}</span></div>
+                  <div><span className="text-gray-500">G/V:</span> <span className={p.profit_loss_amt >= 0 ? 'text-green-400' : 'text-red-400'}>{p.profit_loss_amt >= 0 ? '+' : ''}{p.profit_loss_amt?.toFixed(2)} {config?.currency || 'EUR'}</span></div>
+                  <div className="text-gray-600">{formatTime(p.entry_time)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          {/* Desktop: Table */}
+          <div className="hidden md:block overflow-auto">
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-left text-gray-500 border-b border-dark-600">

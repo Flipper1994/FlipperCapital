@@ -32,6 +32,7 @@ const STRATEGY_INFO = {
     desc: '4-Level Bollinger Bänder mit Nadaraya-Watson Gaussian-Kernel Glättung (Flux Charts). BUY wenn Close unter Band 1 kreuzt, SELL wenn Close über Band 1 kreuzt. Quelle: HLC3, Smoothing h=6, Lookback 499 Bars.',
     indicators: 'BB Level 1 (20/3σ), Level 2 (75/3σ), Level 3 (100/4σ), Level 4 (100/4.25σ), NW-Smoothing',
     timeframes: '5m, 15m, 1h, 4h',
+    tips: '↑ Win Rate: R/R senken (1.5), SL Buffer erhöhen (2.5-3%), BB1 StDev erhöhen (3.5-4.0), HybridFilter aktivieren, NW Smoothing erhöhen (10-12)',
     legend: [
       { symbol: '▲ LONG', color: '#22c55e', desc: 'Entry — Close kreuzt unter unteres Band 1' },
       { symbol: '▼ SHORT', color: '#ef4444', desc: 'Entry — Close kreuzt über oberes Band 1' },
@@ -74,6 +75,8 @@ const STRATEGY_PARAMS = {
     { key: 'hybrid_filter', label: 'mit Hybrid AlgoAI?', default: 0, min: 0, max: 1, step: 1, isToggle: true },
     { key: 'hybrid_long_thresh', label: 'Threshold Long', default: 75, min: 0, max: 100, step: 1 },
     { key: 'hybrid_short_thresh', label: 'Threshold Short', default: 25, min: 0, max: 100, step: 1 },
+    { key: 'confirm_candle', label: 'Bestätigungskerze?', default: 0, min: 0, max: 1, step: 1, isToggle: true },
+    { key: 'min_band_dist', label: 'Min Band-Abstand %', default: 0, min: 0, max: 3.0, step: 0.1 },
   ],
   diamond_signals: [
     { key: 'pattern_length', label: 'Pattern Length', default: 20, min: 5, max: 50, step: 1 },
@@ -302,7 +305,7 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
         <div className="bg-indigo-500/10 border border-indigo-500/30 rounded p-2 text-center">
           <div className="text-xs text-indigo-300">Gewinn ({portfolioStats.posSize}€/Trade)</div>
           <div className={`text-lg font-bold ${portfolioStats.totalProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-            {portfolioStats.totalProfit >= 0 ? '+' : ''}{portfolioStats.totalProfit.toFixed(2)} €
+            {portfolioStats.totalProfit >= 0 ? '+' : ''}{portfolioStats.totalProfit.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €
           </div>
         </div>
       </div>
@@ -414,11 +417,13 @@ function TradingArena({ isAdmin, token }) {
   const [batchResults, setBatchResults] = useState(null)
   const [batchLoading, setBatchLoading] = useState(false)
   const [batchProgress, setBatchProgress] = useState(null)
+  const [noDataSymbols, setNoDataSymbols] = useState([])
   const [longOnly, setLongOnly] = useState(true)
   const [showSimulation, setShowSimulation] = useState(false)
   const [simTradeAmount, setSimTradeAmount] = useState(500)
-  const [perfFilters, setPerfFilters] = useState({ minWinRate: '50', minRR: '1', minTotalReturn: '0', minAvgReturn: '', minNetProfit: '0' })
+  const [appliedFilters, setAppliedFilters] = useState(null)
   const [filtersActive, setFiltersActive] = useState(false)
+  const filterFormRef = useRef(null)
   const [simResults, setSimResults] = useState(null)
   const [strategyParams, setStrategyParams] = useState(() => getDefaultParams('hybrid_ai_trend'))
 
@@ -622,7 +627,7 @@ function TradingArena({ isAdmin, token }) {
 
   // Shared filtered symbols for Watchlist Performance + Simulation
   const perfFilteredSymbols = useMemo(() => {
-    if (!filtersActive || !batchResults?.per_stock) return null // null = show all
+    if (!filtersActive || !appliedFilters || !batchResults?.per_stock) return null // null = show all
     const computePerStock = () => {
       if (!longOnly) return batchResults.per_stock
       const ps = {}
@@ -643,16 +648,18 @@ function TradingArena({ isAdmin, token }) {
       return ps
     }
     const perStock = computePerStock()
-    const f = perfFilters
-    return Object.entries(perStock).filter(([, m]) => {
+    const f = appliedFilters
+    const mc = batchResults.market_caps || {}
+    return Object.entries(perStock).filter(([sym, m]) => {
       if (f.minWinRate !== '' && m.win_rate < Number(f.minWinRate)) return false
       if (f.minRR !== '' && m.risk_reward < Number(f.minRR)) return false
       if (f.minTotalReturn !== '' && m.total_return < Number(f.minTotalReturn)) return false
       if (f.minAvgReturn !== '' && m.avg_return < Number(f.minAvgReturn)) return false
       if (f.minNetProfit !== '' && m.net_profit < Number(f.minNetProfit)) return false
+      if (f.minMarketCap !== '' && (mc[sym] || 0) < Number(f.minMarketCap) * 1e9) return false
       return true
     }).map(([sym]) => sym)
-  }, [filtersActive, batchResults, longOnly, perfFilters])
+  }, [filtersActive, batchResults, longOnly, appliedFilters])
 
   // Compute timeframe from chart data or batch trades
   const backtestTimeRange = useMemo(() => {
@@ -744,6 +751,7 @@ function TradingArena({ isAdmin, token }) {
                 setBatchProgress({ current: msg.current, total: msg.total, symbol: msg.symbol })
               } else if (msg.type === 'result') {
                 setBatchResults(msg.data)
+                setNoDataSymbols(msg.data.skipped_symbols || [])
               }
             } catch { /* ignore parse error */ }
           }
@@ -866,7 +874,7 @@ function TradingArena({ isAdmin, token }) {
           symbols,
           long_only: longOnly,
           trade_amount: simTradeAmount,
-          filters: perfFilters,
+          filters: appliedFilters || {},
           filters_active: filtersActive,
           currency: currency || 'EUR',
         }),
@@ -1182,6 +1190,11 @@ function TradingArena({ isAdmin, token }) {
                   </div>
                 </div>
               )}
+              {info.tips && (
+                <div className="w-full border-t border-dark-600 pt-1.5 mt-1">
+                  <span className="text-[11px] text-yellow-500/80">{info.tips}</span>
+                </div>
+              )}
             </div>
           )
         })()}
@@ -1362,35 +1375,46 @@ function TradingArena({ isAdmin, token }) {
         {/* Shared Filters for Watchlist Performance + Simulation */}
         {batchResults && !batchLoading && (
           <div className="bg-dark-800 rounded-lg border border-dark-600 p-3 mt-4">
-            <div className="flex items-center gap-3 flex-wrap">
+            <form ref={filterFormRef} className="flex items-center gap-3 flex-wrap" onSubmit={e => {
+              e.preventDefault()
+              const fd = new FormData(e.target)
+              setAppliedFilters({ minWinRate: fd.get('minWinRate'), minRR: fd.get('minRR'), minTotalReturn: fd.get('minTotalReturn'), minAvgReturn: fd.get('minAvgReturn'), minNetProfit: fd.get('minNetProfit'), minMarketCap: fd.get('minMarketCap') })
+              setFiltersActive(true)
+            }}>
               <span className="text-xs text-gray-400 font-medium whitespace-nowrap">Filter:</span>
               <div className="flex items-center gap-1">
                 <label className="text-[10px] text-gray-500">Min Win%</label>
-                <input type="number" value={perfFilters.minWinRate} onChange={e => setPerfFilters(f => ({ ...f, minWinRate: e.target.value }))}
+                <input type="number" name="minWinRate" defaultValue="50"
                   className="w-14 bg-dark-700 border border-dark-500 rounded px-1.5 py-1 text-xs text-white" />
               </div>
               <div className="flex items-center gap-1">
                 <label className="text-[10px] text-gray-500">Min R/R</label>
-                <input type="number" step="0.1" value={perfFilters.minRR} onChange={e => setPerfFilters(f => ({ ...f, minRR: e.target.value }))}
+                <input type="number" name="minRR" step="0.1" defaultValue="1"
                   className="w-14 bg-dark-700 border border-dark-500 rounded px-1.5 py-1 text-xs text-white" />
               </div>
               <div className="flex items-center gap-1">
                 <label className="text-[10px] text-gray-500">Min Total%</label>
-                <input type="number" value={perfFilters.minTotalReturn} onChange={e => setPerfFilters(f => ({ ...f, minTotalReturn: e.target.value }))}
+                <input type="number" name="minTotalReturn" defaultValue="0"
                   className="w-14 bg-dark-700 border border-dark-500 rounded px-1.5 py-1 text-xs text-white" />
               </div>
               <div className="flex items-center gap-1">
                 <label className="text-[10px] text-gray-500">Min Avg%</label>
-                <input type="number" value={perfFilters.minAvgReturn} onChange={e => setPerfFilters(f => ({ ...f, minAvgReturn: e.target.value }))}
+                <input type="number" name="minAvgReturn" defaultValue=""
                   className="w-14 bg-dark-700 border border-dark-500 rounded px-1.5 py-1 text-xs text-white" />
               </div>
               <div className="flex items-center gap-1">
                 <label className="text-[10px] text-gray-500">Min Net%</label>
-                <input type="number" value={perfFilters.minNetProfit} onChange={e => setPerfFilters(f => ({ ...f, minNetProfit: e.target.value }))}
+                <input type="number" name="minNetProfit" defaultValue="0"
                   className="w-14 bg-dark-700 border border-dark-500 rounded px-1.5 py-1 text-xs text-white" />
               </div>
+              <div className="flex items-center gap-1">
+                <label className="text-[10px] text-gray-500">Min MCap (Mrd)</label>
+                <input type="number" name="minMarketCap" step="0.1" defaultValue=""
+                  className="w-16 bg-dark-700 border border-dark-500 rounded px-1.5 py-1 text-xs text-white" placeholder="z.B. 10" />
+              </div>
               <button
-                onClick={() => setFiltersActive(!filtersActive)}
+                type={filtersActive ? 'button' : 'submit'}
+                onClick={filtersActive ? () => { setFiltersActive(false); setAppliedFilters(null) } : undefined}
                 className={`px-3 py-1 text-xs rounded font-medium transition-colors whitespace-nowrap ${
                   filtersActive
                     ? 'bg-accent-600 text-white hover:bg-accent-500'
@@ -1399,7 +1423,7 @@ function TradingArena({ isAdmin, token }) {
               >
                 {filtersActive ? 'Filter aktiv' : 'Filter anwenden'}
               </button>
-            </div>
+            </form>
           </div>
         )}
 
@@ -1615,20 +1639,23 @@ function TradingArena({ isAdmin, token }) {
           <div className="flex-1 overflow-y-auto p-2">
             {tradingWatchlist.map(item => {
               const excluded = filtersActive && perfFilteredSymbols && !perfFilteredSymbols.includes(item.symbol)
+              const hasNoData = noDataSymbols.includes(item.symbol)
               return (
               <div
                 key={item.id}
-                className={`flex items-center justify-between px-2 py-1.5 rounded hover:bg-dark-700 group ${excluded ? 'opacity-40' : ''}`}
+                className={`flex items-center justify-between px-2 py-1.5 rounded hover:bg-dark-700 group ${excluded ? 'opacity-40' : ''} ${hasNoData ? 'opacity-50' : ''}`}
+                title={hasNoData ? 'Keine Yahoo-Finance-Daten verfügbar' : ''}
               >
                 <button
                   onClick={() => selectStock(item.symbol)}
                   className={`flex-1 text-left text-sm ${
-                    selectedSymbol === item.symbol ? 'text-white font-medium' : 'text-gray-300'
+                    selectedSymbol === item.symbol ? 'text-white font-medium' : hasNoData ? 'text-yellow-600' : 'text-gray-300'
                   }`}
                 >
                   <span className={`font-medium ${excluded ? 'line-through' : ''}`}>{item.symbol}</span>
-                  {item.name && <span className={`text-xs ml-2 ${excluded ? 'text-gray-600 line-through' : 'text-gray-500'}`}>{item.name}</span>}
-                  {item.is_live && <span className="ml-2 w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />}
+                  {hasNoData && <span className="ml-1 text-yellow-500 text-xs" title="Keine Yahoo-Daten">⚠</span>}
+                  {item.name && <span className={`text-xs ml-2 ${excluded ? 'text-gray-600 line-through' : hasNoData ? 'text-yellow-700' : 'text-gray-500'}`}>{item.name}</span>}
+                  {item.is_live && !hasNoData && <span className="ml-2 w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />}
                 </button>
                 {isAdmin && (
                   <button

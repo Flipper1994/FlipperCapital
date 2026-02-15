@@ -207,12 +207,12 @@ function App() {
               />
               <Route
                 path="/trading-arena"
-                element={authLoading ? null : (isLoggedIn && isAdmin) ?
+                element={authLoading ? null : isLoggedIn ?
                   <TradingArena isAdmin={isAdmin} token={token} /> : <Navigate to="/login" />}
               />
               <Route
                 path="/live-trading"
-                element={authLoading ? null : (isLoggedIn && isAdmin) ?
+                element={authLoading ? null : isLoggedIn ?
                   <LiveTrading isAdmin={isAdmin} token={token} /> : <Navigate to="/login" />}
               />
             </Routes>

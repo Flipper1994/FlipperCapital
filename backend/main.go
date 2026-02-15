@@ -1330,16 +1330,16 @@ func main() {
 		api.GET("/trading/scheduler/status", authMiddleware(), adminOnly(), getTradingSchedulerStatus)
 		api.POST("/trading/scheduler/toggle", authMiddleware(), adminOnly(), toggleTradingScheduler)
 
-		// Live Trading
+		// Live Trading — write actions: admin only, read actions: all authenticated users
 		api.POST("/trading/live/config", authMiddleware(), adminOnly(), saveLiveTradingConfig)
-		api.GET("/trading/live/config", authMiddleware(), adminOnly(), getLiveTradingConfig)
+		api.GET("/trading/live/config", authMiddleware(), getLiveTradingConfig)
 		api.POST("/trading/live/start", authMiddleware(), adminOnly(), startLiveTrading)
 		api.POST("/trading/live/stop", authMiddleware(), adminOnly(), stopLiveTrading)
-		api.GET("/trading/live/status", authMiddleware(), adminOnly(), getLiveTradingStatus)
-		api.GET("/trading/live/sessions", authMiddleware(), adminOnly(), getLiveTradingSessions)
-		api.GET("/trading/live/session/:id", authMiddleware(), adminOnly(), getLiveTradingSession)
+		api.GET("/trading/live/status", authMiddleware(), getLiveTradingStatus)
+		api.GET("/trading/live/sessions", authMiddleware(), getLiveTradingSessions)
+		api.GET("/trading/live/session/:id", authMiddleware(), getLiveTradingSession)
 		api.POST("/trading/live/session/:id/resume", authMiddleware(), adminOnly(), resumeLiveTrading)
-		api.GET("/trading/live/logs/:sessionId", authMiddleware(), adminOnly(), getLiveTradingLogs)
+		api.GET("/trading/live/logs/:sessionId", authMiddleware(), getLiveTradingLogs)
 
 		// Backtest Lab
 		api.POST("/backtest-lab", authMiddleware(), runBacktestLabHandler)
@@ -14256,6 +14256,8 @@ type HybridAITrendStrategy struct {
 	HybridFilter      bool    `json:"hybrid_filter"`       // filter signals by Hybrid EMA AlgoLearner
 	HybridLongThresh  float64 `json:"hybrid_long_thresh"`  // LONG only when oscillator >= this — default 75
 	HybridShortThresh float64 `json:"hybrid_short_thresh"` // SHORT only when oscillator <= this — default 25
+	ConfirmCandle     bool    `json:"confirm_candle"`      // require bullish/bearish confirmation candle before entry
+	MinBandDist       float64 `json:"min_band_dist"`       // min % distance below/above band for entry (0 = disabled)
 }
 
 func (s *HybridAITrendStrategy) defaults() {
@@ -14303,13 +14305,33 @@ func (s *HybridAITrendStrategy) Analyze(ohlcv []OHLCV) []StrategySignal {
 		// BUY (LONG): close crosses below lower band 1
 		// Signal fires at bar i close → entry at bar i+1 open (no look-ahead bias)
 		if closes[i] <= lower1[i] && closes[i-1] > lower1[i-1] {
-			if i+1 >= len(ohlcv) {
-				continue // no next bar to enter on
-			}
 			if s.HybridFilter && (i >= len(oscillator) || oscillator[i] < s.HybridLongThresh) {
 				continue // oscillator below long threshold → skip
 			}
-			entryPrice := ohlcv[i+1].Open
+			// Min band distance filter: close must be at least X% below lower band
+			if s.MinBandDist > 0 {
+				dist := (lower1[i] - closes[i]) / lower1[i] * 100
+				if dist < s.MinBandDist {
+					continue
+				}
+			}
+			// Confirmation candle: wait for next candle to be bullish (Close > Open)
+			entryIdx := i + 1
+			if s.ConfirmCandle {
+				if i+1 >= len(ohlcv) {
+					continue
+				}
+				if ohlcv[i+1].Close <= ohlcv[i+1].Open {
+					continue // next candle not bullish → skip
+				}
+				entryIdx = i + 2 // enter at bar after the confirmation candle
+			} else {
+				entryIdx = i + 1
+			}
+			if entryIdx >= len(ohlcv) {
+				continue
+			}
+			entryPrice := ohlcv[entryIdx].Open
 			slPrice := entryPrice * (1 - s.SLBuffer/100)
 			risk := entryPrice - slPrice
 			signals = append(signals, StrategySignal{
@@ -14321,13 +14343,33 @@ func (s *HybridAITrendStrategy) Analyze(ohlcv []OHLCV) []StrategySignal {
 		// SELL (SHORT): close crosses above upper band 1
 		// Signal fires at bar i close → entry at bar i+1 open (no look-ahead bias)
 		if closes[i] >= upper1[i] && closes[i-1] < upper1[i-1] {
-			if i+1 >= len(ohlcv) {
-				continue
-			}
 			if s.HybridFilter && (i >= len(oscillator) || oscillator[i] > s.HybridShortThresh) {
 				continue // oscillator above short threshold → skip
 			}
-			entryPrice := ohlcv[i+1].Open
+			// Min band distance filter: close must be at least X% above upper band
+			if s.MinBandDist > 0 {
+				dist := (closes[i] - upper1[i]) / upper1[i] * 100
+				if dist < s.MinBandDist {
+					continue
+				}
+			}
+			// Confirmation candle: wait for next candle to be bearish (Close < Open)
+			entryIdx := i + 1
+			if s.ConfirmCandle {
+				if i+1 >= len(ohlcv) {
+					continue
+				}
+				if ohlcv[i+1].Close >= ohlcv[i+1].Open {
+					continue // next candle not bearish → skip
+				}
+				entryIdx = i + 2
+			} else {
+				entryIdx = i + 1
+			}
+			if entryIdx >= len(ohlcv) {
+				continue
+			}
+			entryPrice := ohlcv[entryIdx].Open
 			slPrice := entryPrice * (1 + s.SLBuffer/100)
 			risk := slPrice - entryPrice
 			signals = append(signals, StrategySignal{
@@ -21144,6 +21186,7 @@ func runBacktestHandler(c *gin.Context) {
 			SLBuffer: pFloat("sl_buffer", 0), RiskReward: pFloat("risk_reward", 0),
 			HybridFilter: pBool("hybrid_filter"),
 			HybridLongThresh: pFloat("hybrid_long_thresh", 0), HybridShortThresh: pFloat("hybrid_short_thresh", 0),
+			ConfirmCandle: pBool("confirm_candle"), MinBandDist: pFloat("min_band_dist", 0),
 		}
 	case "diamond_signals":
 		strategy = &DiamondSignalsStrategy{
@@ -21320,9 +21363,11 @@ type WatchlistBacktestTrade struct {
 }
 
 type WatchlistBacktestResult struct {
-	Metrics  ArenaBacktestMetrics            `json:"metrics"`
-	Trades   []WatchlistBacktestTrade        `json:"trades"`
-	PerStock map[string]ArenaBacktestMetrics `json:"per_stock"`
+	Metrics        ArenaBacktestMetrics            `json:"metrics"`
+	Trades         []WatchlistBacktestTrade        `json:"trades"`
+	PerStock       map[string]ArenaBacktestMetrics `json:"per_stock"`
+	MarketCaps     map[string]int64                `json:"market_caps,omitempty"`
+	SkippedSymbols []string                        `json:"skipped_symbols,omitempty"`
 }
 
 func backtestWatchlistHandler(c *gin.Context) {
@@ -21405,6 +21450,7 @@ func backtestWatchlistHandler(c *gin.Context) {
 				SLBuffer: pFloat("sl_buffer", 0), RiskReward: pFloat("risk_reward", 0),
 				HybridFilter: pBool("hybrid_filter"),
 				HybridLongThresh: pFloat("hybrid_long_thresh", 0), HybridShortThresh: pFloat("hybrid_short_thresh", 0),
+				ConfirmCandle: pBool("confirm_candle"), MinBandDist: pFloat("min_band_dist", 0),
 			}
 		case "diamond_signals":
 			return &DiamondSignalsStrategy{
@@ -21450,8 +21496,9 @@ func backtestWatchlistHandler(c *gin.Context) {
 
 	// Progress channel
 	type progressMsg struct {
-		Index  int
-		Symbol string
+		Index   int
+		Symbol  string
+		Skipped bool
 	}
 	progressCh := make(chan progressMsg, total)
 
@@ -21464,7 +21511,7 @@ func backtestWatchlistHandler(c *gin.Context) {
 
 			ohlcv, err := fetchOHLCVFromYahoo(symbol, period, interval)
 			if err != nil || len(ohlcv) < 50 {
-				progressCh <- progressMsg{Index: i, Symbol: symbol}
+				progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true}
 				return
 			}
 			strategy := createStrategy()
@@ -21486,9 +21533,12 @@ func backtestWatchlistHandler(c *gin.Context) {
 		close(progressCh)
 	}()
 
+	var skippedSymbols []string
 	for msg := range progressCh {
-		_ = msg
 		completed++
+		if msg.Skipped {
+			skippedSymbols = append(skippedSymbols, msg.Symbol)
+		}
 		progressJSON, _ := json.Marshal(gin.H{
 			"type":    "progress",
 			"current": completed,
@@ -21522,12 +21572,30 @@ func backtestWatchlistHandler(c *gin.Context) {
 
 	aggregated := calculateBacktestLabMetrics(allArena)
 
+	// Fetch market caps for all symbols
+	symbols := make([]string, 0, len(perStock))
+	for sym := range perStock {
+		symbols = append(symbols, sym)
+	}
+	marketCaps := make(map[string]int64)
+	if len(symbols) > 0 {
+		var stocks []Stock
+		db.Where("symbol IN ?", symbols).Select("symbol, market_cap").Find(&stocks)
+		for _, s := range stocks {
+			if s.MarketCap > 0 {
+				marketCaps[s.Symbol] = s.MarketCap
+			}
+		}
+	}
+
 	resultJSON, _ := json.Marshal(gin.H{
 		"type": "result",
 		"data": WatchlistBacktestResult{
-			Metrics:  aggregated,
-			Trades:   allTrades,
-			PerStock: perStock,
+			Metrics:        aggregated,
+			Trades:         allTrades,
+			PerStock:       perStock,
+			MarketCaps:     marketCaps,
+			SkippedSymbols: skippedSymbols,
 		},
 	})
 	fmt.Fprintf(c.Writer, "data: %s\n\n", resultJSON)
@@ -21953,6 +22021,7 @@ func createStrategyFromJSON(strategyName, paramsJSON string) TradingStrategy {
 			SLBuffer: pFloat("sl_buffer", 1.5), RiskReward: pFloat("risk_reward", 2.0),
 			HybridFilter: pBool("hybrid_filter"),
 			HybridLongThresh: pFloat("hybrid_long_thresh", 75), HybridShortThresh: pFloat("hybrid_short_thresh", 25),
+			ConfirmCandle: pBool("confirm_candle"), MinBandDist: pFloat("min_band_dist", 0),
 		}
 	case "diamond_signals":
 		return &DiamondSignalsStrategy{
@@ -22411,15 +22480,25 @@ func runLiveScheduler(stopChan chan struct{}, sessionID uint) {
 	}
 
 	dur := intervalToDuration(session.Interval)
-	ticker := time.NewTicker(dur)
-	defer ticker.Stop()
+	const buffer = 3 * time.Second // wait 3s after candle close for Yahoo to finalize
 
-	// First scan immediately
+	// First scan immediately (for resume case)
 	runLiveScan(sessionID)
 
 	for {
+		// Calculate next aligned time: ceil(now / interval) * interval + buffer
+		now := time.Now()
+		durSec := int64(dur.Seconds())
+		nowUnix := now.Unix()
+		nextAligned := ((nowUnix / durSec) + 1) * durSec
+		waitUntil := time.Unix(nextAligned, 0).Add(buffer)
+		waitDur := waitUntil.Sub(now)
+		if waitDur <= 0 {
+			waitDur = dur
+		}
+
 		select {
-		case <-ticker.C:
+		case <-time.After(waitDur):
 			runLiveScan(sessionID)
 		case <-stopChan:
 			return
@@ -22493,7 +22572,10 @@ func runLiveScan(sessionID uint) {
 
 	// Update session poll stats + symbol prices
 	now := time.Now()
-	next := now.Add(intervalToDuration(session.Interval))
+	dur := intervalToDuration(session.Interval)
+	durSec := int64(dur.Seconds())
+	nextAligned := ((now.Unix() / durSec) + 1) * durSec
+	next := time.Unix(nextAligned, 0).Add(3 * time.Second)
 	pricesJSON, _ := json.Marshal(priceMap)
 	db.Model(&session).Updates(map[string]interface{}{
 		"last_poll_at":       now,
@@ -22509,7 +22591,19 @@ func processLiveSymbol(session LiveTradingSession, symbol string, strategy Tradi
 		logLiveEvent(session.ID, "SKIP", symbol, "OHLCV nicht verfügbar")
 		return 0, false
 	}
+
+	// Strip incomplete (still open) candle — only analyze fully closed bars
+	// Keep lastPrice from the latest bar (even if open) for P&L updates
 	lastPrice := ohlcv[len(ohlcv)-1].Close
+	ivDur := intervalToDuration(session.Interval)
+	if len(ohlcv) > 1 {
+		lastBar := ohlcv[len(ohlcv)-1]
+		candleEnd := lastBar.Time + int64(ivDur.Seconds())
+		if candleEnd > time.Now().Unix() {
+			// Last candle is still open → remove it for signal analysis
+			ohlcv = ohlcv[:len(ohlcv)-1]
+		}
+	}
 
 	nativeCurrency := getStockCurrency(symbol)
 	if nativeCurrency == "" {

@@ -3,6 +3,7 @@ import { NavLink } from 'react-router-dom'
 
 function Sidebar({ isLoggedIn, isAdmin, user, isOpen, onClose }) {
   const [unreadCount, setUnreadCount] = useState(0)
+  const [liveSessionActive, setLiveSessionActive] = useState(false)
 
   useEffect(() => {
     if (!isLoggedIn) { setUnreadCount(0); return }
@@ -23,6 +24,25 @@ function Sidebar({ isLoggedIn, isAdmin, user, isOpen, onClose }) {
     return () => clearInterval(interval)
   }, [isLoggedIn])
 
+  useEffect(() => {
+    if (!isLoggedIn) { setLiveSessionActive(false); return }
+    const token = localStorage.getItem('authToken')
+    const fetchLiveStatus = async () => {
+      try {
+        const res = await fetch('/api/trading/live/status', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+        if (res.ok) {
+          const data = await res.json()
+          setLiveSessionActive(!!data.is_running)
+        }
+      } catch { /* ignore */ }
+    }
+    fetchLiveStatus()
+    const interval = setInterval(fetchLiveStatus, 15000)
+    return () => clearInterval(interval)
+  }, [isLoggedIn])
+
   const navItems = [
     { path: '/', label: 'Dashboard', icon: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6' },
     { path: '/tracker', label: 'Aktien Tracker', icon: 'M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z' },
@@ -39,8 +59,8 @@ function Sidebar({ isLoggedIn, isAdmin, user, isOpen, onClose }) {
     { path: '/profile', label: 'Mein Profil', icon: 'M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z', redirectIfNotAuth: '/login', showNotifications: true },
     { path: '/compare', label: 'Portfolio vergleich', icon: 'M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z', redirectIfNotAuth: '/login' },
     { path: '/help', label: 'Hilfe', icon: 'M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
-    { path: '/trading-arena', label: 'Trading Arena', icon: 'M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z', requiresAdmin: true },
-    { path: '/live-trading', label: 'Live Trading', icon: 'M13 10V3L4 14h7v7l9-11h-7z', requiresAdmin: true },
+    { path: '/trading-arena', label: 'Trading Arena', icon: 'M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z', badge: 'new', redirectIfNotAuth: '/login' },
+    { path: '/live-trading', label: 'Live Trading', icon: 'M13 10V3L4 14h7v7l9-11h-7z', badge: 'live', redirectIfNotAuth: '/login' },
     { path: '/admin', label: 'Admin Panel', icon: 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z', requiresAdmin: true },
   ]
 
@@ -133,6 +153,20 @@ function Sidebar({ isLoggedIn, isAdmin, user, isOpen, onClose }) {
                       {item.showNotifications && unreadCount > 0 && (
                         <span className="ml-auto min-w-[20px] h-5 flex items-center justify-center px-1.5 bg-red-500 text-white text-[10px] font-bold rounded-full animate-pulse">
                           {unreadCount > 9 ? '9+' : unreadCount}
+                        </span>
+                      )}
+                      {item.badge === 'new' && (
+                        <span className="ml-auto px-1.5 py-0.5 bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-[10px] font-bold rounded">
+                          NEW
+                        </span>
+                      )}
+                      {item.badge === 'live' && (
+                        <span className={`ml-auto px-1.5 py-0.5 text-[10px] font-bold rounded ${
+                          liveSessionActive
+                            ? 'bg-green-500/20 text-green-400 border border-green-500/30 animate-pulse'
+                            : 'bg-dark-600 text-gray-500'
+                        }`}>
+                          {liveSessionActive ? 'LIVE' : 'OFF'}
                         </span>
                       )}
                     </NavLink>
