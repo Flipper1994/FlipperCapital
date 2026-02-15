@@ -7,6 +7,74 @@ const STRATEGY_LABELS = {
   diamond_signals: 'Diamond Signals',
 }
 
+function TestOrderPanel({ headers, onOrderPlaced }) {
+  const [symbol, setSymbol] = useState('AAPL')
+  const [qty, setQty] = useState(1)
+  const [side, setSide] = useState('buy')
+  const [loading, setLoading] = useState(false)
+  const [result, setResult] = useState(null)
+
+  const placeOrder = async () => {
+    setLoading(true)
+    setResult(null)
+    try {
+      const res = await fetch('/api/trading/live/alpaca/test-order', {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: symbol.toUpperCase(), qty, side }),
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setResult({ ok: true, ...data })
+        if (onOrderPlaced) setTimeout(onOrderPlaced, 2000)
+      } else {
+        setResult({ ok: false, error: data.error })
+      }
+    } catch {
+      setResult({ ok: false, error: 'Verbindungsfehler' })
+    }
+    setLoading(false)
+  }
+
+  return (
+    <div className="border-t border-dark-600 pt-3 mt-1">
+      <div className="text-xs text-gray-400 font-medium mb-2">Test-Order (Paper)</div>
+      <div className="flex flex-wrap items-end gap-2">
+        <div>
+          <label className="text-[10px] text-gray-500 block mb-0.5">Symbol</label>
+          <input type="text" value={symbol} onChange={e => setSymbol(e.target.value)} className="w-24 bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-xs text-white uppercase focus:border-accent-500 focus:outline-none" />
+        </div>
+        <div>
+          <label className="text-[10px] text-gray-500 block mb-0.5">Anzahl</label>
+          <input type="number" value={qty} onChange={e => setQty(Math.max(1, parseInt(e.target.value) || 1))} min="1" className="w-16 bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-xs text-white focus:border-accent-500 focus:outline-none" />
+        </div>
+        <div>
+          <label className="text-[10px] text-gray-500 block mb-0.5">Seite</label>
+          <select value={side} onChange={e => setSide(e.target.value)} className="bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-xs text-white focus:border-accent-500 focus:outline-none">
+            <option value="buy">Buy</option>
+            <option value="sell">Sell</option>
+          </select>
+        </div>
+        <button
+          onClick={placeOrder}
+          disabled={loading || !symbol}
+          className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 disabled:bg-dark-600 disabled:text-gray-600 text-white rounded transition-colors font-medium"
+        >
+          {loading ? 'Sende...' : 'Test-Order senden'}
+        </button>
+      </div>
+      {result && (
+        <div className={`mt-2 text-xs p-2 rounded ${result.ok ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
+          {result.ok
+            ? `Order platziert — ${result.side.toUpperCase()} ${result.qty}x ${result.symbol} | Status: ${result.status} | ID: ${result.order_id?.slice(0, 8)}...`
+            : `Fehler: ${result.error}`
+          }
+        </div>
+      )}
+    </div>
+  )
+}
+
 function LiveTrading({ isAdmin, token }) {
   const [config, setConfig] = useState(null)
   const [status, setStatus] = useState(null)
@@ -302,6 +370,20 @@ function LiveTrading({ isAdmin, token }) {
     } catch { alert('Verbindungsfehler') }
   }
 
+  const deleteSession = async (id) => {
+    if (!confirm(`Session #${id} wirklich löschen? Alle Positionen und Logs werden entfernt.`)) return
+    try {
+      const res = await fetch(`/api/trading/live/session/${id}`, { method: 'DELETE', headers })
+      if (res.ok) {
+        fetchSessions()
+        if (selectedSessionId === id) { setSelectedSessionId(null); setSelectedSessionPositions([]) }
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Fehler beim Löschen')
+      }
+    } catch { alert('Verbindungsfehler') }
+  }
+
   const loadSession = async (id) => {
     setSelectedSessionId(id === selectedSessionId ? null : id)
     if (id === selectedSessionId) { setSelectedSessionPositions([]); return }
@@ -592,6 +674,12 @@ function LiveTrading({ isAdmin, token }) {
                   Speichern
                 </button>
               </div>
+              {alpacaEnabled && alpacaPaper && (
+                <TestOrderPanel headers={headers} onOrderPlaced={() => {
+                  fetchAlpacaPortfolio()
+                  if (status?.session_id) fetchPositions(status.session_id)
+                }} />
+              )}
             </div>
           )}
         </div>
@@ -870,10 +958,10 @@ function LiveTrading({ isAdmin, token }) {
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
-                  <div><span className="text-gray-500">Entry:</span> <span className="text-gray-300">{p.entry_price?.toFixed(2)}</span></div>
-                  <div><span className="text-gray-500">Aktuell:</span> <span className="text-white font-medium">{p.current_price?.toFixed(2)}</span></div>
-                  <div><span className="text-gray-500">SL:</span> <span className="text-red-400/60">{p.stop_loss?.toFixed(2)}</span></div>
-                  <div><span className="text-gray-500">TP:</span> <span className="text-green-400/60">{p.take_profit?.toFixed(2)}</span></div>
+                  <div><span className="text-gray-500">Entry:</span> <span className="text-gray-300">{formatPrice(p.entry_price, p.symbol)}</span></div>
+                  <div><span className="text-gray-500">Aktuell:</span> <span className="text-white font-medium">{formatPrice(p.current_price, p.symbol)}</span></div>
+                  <div><span className="text-gray-500">Stk:</span> <span className="text-gray-300">{p.quantity || '-'}</span></div>
+                  <div><span className="text-gray-500">Invest:</span> <span className="text-gray-300">{p.invested_amount?.toFixed(0)} {config?.currency || 'EUR'}</span></div>
                   <div><span className="text-gray-500">G/V:</span> <span className={p.profit_loss_amt >= 0 ? 'text-green-400' : 'text-red-400'}>{p.profit_loss_amt >= 0 ? '+' : ''}{p.profit_loss_amt?.toFixed(2)} {config?.currency || 'EUR'}</span></div>
                   <div className="text-gray-600">{formatTime(p.entry_time)}</div>
                 </div>
@@ -889,6 +977,8 @@ function LiveTrading({ isAdmin, token }) {
                   <th className="pb-2 pr-3">Dir</th>
                   <th className="pb-2 pr-3">Entry</th>
                   <th className="pb-2 pr-3">Aktuell</th>
+                  <th className="pb-2 pr-3 text-right">Stk</th>
+                  <th className="pb-2 pr-3 text-right">Invest</th>
                   <th className="pb-2 pr-3 text-right">P&L %</th>
                   <th className="pb-2 pr-3 text-right">P&L {config?.currency || 'EUR'}</th>
                   <th className="pb-2 pr-3 text-right">SL</th>
@@ -904,20 +994,22 @@ function LiveTrading({ isAdmin, token }) {
                     </td>
                     <td className={`py-2 pr-3 font-medium ${p.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>{p.direction}</td>
                     <td className="py-2 pr-3 text-gray-400">
-                      <div>{formatPrice(p.entry_price_usd, p.symbol)}</div>
+                      <div>{formatPrice(p.entry_price, p.symbol)}</div>
                       <div className="text-gray-600 text-[10px]">{formatTime(p.entry_time)}</div>
                     </td>
                     <td className="py-2 pr-3 text-white font-medium">
-                      {p.current_price?.toFixed(2)} {p.native_currency}
+                      {formatPrice(p.current_price, p.symbol)}
                     </td>
+                    <td className="py-2 pr-3 text-right text-gray-300">{p.quantity || '-'}</td>
+                    <td className="py-2 pr-3 text-right text-gray-400">{p.invested_amount?.toFixed(0)} {config?.currency || 'EUR'}</td>
                     <td className={`py-2 pr-3 text-right font-medium ${p.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       {p.profit_loss_pct >= 0 ? '+' : ''}{p.profit_loss_pct?.toFixed(2)}%
                     </td>
                     <td className={`py-2 pr-3 text-right font-medium ${p.profit_loss_amt >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       {p.profit_loss_amt >= 0 ? '+' : ''}{p.profit_loss_amt?.toFixed(2)}
                     </td>
-                    <td className="py-2 pr-3 text-right text-red-400/60">{p.stop_loss?.toFixed(2)}</td>
-                    <td className="py-2 text-right text-green-400/60">{p.take_profit?.toFixed(2)}</td>
+                    <td className="py-2 pr-3 text-right text-red-400/60">{p.stop_loss > 0 ? formatPrice(p.stop_loss, p.symbol) : '-'}</td>
+                    <td className="py-2 text-right text-green-400/60">{p.take_profit > 0 ? formatPrice(p.take_profit, p.symbol) : '-'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -938,6 +1030,7 @@ function LiveTrading({ isAdmin, token }) {
                   <th className="pb-2 pr-2">Dir</th>
                   <th className="pb-2 pr-2">Entry</th>
                   <th className="pb-2 pr-2">Exit</th>
+                  <th className="pb-2 pr-2 text-right">Stk</th>
                   <th className="pb-2 pr-2 text-right">Return</th>
                   <th className="pb-2 pr-2 text-right">G/V {config?.currency || 'EUR'}</th>
                   <th className="pb-2 text-right">Reason</th>
@@ -949,13 +1042,14 @@ function LiveTrading({ isAdmin, token }) {
                     <td className="py-1.5 pr-2 font-medium text-accent-400">{p.symbol}</td>
                     <td className={`py-1.5 pr-2 ${p.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>{p.direction}</td>
                     <td className="py-1.5 pr-2 text-gray-400">
-                      <div>{formatPrice(p.entry_price_usd, p.symbol)}</div>
+                      <div>{formatPrice(p.entry_price, p.symbol)}</div>
                       <div className="text-gray-600 text-[10px]">{formatTime(p.entry_time)}</div>
                     </td>
                     <td className="py-1.5 pr-2 text-gray-400">
-                      <div>{formatPrice(p.close_price_usd, p.symbol)}</div>
+                      <div>{formatPrice(p.close_price, p.symbol)}</div>
                       <div className="text-gray-600 text-[10px]">{formatTime(p.close_time)}</div>
                     </td>
+                    <td className="py-1.5 pr-2 text-right text-gray-400">{p.quantity || '-'}</td>
                     <td className={`py-1.5 pr-2 text-right font-medium ${p.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       {p.profit_loss_pct >= 0 ? '+' : ''}{p.profit_loss_pct?.toFixed(2)}%
                     </td>
@@ -1090,6 +1184,15 @@ function LiveTrading({ isAdmin, token }) {
                               className="px-2.5 py-1 bg-red-600 hover:bg-red-500 text-white text-[10px] font-medium rounded transition-colors"
                             >
                               Stoppen
+                            </button>
+                          )}
+                          {isAdmin && !s.is_active && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); deleteSession(s.id) }}
+                              className="px-2.5 py-1 bg-dark-600 hover:bg-red-600 text-gray-400 hover:text-white text-[10px] font-medium rounded transition-colors"
+                              title="Session löschen"
+                            >
+                              Löschen
                             </button>
                           )}
                         </div>

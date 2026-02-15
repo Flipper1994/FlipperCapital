@@ -867,6 +867,7 @@ type LiveTradingPosition struct {
 	InvestedAmount float64    `json:"invested_amount"`
 	ProfitLossAmt  float64    `json:"profit_loss_amt"`
 	NativeCurrency string     `json:"native_currency"`
+	Quantity       int        `json:"quantity"`
 	SignalIndex    int        `json:"signal_index"`
 	AlpacaOrderID  string     `json:"alpaca_order_id"`
 	CreatedAt      time.Time  `json:"created_at"`
@@ -1492,8 +1493,10 @@ func main() {
 		api.GET("/trading/live/sessions", authMiddleware(), getLiveTradingSessions)
 		api.GET("/trading/live/session/:id", authMiddleware(), getLiveTradingSession)
 		api.POST("/trading/live/session/:id/resume", authMiddleware(), adminOnly(), resumeLiveTrading)
+		api.DELETE("/trading/live/session/:id", authMiddleware(), adminOnly(), deleteLiveSession)
 		api.GET("/trading/live/logs/:sessionId", authMiddleware(), getLiveTradingLogs)
 		api.POST("/trading/live/alpaca/validate", authMiddleware(), adminOnly(), validateAlpacaKeys)
+		api.POST("/trading/live/alpaca/test-order", authMiddleware(), adminOnly(), alpacaTestOrder)
 		api.GET("/trading/live/alpaca/portfolio", authMiddleware(), getAlpacaPortfolio)
 
 		// Backtest Lab
@@ -22368,6 +22371,113 @@ func validateAlpacaKeys(c *gin.Context) {
 	})
 }
 
+func alpacaTestOrder(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	uid := userID.(uint)
+
+	var req struct {
+		Symbol string `json:"symbol"`
+		Qty    int    `json:"qty"`
+		Side   string `json:"side"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "Ungültige Anfrage"})
+		return
+	}
+	if req.Symbol == "" || req.Qty <= 0 {
+		c.JSON(400, gin.H{"error": "Symbol und Qty (>0) erforderlich"})
+		return
+	}
+	if req.Side != "buy" && req.Side != "sell" {
+		c.JSON(400, gin.H{"error": "Side muss 'buy' oder 'sell' sein"})
+		return
+	}
+
+	var config LiveTradingConfig
+	if db.Where("user_id = ?", uid).First(&config).Error != nil || config.AlpacaApiKey == "" {
+		c.JSON(400, gin.H{"error": "Alpaca nicht konfiguriert"})
+		return
+	}
+	if !config.AlpacaPaper {
+		c.JSON(403, gin.H{"error": "Test-Orders nur im Paper-Modus erlaubt"})
+		return
+	}
+
+	orderResult, err := alpacaPlaceOrder(req.Symbol, req.Qty, req.Side, config)
+	if err != nil {
+		c.JSON(400, gin.H{"error": fmt.Sprintf("Order fehlgeschlagen: %v", err)})
+		return
+	}
+
+	// Find active session to track position + log
+	var session LiveTradingSession
+	hasSession := db.Where("user_id = ? AND is_active = ?", uid, true).First(&session).Error == nil
+	if !hasSession {
+		// Also try any session for this user (use latest)
+		hasSession = db.Where("user_id = ?", uid).Order("started_at DESC").First(&session).Error == nil
+	}
+
+	estimatedPrice := orderResult.FilledAvgPrice
+	if estimatedPrice == 0 {
+		// Market order may not be filled yet — estimate from qty
+		estimatedPrice = config.TradeAmount / float64(req.Qty)
+	}
+
+	if hasSession && req.Side == "buy" {
+		pos := LiveTradingPosition{
+			SessionID:      session.ID,
+			Symbol:         req.Symbol,
+			Direction:      "LONG",
+			EntryPrice:     estimatedPrice,
+			EntryPriceUSD:  estimatedPrice,
+			EntryTime:      time.Now(),
+			CurrentPrice:   estimatedPrice,
+			InvestedAmount: estimatedPrice * float64(req.Qty),
+			NativeCurrency: "USD",
+			AlpacaOrderID:  orderResult.OrderID,
+			CreatedAt:      time.Now(),
+		}
+		db.Create(&pos)
+		logLiveEvent(session.ID, "TRADE", req.Symbol, fmt.Sprintf("TEST-BUY %d x %s → Alpaca OrderID: %s, Status: %s", req.Qty, req.Symbol, orderResult.OrderID, orderResult.Status))
+	} else if hasSession && req.Side == "sell" {
+		logLiveEvent(session.ID, "TRADE", req.Symbol, fmt.Sprintf("TEST-SELL %d x %s → Alpaca OrderID: %s, Status: %s", req.Qty, req.Symbol, orderResult.OrderID, orderResult.Status))
+	}
+
+	c.JSON(200, gin.H{
+		"order_id":         orderResult.OrderID,
+		"status":           orderResult.Status,
+		"filled_avg_price": orderResult.FilledAvgPrice,
+		"symbol":           req.Symbol,
+		"qty":              req.Qty,
+		"side":             req.Side,
+	})
+}
+
+func deleteLiveSession(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	uid := userID.(uint)
+	id := c.Param("id")
+
+	var session LiveTradingSession
+	if db.Where("id = ? AND user_id = ?", id, uid).First(&session).Error != nil {
+		c.JSON(404, gin.H{"error": "Session nicht gefunden"})
+		return
+	}
+
+	if session.IsActive {
+		c.JSON(400, gin.H{"error": "Aktive Session kann nicht gelöscht werden — erst stoppen"})
+		return
+	}
+
+	// Delete positions, logs, then session
+	db.Where("session_id = ?", session.ID).Delete(&LiveTradingPosition{})
+	db.Where("session_id = ?", session.ID).Delete(&LiveTradingLog{})
+	db.Delete(&session)
+
+	log.Printf("[LiveTrading] Session #%d gelöscht von User %d", session.ID, uid)
+	c.JSON(200, gin.H{"message": fmt.Sprintf("Session #%d gelöscht", session.ID)})
+}
+
 func getAlpacaPortfolio(c *gin.Context) {
 	uid := liveOwnerUID(c)
 
@@ -23039,6 +23149,15 @@ func processLiveSymbol(session LiveTradingSession, symbol string, strategy Tradi
 				entryPriceUSD = convertToUSD(entryPriceNative, nativeCurrency)
 			}
 
+			tradeAmountUSD := convertToUSD(session.TradeAmount, session.Currency)
+			posQty := 0
+			if entryPriceUSD > 0 {
+				posQty = int(math.Floor(tradeAmountUSD / entryPriceUSD))
+			}
+			if posQty <= 0 {
+				posQty = 1
+			}
+
 			pos := LiveTradingPosition{
 				SessionID:      session.ID,
 				Symbol:         symbol,
@@ -23051,6 +23170,7 @@ func processLiveSymbol(session LiveTradingSession, symbol string, strategy Tradi
 				CurrentPrice:   entryPriceNative,
 				NativeCurrency: nativeCurrency,
 				InvestedAmount: session.TradeAmount,
+				Quantity:       posQty,
 				SignalIndex:    sig.Index,
 				CreatedAt:      time.Now(),
 			}
@@ -23058,23 +23178,17 @@ func processLiveSymbol(session LiveTradingSession, symbol string, strategy Tradi
 
 			// Alpaca: Place order if enabled
 			if config.AlpacaEnabled && config.AlpacaApiKey != "" {
-				priceForQty := entryPriceUSD
-				if priceForQty <= 0 {
-					priceForQty = entryPriceNative
-				}
-				tradeAmountUSD := convertToUSD(session.TradeAmount, session.Currency)
-				qty := int(math.Floor(tradeAmountUSD / priceForQty))
 				side := "buy"
 				if sig.Direction == "SHORT" {
 					side = "sell"
 				}
-				orderResult, err := alpacaPlaceOrder(symbol, qty, side, config)
+				orderResult, err := alpacaPlaceOrder(symbol, posQty, side, config)
 				if err != nil {
 					logLiveEvent(session.ID, "ERROR", symbol, fmt.Sprintf("Alpaca Order fehlgeschlagen: %v", err))
 				} else {
 					pos.AlpacaOrderID = orderResult.OrderID
 					db.Model(&pos).Update("alpaca_order_id", orderResult.OrderID)
-					logLiveEvent(session.ID, "ALPACA", symbol, fmt.Sprintf("Order platziert: %s %dx %s (ID: %s, Status: %s)", side, qty, symbol, orderResult.OrderID, orderResult.Status))
+					logLiveEvent(session.ID, "ALPACA", symbol, fmt.Sprintf("Order platziert: %s %dx %s (ID: %s, Status: %s)", side, posQty, symbol, orderResult.OrderID, orderResult.Status))
 				}
 			}
 
@@ -23179,8 +23293,7 @@ func closeLivePosition(pos *LiveTradingPosition, closePriceNative float64, reaso
 		if pos.Direction == "SHORT" {
 			side = "buy"
 		}
-		investedUSD := convertToUSD(pos.InvestedAmount, config[0].Currency)
-		qty := int(math.Floor(investedUSD / pos.EntryPriceUSD))
+		qty := pos.Quantity
 		if qty <= 0 {
 			qty = 1
 		}
