@@ -7,10 +7,11 @@ const STRATEGY_LABELS = {
   diamond_signals: 'Diamond Signals',
 }
 
-function TestOrderPanel({ headers, onOrderPlaced }) {
+function TestOrderPanel({ headers, onOrderPlaced, tradeAmount, currency }) {
   const [symbol, setSymbol] = useState('AAPL')
-  const [qty, setQty] = useState(1)
   const [side, setSide] = useState('buy')
+  const [sl, setSl] = useState('')
+  const [tp, setTp] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
 
@@ -18,10 +19,13 @@ function TestOrderPanel({ headers, onOrderPlaced }) {
     setLoading(true)
     setResult(null)
     try {
+      const body = { symbol: symbol.toUpperCase(), side }
+      if (sl) body.stop_loss = parseFloat(sl)
+      if (tp) body.take_profit = parseFloat(tp)
       const res = await fetch('/api/trading/live/alpaca/test-order', {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: symbol.toUpperCase(), qty, side }),
+        body: JSON.stringify(body),
       })
       const data = await res.json()
       if (res.ok) {
@@ -38,15 +42,14 @@ function TestOrderPanel({ headers, onOrderPlaced }) {
 
   return (
     <div className="border-t border-dark-600 pt-3 mt-1">
-      <div className="text-xs text-gray-400 font-medium mb-2">Test-Order (Paper)</div>
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-xs text-gray-400 font-medium">Test-Order (Paper)</span>
+        <span className="text-[10px] text-gray-600">Einsatz: {tradeAmount} {currency} pro Trade</span>
+      </div>
       <div className="flex flex-wrap items-end gap-2">
         <div>
           <label className="text-[10px] text-gray-500 block mb-0.5">Symbol</label>
           <input type="text" value={symbol} onChange={e => setSymbol(e.target.value)} className="w-24 bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-xs text-white uppercase focus:border-accent-500 focus:outline-none" />
-        </div>
-        <div>
-          <label className="text-[10px] text-gray-500 block mb-0.5">Anzahl</label>
-          <input type="number" value={qty} onChange={e => setQty(Math.max(1, parseInt(e.target.value) || 1))} min="1" className="w-16 bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-xs text-white focus:border-accent-500 focus:outline-none" />
         </div>
         <div>
           <label className="text-[10px] text-gray-500 block mb-0.5">Seite</label>
@@ -55,6 +58,18 @@ function TestOrderPanel({ headers, onOrderPlaced }) {
             <option value="sell">Sell</option>
           </select>
         </div>
+        {side === 'buy' && (
+          <>
+            <div>
+              <label className="text-[10px] text-red-400/70 block mb-0.5">Stop Loss $</label>
+              <input type="number" value={sl} onChange={e => setSl(e.target.value)} placeholder="z.B. 180" step="0.01" className="w-20 bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-xs text-white focus:border-red-500 focus:outline-none" />
+            </div>
+            <div>
+              <label className="text-[10px] text-green-400/70 block mb-0.5">Take Profit $</label>
+              <input type="number" value={tp} onChange={e => setTp(e.target.value)} placeholder="z.B. 250" step="0.01" className="w-20 bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-xs text-white focus:border-green-500 focus:outline-none" />
+            </div>
+          </>
+        )}
         <button
           onClick={placeOrder}
           disabled={loading || !symbol}
@@ -65,10 +80,14 @@ function TestOrderPanel({ headers, onOrderPlaced }) {
       </div>
       {result && (
         <div className={`mt-2 text-xs p-2 rounded ${result.ok ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
-          {result.ok
-            ? `Order platziert — ${result.side.toUpperCase()} ${result.qty}x ${result.symbol} | Status: ${result.status} | ID: ${result.order_id?.slice(0, 8)}...`
-            : `Fehler: ${result.error}`
-          }
+          {result.ok ? (
+            <div>
+              <div>Order platziert — {result.side.toUpperCase()} {result.qty}x {result.symbol} ({result.trade_amount} {result.currency})</div>
+              <div>Status: {result.status} | Typ: {result.order_class || 'simple'} | ID: {result.order_id?.slice(0, 8)}...</div>
+              {result.stop_loss > 0 && <div>SL: ${result.stop_loss.toFixed(2)} | TP: ${result.take_profit?.toFixed(2)}</div>}
+              {result.legs?.length > 0 && <div>Legs: {result.legs.map(l => `${l.type} (${l.status})`).join(', ')}</div>}
+            </div>
+          ) : `Fehler: ${result.error}`}
         </div>
       )}
     </div>
@@ -86,6 +105,7 @@ function LiveTrading({ isAdmin, token }) {
   const [symbolPrices, setSymbolPrices] = useState({})
   const [countdown, setCountdown] = useState(null)
   const [showDebug, setShowDebug] = useState(false)
+  const [hiddenLogLevels, setHiddenLogLevels] = useState(new Set())
   const [debugLogs, setDebugLogs] = useState([])
   const [lastLogId, setLastLogId] = useState(0)
   const [notificationsEnabled, setNotificationsEnabled] = useState(false)
@@ -419,9 +439,57 @@ function LiveTrading({ isAdmin, token }) {
   })
 
   const totalPnlEur = positions.reduce((s, p) => s + (p.profit_loss_amt || 0), 0)
-  const totalWins = positions.filter(p => p.is_closed && p.profit_loss_pct > 0).length
+  const totalInvested = positions.reduce((s, p) => s + (p.invested_amount || 0), 0)
+  const totalRenditePct = totalInvested > 0 ? (totalPnlEur / totalInvested) * 100 : 0
+  // Win Rate: alle Positionen (offen: + = win, - = loss)
+  const allPositionsForWinRate = positions.filter(p => p.is_closed || p.profit_loss_pct != null)
+  const totalWins = allPositionsForWinRate.filter(p => (p.profit_loss_pct || 0) > 0).length
+  const totalLosses = allPositionsForWinRate.filter(p => (p.profit_loss_pct || 0) <= 0).length
+  const totalAll = allPositionsForWinRate.length
+  const winRate = totalAll > 0 ? (totalWins / totalAll) * 100 : 0
   const totalClosed = closedPositions.length
-  const winRate = totalClosed > 0 ? (totalWins / totalClosed) * 100 : 0
+  // Avg returns
+  const avgReturnPerTrade = totalAll > 0 ? positions.reduce((s, p) => s + (p.profit_loss_pct || 0), 0) / totalAll : 0
+  const winPositions = allPositionsForWinRate.filter(p => (p.profit_loss_pct || 0) > 0)
+  const losePositions = allPositionsForWinRate.filter(p => (p.profit_loss_pct || 0) <= 0)
+  const avgWin = winPositions.length > 0 ? winPositions.reduce((s, p) => s + p.profit_loss_pct, 0) / winPositions.length : 0
+  const avgLoss = losePositions.length > 0 ? losePositions.reduce((s, p) => s + p.profit_loss_pct, 0) / losePositions.length : 0
+  const riskReward = avgLoss !== 0 ? Math.abs(avgWin / avgLoss) : 0
+
+  // Bot Actions timeline — one OPEN row per position + one CLOSE row per closed position
+  const botActions = positions.flatMap(p => {
+    const actions = [{
+      time: p.entry_time,
+      type: 'OPEN',
+      symbol: p.symbol,
+      direction: p.direction,
+      price: p.entry_price,
+      qty: p.quantity,
+      invested: p.invested_amount,
+      sl: p.stop_loss,
+      tp: p.take_profit,
+      pnlPct: null,
+      pnlAmt: null,
+      alpaca: !!p.alpaca_order_id,
+    }]
+    if (p.is_closed) {
+      actions.push({
+        time: p.close_time,
+        type: p.close_reason || 'CLOSE',
+        symbol: p.symbol,
+        direction: p.direction,
+        price: p.close_price,
+        qty: p.quantity,
+        invested: p.invested_amount,
+        sl: null,
+        tp: null,
+        pnlPct: p.profit_loss_pct,
+        pnlAmt: p.profit_loss_amt,
+        alpaca: !!p.alpaca_order_id,
+      })
+    }
+    return actions
+  }).sort((a, b) => new Date(b.time) - new Date(a.time))
 
   return (
     <div className="min-h-screen bg-dark-900 p-4 md:p-6 max-w-7xl mx-auto">
@@ -675,7 +743,7 @@ function LiveTrading({ isAdmin, token }) {
                 </button>
               </div>
               {alpacaEnabled && alpacaPaper && (
-                <TestOrderPanel headers={headers} onOrderPlaced={() => {
+                <TestOrderPanel headers={headers} tradeAmount={tradeAmount} currency={config?.currency || 'EUR'} onOrderPlaced={() => {
                   fetchAlpacaPortfolio()
                   if (status?.session_id) fetchPositions(status.session_id)
                 }} />
@@ -824,8 +892,11 @@ function LiveTrading({ isAdmin, token }) {
                       <tr className="text-gray-600">
                         <th className="text-left pb-1">Symbol</th>
                         <th className="text-left pb-1">Seite</th>
+                        <th className="text-left pb-1">Typ</th>
                         <th className="text-right pb-1">Stück</th>
                         <th className="text-right pb-1">Preis</th>
+                        <th className="text-right pb-1">SL</th>
+                        <th className="text-right pb-1">TP</th>
                         <th className="text-left pb-1">Status</th>
                         <th className="text-left pb-1">Datum</th>
                       </tr>
@@ -834,11 +905,22 @@ function LiveTrading({ isAdmin, token }) {
                       {alpacaPortfolio.orders.map((o, i) => (
                         <tr key={i} className="border-t border-dark-700/50">
                           <td className="py-1 text-gray-300">{o.symbol}</td>
-                          <td className={o.side === 'buy' ? 'text-green-400' : 'text-red-400'}>{o.side.toUpperCase()}</td>
+                          <td className={o.side === 'buy' ? 'text-green-400' : 'text-red-400'}>{o.side?.toUpperCase()}</td>
+                          <td className="py-1">
+                            {o.order_class === 'bracket' ? (
+                              <span className="px-1 py-0.5 rounded bg-purple-500/20 text-purple-400">BRACKET</span>
+                            ) : o.order_class === 'oto' ? (
+                              <span className="px-1 py-0.5 rounded bg-blue-500/20 text-blue-400">OTO</span>
+                            ) : (
+                              <span className="text-gray-600">{o.order_type || 'market'}</span>
+                            )}
+                          </td>
                           <td className="py-1 text-right text-gray-400">{o.filled_qty || o.qty}</td>
                           <td className="py-1 text-right text-gray-400">{o.filled_avg_price > 0 ? `$${o.filled_avg_price.toFixed(2)}` : '-'}</td>
-                          <td className={`py-1 ${o.status === 'filled' ? 'text-green-400' : o.status === 'canceled' ? 'text-gray-600' : 'text-amber-400'}`}>{o.status}</td>
-                          <td className="py-1 text-gray-600">{o.filled_at ? new Date(o.filled_at).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'}</td>
+                          <td className="py-1 text-right text-red-400/60">{o.stop_price > 0 ? `$${o.stop_price.toFixed(2)}` : o.legs?.find(l => l.type === 'stop')?.stop_price > 0 ? `$${o.legs.find(l => l.type === 'stop').stop_price.toFixed(2)}` : '-'}</td>
+                          <td className="py-1 text-right text-green-400/60">{o.limit_price > 0 ? `$${o.limit_price.toFixed(2)}` : o.legs?.find(l => l.type === 'limit')?.limit_price > 0 ? `$${o.legs.find(l => l.type === 'limit').limit_price.toFixed(2)}` : '-'}</td>
+                          <td className={`py-1 ${o.status === 'filled' ? 'text-green-400' : o.status === 'canceled' || o.status === 'cancelled' ? 'text-gray-600' : 'text-amber-400'}`}>{o.status}</td>
+                          <td className="py-1 text-gray-600">{o.filled_at ? new Date(o.filled_at).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : o.created_at ? new Date(o.created_at).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -882,22 +964,37 @@ function LiveTrading({ isAdmin, token }) {
         </div>
       )}
 
-      {/* Session Metrics */}
+      {/* Performance */}
       {(status?.is_running || positions.length > 0) && (
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-2 mb-4">
-          {[
-            { label: 'Offene Pos.', value: openPositions.length, color: 'text-white' },
-            { label: 'Geschlossen', value: totalClosed, color: 'text-white' },
-            { label: 'Win Rate', value: `${winRate.toFixed(0)}%`, color: winRate >= 50 ? 'text-green-400' : 'text-red-400' },
-            { label: 'G/V', value: `${totalPnlEur >= 0 ? '+' : ''}${totalPnlEur.toFixed(2)} ${config?.currency || 'EUR'}`, color: totalPnlEur >= 0 ? 'text-green-400' : 'text-red-400' },
-            { label: 'Aktien', value: `${symbols.length}` },
-            { label: 'Strategie', value: STRATEGY_LABELS[config?.strategy] || '-' },
-          ].map((m, i) => (
-            <div key={i} className="bg-dark-800 rounded-lg border border-dark-600 p-3">
-              <div className="text-[10px] text-gray-500">{m.label}</div>
-              <div className={`text-sm font-bold ${m.color || 'text-white'}`}>{m.value}</div>
+        <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-medium text-white">Performance</h3>
+            <div className="flex items-center gap-3 text-[10px] text-gray-500">
+              <span>{openPositions.length} offen</span>
+              <span>{totalClosed} geschlossen</span>
+              <span>{symbols.length} Aktien</span>
+              <span>{STRATEGY_LABELS[config?.strategy] || '-'}</span>
             </div>
-          ))}
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2">
+            {[
+              { label: 'Rendite', value: `${totalRenditePct >= 0 ? '+' : ''}${totalRenditePct.toFixed(2)}%`, sub: `(${totalPnlEur >= 0 ? '+' : ''}${totalPnlEur.toFixed(2)}€)`, color: totalPnlEur >= 0 ? 'text-green-400' : 'text-red-400' },
+              { label: 'Win Rate', value: `${winRate.toFixed(0)}%`, sub: `${totalWins}W / ${totalLosses}L`, color: winRate >= 50 ? 'text-green-400' : 'text-red-400' },
+              { label: 'R/R', value: riskReward > 0 ? riskReward.toFixed(2) : '-', sub: 'Risk/Reward', color: riskReward >= 1 ? 'text-green-400' : riskReward > 0 ? 'text-red-400' : 'text-gray-400' },
+              { label: 'Ø / Trade', value: `${avgReturnPerTrade >= 0 ? '+' : ''}${avgReturnPerTrade.toFixed(2)}%`, color: avgReturnPerTrade >= 0 ? 'text-green-400' : 'text-red-400' },
+              { label: 'Ø Win', value: winPositions.length > 0 ? `+${avgWin.toFixed(2)}%` : '-', color: 'text-green-400' },
+              { label: 'Ø Loss', value: losePositions.length > 0 ? `${avgLoss.toFixed(2)}%` : '-', color: 'text-red-400' },
+              { label: 'Investiert', value: `${totalInvested.toFixed(0)}€`, color: 'text-white' },
+            ].map((m, i) => (
+              <div key={i} className="bg-dark-700 rounded-lg p-2.5">
+                <div className="text-[10px] text-gray-500">{m.label}</div>
+                <div className={`text-sm font-bold ${m.color || 'text-white'}`}>
+                  {m.value}
+                  {m.sub && <span className="text-[10px] text-gray-500 font-normal ml-1">{m.sub}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -960,9 +1057,9 @@ function LiveTrading({ isAdmin, token }) {
                 <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
                   <div><span className="text-gray-500">Entry:</span> <span className="text-gray-300">{formatPrice(p.entry_price, p.symbol)}</span></div>
                   <div><span className="text-gray-500">Aktuell:</span> <span className="text-white font-medium">{formatPrice(p.current_price, p.symbol)}</span></div>
-                  <div><span className="text-gray-500">Stk:</span> <span className="text-gray-300">{p.quantity || '-'}</span></div>
-                  <div><span className="text-gray-500">Invest:</span> <span className="text-gray-300">{p.invested_amount?.toFixed(0)} {config?.currency || 'EUR'}</span></div>
-                  <div><span className="text-gray-500">G/V:</span> <span className={p.profit_loss_amt >= 0 ? 'text-green-400' : 'text-red-400'}>{p.profit_loss_amt >= 0 ? '+' : ''}{p.profit_loss_amt?.toFixed(2)} {config?.currency || 'EUR'}</span></div>
+                  <div><span className="text-gray-500">Stk:</span> <span className="text-gray-300">{p.quantity || '-'}x</span></div>
+                  <div><span className="text-gray-500">Buy-In:</span> <span className="text-gray-300">{p.invested_amount?.toFixed(2)} €</span></div>
+                  <div><span className="text-gray-500">Rendite:</span> <span className={p.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}>{p.profit_loss_pct >= 0 ? '+' : ''}{p.profit_loss_pct?.toFixed(2)}% ({p.profit_loss_amt >= 0 ? '+' : ''}{p.profit_loss_amt?.toFixed(2)}€)</span></div>
                   <div className="text-gray-600">{formatTime(p.entry_time)}</div>
                 </div>
               </div>
@@ -978,11 +1075,9 @@ function LiveTrading({ isAdmin, token }) {
                   <th className="pb-2 pr-3">Entry</th>
                   <th className="pb-2 pr-3">Aktuell</th>
                   <th className="pb-2 pr-3 text-right">Stk</th>
-                  <th className="pb-2 pr-3 text-right">Invest</th>
-                  <th className="pb-2 pr-3 text-right">P&L %</th>
-                  <th className="pb-2 pr-3 text-right">P&L {config?.currency || 'EUR'}</th>
-                  <th className="pb-2 pr-3 text-right">SL</th>
-                  <th className="pb-2 text-right">TP</th>
+                  <th className="pb-2 pr-3 text-right">Buy-In</th>
+                  <th className="pb-2 pr-3 text-right">Rendite</th>
+                  <th className="pb-2 text-right">SL / TP</th>
                 </tr>
               </thead>
               <tbody>
@@ -1000,16 +1095,17 @@ function LiveTrading({ isAdmin, token }) {
                     <td className="py-2 pr-3 text-white font-medium">
                       {formatPrice(p.current_price, p.symbol)}
                     </td>
-                    <td className="py-2 pr-3 text-right text-gray-300">{p.quantity || '-'}</td>
-                    <td className="py-2 pr-3 text-right text-gray-400">{p.invested_amount?.toFixed(0)} {config?.currency || 'EUR'}</td>
+                    <td className="py-2 pr-3 text-right text-gray-300">{p.quantity ? `${p.quantity}x` : '-'}</td>
+                    <td className="py-2 pr-3 text-right text-gray-400">{p.invested_amount?.toFixed(2)} €</td>
                     <td className={`py-2 pr-3 text-right font-medium ${p.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       {p.profit_loss_pct >= 0 ? '+' : ''}{p.profit_loss_pct?.toFixed(2)}%
+                      <span className="text-gray-500 font-normal ml-1">({p.profit_loss_amt >= 0 ? '+' : ''}{p.profit_loss_amt?.toFixed(2)}€)</span>
                     </td>
-                    <td className={`py-2 pr-3 text-right font-medium ${p.profit_loss_amt >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {p.profit_loss_amt >= 0 ? '+' : ''}{p.profit_loss_amt?.toFixed(2)}
+                    <td className="py-2 text-right text-gray-400 text-[10px]">
+                      {p.stop_loss > 0 || p.take_profit > 0 ? (
+                        <>{p.stop_loss > 0 ? formatPrice(p.stop_loss, p.symbol) : '-'} / {p.take_profit > 0 ? formatPrice(p.take_profit, p.symbol) : '-'}</>
+                      ) : '-'}
                     </td>
-                    <td className="py-2 pr-3 text-right text-red-400/60">{p.stop_loss > 0 ? formatPrice(p.stop_loss, p.symbol) : '-'}</td>
-                    <td className="py-2 text-right text-green-400/60">{p.take_profit > 0 ? formatPrice(p.take_profit, p.symbol) : '-'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1021,7 +1117,15 @@ function LiveTrading({ isAdmin, token }) {
       {/* Closed Trades */}
       {closedPositions.length > 0 && (
         <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
-          <h3 className="text-sm font-medium text-white mb-3">Trade History ({closedPositions.length})</h3>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-medium text-white">Trade History ({closedPositions.length})</h3>
+            <div className="flex items-center gap-3 text-[10px] text-gray-500">
+              <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-green-400 mr-1" />TP = Take Profit</span>
+              <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-red-400 mr-1" />SL = Stop Loss</span>
+              <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-yellow-400 mr-1" />SIGNAL = Strategie-Signal</span>
+              <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-gray-400 mr-1" />MANUAL = Manuell geschlossen</span>
+            </div>
+          </div>
           <div className="overflow-auto max-h-96">
             <table className="w-full text-xs">
               <thead className="sticky top-0 bg-dark-800">
@@ -1031,8 +1135,7 @@ function LiveTrading({ isAdmin, token }) {
                   <th className="pb-2 pr-2">Entry</th>
                   <th className="pb-2 pr-2">Exit</th>
                   <th className="pb-2 pr-2 text-right">Stk</th>
-                  <th className="pb-2 pr-2 text-right">Return</th>
-                  <th className="pb-2 pr-2 text-right">G/V {config?.currency || 'EUR'}</th>
+                  <th className="pb-2 pr-2 text-right">Rendite</th>
                   <th className="pb-2 text-right">Reason</th>
                 </tr>
               </thead>
@@ -1049,12 +1152,10 @@ function LiveTrading({ isAdmin, token }) {
                       <div>{formatPrice(p.close_price, p.symbol)}</div>
                       <div className="text-gray-600 text-[10px]">{formatTime(p.close_time)}</div>
                     </td>
-                    <td className="py-1.5 pr-2 text-right text-gray-400">{p.quantity || '-'}</td>
+                    <td className="py-1.5 pr-2 text-right text-gray-400">{p.quantity ? `${p.quantity}x` : '-'}</td>
                     <td className={`py-1.5 pr-2 text-right font-medium ${p.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       {p.profit_loss_pct >= 0 ? '+' : ''}{p.profit_loss_pct?.toFixed(2)}%
-                    </td>
-                    <td className={`py-1.5 pr-2 text-right font-medium ${p.profit_loss_amt >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {p.profit_loss_amt >= 0 ? '+' : ''}{p.profit_loss_amt?.toFixed(2)}
+                      <span className="text-gray-500 font-normal ml-1">({p.profit_loss_amt >= 0 ? '+' : ''}{p.profit_loss_amt?.toFixed(2)}€)</span>
                     </td>
                     <td className="py-1.5 text-right">
                       <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
@@ -1063,6 +1164,102 @@ function LiveTrading({ isAdmin, token }) {
                         p.close_reason === 'SIGNAL' ? 'bg-yellow-500/20 text-yellow-400' :
                         'bg-gray-500/20 text-gray-400'
                       }`}>{p.close_reason}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Letzte Bot Aktionen */}
+      {botActions.length > 0 && (
+        <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
+          <h3 className="text-sm font-medium text-white mb-3">Letzte Bot Aktionen ({botActions.length})</h3>
+
+          {/* Mobile: Cards */}
+          <div className="md:hidden space-y-2">
+            {botActions.map((a, i) => (
+              <div key={i} className="bg-dark-700 rounded-lg p-3 border border-dark-600">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                      a.type === 'OPEN' ? 'bg-blue-500/20 text-blue-400' :
+                      a.type === 'TP' ? 'bg-green-500/20 text-green-400' :
+                      a.type === 'SL' ? 'bg-red-500/20 text-red-400' :
+                      'bg-yellow-500/20 text-yellow-400'
+                    }`}>{a.type}</span>
+                    <span className="text-sm font-bold text-accent-400">{a.symbol}</span>
+                    <span className={`text-[10px] ${a.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>{a.direction}</span>
+                    {a.alpaca && <span className="text-[10px] px-1 py-0.5 rounded bg-purple-500/20 text-purple-400">A</span>}
+                  </div>
+                  {a.pnlPct != null && (
+                    <span className={`text-sm font-bold ${a.pnlPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {a.pnlPct >= 0 ? '+' : ''}{a.pnlPct.toFixed(2)}%
+                    </span>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+                  <div><span className="text-gray-500">Kurs:</span> <span className="text-gray-300">{formatPrice(a.price, a.symbol)}</span></div>
+                  <div><span className="text-gray-500">Stk:</span> <span className="text-gray-300">{a.qty || '-'}</span></div>
+                  {a.type === 'OPEN' && <>
+                    <div><span className="text-gray-500">Buy-In:</span> <span className="text-gray-300">{a.invested?.toFixed(0)} €</span></div>
+                    <div><span className="text-gray-500">SL:</span> <span className="text-gray-400">{a.sl > 0 ? formatPrice(a.sl, a.symbol) : '-'}</span></div>
+                  </>}
+                  {a.pnlAmt != null && (
+                    <div><span className="text-gray-500">G/V:</span> <span className={a.pnlAmt >= 0 ? 'text-green-400' : 'text-red-400'}>{a.pnlAmt >= 0 ? '+' : ''}{a.pnlAmt.toFixed(2)} €</span></div>
+                  )}
+                  <div className="text-gray-600">{formatTime(a.time)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Desktop: Table */}
+          <div className="hidden md:block overflow-auto max-h-96">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-dark-800">
+                <tr className="text-left text-gray-500 border-b border-dark-600">
+                  <th className="pb-2 pr-2">Zeit</th>
+                  <th className="pb-2 pr-2">Aktion</th>
+                  <th className="pb-2 pr-2">Symbol</th>
+                  <th className="pb-2 pr-2">Dir</th>
+                  <th className="pb-2 pr-2 text-right">Kurs</th>
+                  <th className="pb-2 pr-2 text-right">Stk</th>
+                  <th className="pb-2 pr-2 text-right">Invest</th>
+                  <th className="pb-2 pr-2 text-right">SL</th>
+                  <th className="pb-2 pr-2 text-right">TP</th>
+                  <th className="pb-2 pr-2 text-right">G/V %</th>
+                  <th className="pb-2 text-right">G/V €</th>
+                </tr>
+              </thead>
+              <tbody>
+                {botActions.map((a, i) => (
+                  <tr key={i} className={`border-b border-dark-700/50 ${a.type === 'OPEN' ? 'bg-dark-800' : 'bg-dark-750'}`}>
+                    <td className="py-1.5 pr-2 text-gray-500 whitespace-nowrap">{formatTime(a.time)}</td>
+                    <td className="py-1.5 pr-2">
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                        a.type === 'OPEN' ? 'bg-blue-500/20 text-blue-400' :
+                        a.type === 'TP' ? 'bg-green-500/20 text-green-400' :
+                        a.type === 'SL' ? 'bg-red-500/20 text-red-400' :
+                        a.type === 'SIGNAL' ? 'bg-yellow-500/20 text-yellow-400' :
+                        'bg-gray-500/20 text-gray-400'
+                      }`}>{a.type}</span>
+                      {a.alpaca && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-purple-500/20 text-purple-400">A</span>}
+                    </td>
+                    <td className="py-1.5 pr-2 font-medium text-accent-400">{a.symbol}</td>
+                    <td className={`py-1.5 pr-2 font-medium ${a.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>{a.direction}</td>
+                    <td className="py-1.5 pr-2 text-right text-gray-300">{formatPrice(a.price, a.symbol)}</td>
+                    <td className="py-1.5 pr-2 text-right text-gray-400">{a.qty || '-'}</td>
+                    <td className="py-1.5 pr-2 text-right text-gray-400">{a.type === 'OPEN' ? `${a.invested?.toFixed(0)}` : '-'}</td>
+                    <td className="py-1.5 pr-2 text-right text-red-400/60">{a.sl > 0 ? formatPrice(a.sl, a.symbol) : '-'}</td>
+                    <td className="py-1.5 pr-2 text-right text-green-400/60">{a.tp > 0 ? formatPrice(a.tp, a.symbol) : '-'}</td>
+                    <td className={`py-1.5 pr-2 text-right font-medium ${a.pnlPct != null ? (a.pnlPct >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-600'}`}>
+                      {a.pnlPct != null ? `${a.pnlPct >= 0 ? '+' : ''}${a.pnlPct.toFixed(2)}%` : '-'}
+                    </td>
+                    <td className={`py-1.5 text-right font-medium ${a.pnlAmt != null ? (a.pnlAmt >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-600'}`}>
+                      {a.pnlAmt != null ? `${a.pnlAmt >= 0 ? '+' : ''}${a.pnlAmt.toFixed(2)}` : '-'}
                     </td>
                   </tr>
                 ))}
@@ -1086,36 +1283,89 @@ function LiveTrading({ isAdmin, token }) {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
             </svg>
           </button>
-          {showDebug && (
-            <div className="px-4 pb-4 border-t border-dark-600">
-              <div className="mt-2 max-h-80 overflow-auto font-mono text-[11px] space-y-0.5">
-                {debugLogs.length === 0 && (
-                  <div className="text-gray-600 py-2 text-center">Noch keine Log-Einträge</div>
+          {showDebug && (() => {
+            const levelColors = {
+              SCAN: 'text-blue-400',
+              SIGNAL: 'text-yellow-400',
+              OPEN: 'text-green-400',
+              CLOSE: 'text-red-400',
+              SL: 'text-red-400',
+              TP: 'text-green-400',
+              SKIP: 'text-gray-500',
+              INFO: 'text-gray-400',
+              ERROR: 'text-orange-400',
+              TRADE: 'text-purple-400',
+              ALPACA: 'text-purple-400',
+            }
+            const levelBg = {
+              SCAN: 'bg-blue-500/20 border-blue-500/30',
+              SIGNAL: 'bg-yellow-500/20 border-yellow-500/30',
+              OPEN: 'bg-green-500/20 border-green-500/30',
+              CLOSE: 'bg-red-500/20 border-red-500/30',
+              SL: 'bg-red-500/20 border-red-500/30',
+              TP: 'bg-green-500/20 border-green-500/30',
+              SKIP: 'bg-gray-500/20 border-gray-500/30',
+              INFO: 'bg-gray-500/20 border-gray-500/30',
+              ERROR: 'bg-orange-500/20 border-orange-500/30',
+              TRADE: 'bg-purple-500/20 border-purple-500/30',
+              ALPACA: 'bg-purple-500/20 border-purple-500/30',
+            }
+            const allLevels = [...new Set(debugLogs.map(l => l.level))].sort()
+            const filteredLogs = debugLogs.filter(l => !hiddenLogLevels.has(l.level))
+            const toggleLevel = (level) => {
+              setHiddenLogLevels(prev => {
+                const next = new Set(prev)
+                if (next.has(level)) next.delete(level)
+                else next.add(level)
+                return next
+              })
+            }
+            return (
+              <div className="px-4 pb-4 border-t border-dark-600">
+                {allLevels.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5 mt-3 mb-2">
+                    <span className="text-[10px] text-gray-600 mr-1">Filter:</span>
+                    {allLevels.map(level => (
+                      <button
+                        key={level}
+                        onClick={() => toggleLevel(level)}
+                        className={`px-2 py-0.5 rounded border text-[10px] font-medium transition-all ${
+                          hiddenLogLevels.has(level)
+                            ? 'bg-dark-700 border-dark-500 text-gray-600 line-through opacity-50'
+                            : `${levelBg[level] || 'bg-gray-500/20 border-gray-500/30'} ${levelColors[level] || 'text-gray-400'}`
+                        }`}
+                      >
+                        {level}
+                        <span className="ml-1 text-gray-500 font-normal">{debugLogs.filter(l => l.level === level).length}</span>
+                      </button>
+                    ))}
+                    {hiddenLogLevels.size > 0 && (
+                      <button onClick={() => setHiddenLogLevels(new Set())} className="text-[10px] text-gray-500 hover:text-gray-300 ml-1 transition-colors">Alle zeigen</button>
+                    )}
+                  </div>
                 )}
-                {debugLogs.map(log => {
-                  const levelColors = {
-                    SCAN: 'text-blue-400',
-                    SIGNAL: 'text-yellow-400',
-                    OPEN: 'text-green-400',
-                    CLOSE: 'text-red-400',
-                    SL: 'text-red-400',
-                    TP: 'text-red-400',
-                    SKIP: 'text-gray-500',
-                    INFO: 'text-gray-400',
-                  }
-                  const time = new Date(log.created_at).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-                  return (
-                    <div key={log.id} className="flex gap-2 py-0.5 border-b border-dark-700/30">
-                      <span className="text-gray-600 shrink-0">{time}</span>
-                      <span className={`shrink-0 w-14 text-right ${levelColors[log.level] || 'text-gray-400'}`}>{log.level}</span>
-                      <span className="text-gray-500 shrink-0 w-16 text-right">{log.symbol !== '-' ? log.symbol : ''}</span>
-                      <span className="text-gray-300">{log.message}</span>
-                    </div>
-                  )
-                })}
+                <div className="max-h-80 overflow-auto font-mono text-[11px] space-y-0.5">
+                  {filteredLogs.length === 0 && debugLogs.length > 0 && (
+                    <div className="text-gray-600 py-2 text-center">Alle Einträge gefiltert</div>
+                  )}
+                  {debugLogs.length === 0 && (
+                    <div className="text-gray-600 py-2 text-center">Noch keine Log-Einträge</div>
+                  )}
+                  {filteredLogs.map(log => {
+                    const time = new Date(log.created_at).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                    return (
+                      <div key={log.id} className="flex gap-2 py-0.5 border-b border-dark-700/30">
+                        <span className="text-gray-600 shrink-0">{time}</span>
+                        <span className={`shrink-0 w-14 text-right ${levelColors[log.level] || 'text-gray-400'}`}>{log.level}</span>
+                        <span className="text-gray-500 shrink-0 w-16 text-right">{log.symbol !== '-' ? log.symbol : ''}</span>
+                        <span className="text-gray-300">{log.message}</span>
+                      </div>
+                    )
+                  })}
+                </div>
               </div>
-            </div>
-          )}
+            )
+          })()}
         </div>
       )}
 

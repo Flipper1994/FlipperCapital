@@ -1032,9 +1032,17 @@ type AlpacaOrderResult struct {
 	OrderID        string
 	FilledAvgPrice float64
 	Status         string
+	OrderClass     string
+	Legs           []AlpacaOrderLeg
 }
 
-func alpacaPlaceOrder(symbol string, qty int, side string, config LiveTradingConfig) (*AlpacaOrderResult, error) {
+type AlpacaOrderLeg struct {
+	ID     string
+	Type   string // "stop" or "limit"
+	Status string
+}
+
+func alpacaPlaceOrder(symbol string, qty int, side string, config LiveTradingConfig, opts ...map[string]float64) (*AlpacaOrderResult, error) {
 	if qty <= 0 {
 		return nil, fmt.Errorf("alpaca: qty must be > 0, got %d", qty)
 	}
@@ -1043,8 +1051,35 @@ func alpacaPlaceOrder(symbol string, qty int, side string, config LiveTradingCon
 		"qty":           fmt.Sprintf("%d", qty),
 		"side":          side,
 		"type":          "market",
-		"time_in_force": "day",
+		"time_in_force": "gtc",
 	}
+
+	// Bracket order with SL/TP
+	var sl, tp float64
+	if len(opts) > 0 {
+		sl = opts[0]["stop_loss"]
+		tp = opts[0]["take_profit"]
+	}
+	if sl > 0 && tp > 0 {
+		orderBody["order_class"] = "bracket"
+		orderBody["stop_loss"] = map[string]string{
+			"stop_price": fmt.Sprintf("%.2f", sl),
+		}
+		orderBody["take_profit"] = map[string]string{
+			"limit_price": fmt.Sprintf("%.2f", tp),
+		}
+	} else if sl > 0 {
+		orderBody["order_class"] = "oto"
+		orderBody["stop_loss"] = map[string]string{
+			"stop_price": fmt.Sprintf("%.2f", sl),
+		}
+	} else if tp > 0 {
+		orderBody["order_class"] = "oto"
+		orderBody["take_profit"] = map[string]string{
+			"limit_price": fmt.Sprintf("%.2f", tp),
+		}
+	}
+
 	result, err := alpacaRequest("POST", "/v2/orders", orderBody, config)
 	if err != nil {
 		return nil, err
@@ -1052,15 +1087,33 @@ func alpacaPlaceOrder(symbol string, qty int, side string, config LiveTradingCon
 
 	orderID, _ := result["id"].(string)
 	status, _ := result["status"].(string)
+	orderClass, _ := result["order_class"].(string)
 	filledPrice := 0.0
 	if fp, ok := result["filled_avg_price"].(string); ok && fp != "" {
 		filledPrice, _ = strconv.ParseFloat(fp, 64)
+	}
+
+	var legs []AlpacaOrderLeg
+	if rawLegs, ok := result["legs"].([]interface{}); ok {
+		for _, rl := range rawLegs {
+			if leg, ok := rl.(map[string]interface{}); ok {
+				legType := ""
+				if t, ok := leg["type"].(string); ok {
+					legType = t
+				}
+				legID, _ := leg["id"].(string)
+				legStatus, _ := leg["status"].(string)
+				legs = append(legs, AlpacaOrderLeg{ID: legID, Type: legType, Status: legStatus})
+			}
+		}
 	}
 
 	return &AlpacaOrderResult{
 		OrderID:        orderID,
 		FilledAvgPrice: filledPrice,
 		Status:         status,
+		OrderClass:     orderClass,
+		Legs:           legs,
 	}, nil
 }
 
@@ -22371,21 +22424,52 @@ func validateAlpacaKeys(c *gin.Context) {
 	})
 }
 
+func alpacaGetLatestPrice(symbol string, config LiveTradingConfig) (float64, error) {
+	dataURL := "https://data.alpaca.markets"
+	if config.AlpacaPaper {
+		dataURL = "https://data.alpaca.markets"
+	}
+	req, err := http.NewRequest("GET", dataURL+"/v2/stocks/"+symbol+"/quotes/latest", nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("APCA-API-KEY-ID", config.AlpacaApiKey)
+	req.Header.Set("APCA-API-SECRET-KEY", config.AlpacaSecretKey)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	var result map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&result)
+	if quote, ok := result["quote"].(map[string]interface{}); ok {
+		if ap, ok := quote["ap"].(float64); ok && ap > 0 {
+			return ap, nil // ask price
+		}
+		if bp, ok := quote["bp"].(float64); ok && bp > 0 {
+			return bp, nil // bid price
+		}
+	}
+	return 0, fmt.Errorf("kein Kurs für %s verfügbar", symbol)
+}
+
 func alpacaTestOrder(c *gin.Context) {
 	userID, _ := c.Get("userID")
 	uid := userID.(uint)
 
 	var req struct {
-		Symbol string `json:"symbol"`
-		Qty    int    `json:"qty"`
-		Side   string `json:"side"`
+		Symbol     string  `json:"symbol"`
+		Qty        int     `json:"qty"`
+		Side       string  `json:"side"`
+		StopLoss   float64 `json:"stop_loss"`
+		TakeProfit float64 `json:"take_profit"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "Ungültige Anfrage"})
 		return
 	}
-	if req.Symbol == "" || req.Qty <= 0 {
-		c.JSON(400, gin.H{"error": "Symbol und Qty (>0) erforderlich"})
+	if req.Symbol == "" {
+		c.JSON(400, gin.H{"error": "Symbol erforderlich"})
 		return
 	}
 	if req.Side != "buy" && req.Side != "sell" {
@@ -22403,7 +22487,35 @@ func alpacaTestOrder(c *gin.Context) {
 		return
 	}
 
-	orderResult, err := alpacaPlaceOrder(req.Symbol, req.Qty, req.Side, config)
+	// Auto-calculate qty from TradeAmount if not provided
+	qty := req.Qty
+	currentPrice := 0.0
+	if qty <= 0 && req.Side == "buy" {
+		price, err := alpacaGetLatestPrice(req.Symbol, config)
+		if err != nil || price <= 0 {
+			c.JSON(400, gin.H{"error": fmt.Sprintf("Kurs für %s nicht verfügbar: %v", req.Symbol, err)})
+			return
+		}
+		currentPrice = price
+		tradeAmountUSD := convertToUSD(config.TradeAmount, config.Currency)
+		qty = int(math.Floor(tradeAmountUSD / price))
+		if qty <= 0 {
+			qty = 1
+		}
+	} else if qty <= 0 {
+		qty = 1
+	}
+
+	// Build bracket opts from SL/TP
+	bracketOpts := map[string]float64{}
+	if req.StopLoss > 0 {
+		bracketOpts["stop_loss"] = req.StopLoss
+	}
+	if req.TakeProfit > 0 {
+		bracketOpts["take_profit"] = req.TakeProfit
+	}
+
+	orderResult, err := alpacaPlaceOrder(req.Symbol, qty, req.Side, config, bracketOpts)
 	if err != nil {
 		c.JSON(400, gin.H{"error": fmt.Sprintf("Order fehlgeschlagen: %v", err)})
 		return
@@ -22413,14 +22525,14 @@ func alpacaTestOrder(c *gin.Context) {
 	var session LiveTradingSession
 	hasSession := db.Where("user_id = ? AND is_active = ?", uid, true).First(&session).Error == nil
 	if !hasSession {
-		// Also try any session for this user (use latest)
 		hasSession = db.Where("user_id = ?", uid).Order("started_at DESC").First(&session).Error == nil
 	}
 
 	estimatedPrice := orderResult.FilledAvgPrice
-	if estimatedPrice == 0 {
-		// Market order may not be filled yet — estimate from qty
-		estimatedPrice = config.TradeAmount / float64(req.Qty)
+	if estimatedPrice == 0 && currentPrice > 0 {
+		estimatedPrice = currentPrice
+	} else if estimatedPrice == 0 {
+		estimatedPrice = config.TradeAmount / float64(qty)
 	}
 
 	if hasSession && req.Side == "buy" {
@@ -22432,24 +22544,48 @@ func alpacaTestOrder(c *gin.Context) {
 			EntryPriceUSD:  estimatedPrice,
 			EntryTime:      time.Now(),
 			CurrentPrice:   estimatedPrice,
-			InvestedAmount: estimatedPrice * float64(req.Qty),
+			Quantity:       qty,
+			StopLoss:       req.StopLoss,
+			TakeProfit:     req.TakeProfit,
+			InvestedAmount: convertFromUSD(estimatedPrice*float64(qty), config.Currency),
 			NativeCurrency: "USD",
 			AlpacaOrderID:  orderResult.OrderID,
 			CreatedAt:      time.Now(),
 		}
 		db.Create(&pos)
-		logLiveEvent(session.ID, "TRADE", req.Symbol, fmt.Sprintf("TEST-BUY %d x %s → Alpaca OrderID: %s, Status: %s", req.Qty, req.Symbol, orderResult.OrderID, orderResult.Status))
+		bracketInfo := ""
+		if orderResult.OrderClass == "bracket" {
+			bracketInfo = fmt.Sprintf(" [BRACKET SL:%.2f TP:%.2f]", req.StopLoss, req.TakeProfit)
+		}
+		logLiveEvent(session.ID, "TRADE", req.Symbol, fmt.Sprintf("TEST-BUY %d x %s @ $%.2f (Einsatz: %.0f %s)%s → Alpaca OrderID: %s, Status: %s", qty, req.Symbol, estimatedPrice, config.TradeAmount, config.Currency, bracketInfo, orderResult.OrderID, orderResult.Status))
 	} else if hasSession && req.Side == "sell" {
-		logLiveEvent(session.ID, "TRADE", req.Symbol, fmt.Sprintf("TEST-SELL %d x %s → Alpaca OrderID: %s, Status: %s", req.Qty, req.Symbol, orderResult.OrderID, orderResult.Status))
+		var openPos LiveTradingPosition
+		if db.Where("session_id = ? AND symbol = ? AND is_closed = ?", session.ID, req.Symbol, false).First(&openPos).Error == nil {
+			closeLivePosition(&openPos, openPos.CurrentPrice, "MANUAL", openPos.NativeCurrency, config)
+			logLiveEvent(session.ID, "TRADE", req.Symbol, fmt.Sprintf("TEST-SELL %s geschlossen @ %.4f (%.2f%%) → Alpaca OrderID: %s", req.Symbol, openPos.ClosePrice, openPos.ProfitLossPct, orderResult.OrderID))
+		} else {
+			logLiveEvent(session.ID, "TRADE", req.Symbol, fmt.Sprintf("TEST-SELL %d x %s → Alpaca OrderID: %s, Status: %s (keine offene Position)", qty, req.Symbol, orderResult.OrderID, orderResult.Status))
+		}
+	}
+
+	legInfo := []gin.H{}
+	for _, leg := range orderResult.Legs {
+		legInfo = append(legInfo, gin.H{"id": leg.ID, "type": leg.Type, "status": leg.Status})
 	}
 
 	c.JSON(200, gin.H{
 		"order_id":         orderResult.OrderID,
 		"status":           orderResult.Status,
+		"order_class":      orderResult.OrderClass,
 		"filled_avg_price": orderResult.FilledAvgPrice,
 		"symbol":           req.Symbol,
-		"qty":              req.Qty,
+		"qty":              qty,
 		"side":             req.Side,
+		"stop_loss":        req.StopLoss,
+		"take_profit":      req.TakeProfit,
+		"trade_amount":     config.TradeAmount,
+		"currency":         config.Currency,
+		"legs":             legInfo,
 	})
 }
 
@@ -22540,6 +22676,44 @@ func getAlpacaPortfolio(c *gin.Context) {
 		if fq, ok := o["filled_qty"].(string); ok {
 			filledQty = fq
 		}
+		stopPrice := 0.0
+		if sp, ok := o["stop_price"].(string); ok && sp != "" {
+			stopPrice, _ = strconv.ParseFloat(sp, 64)
+		}
+		limitPrice := 0.0
+		if lp, ok := o["limit_price"].(string); ok && lp != "" {
+			limitPrice, _ = strconv.ParseFloat(lp, 64)
+		}
+		orderClass, _ := o["order_class"].(string)
+		orderType, _ := o["type"].(string)
+
+		// Parse legs (child orders of bracket)
+		var legs []gin.H
+		if rawLegs, ok := o["legs"].([]interface{}); ok {
+			for _, rl := range rawLegs {
+				if leg, ok := rl.(map[string]interface{}); ok {
+					legSP := 0.0
+					if sp, ok := leg["stop_price"].(string); ok && sp != "" {
+						legSP, _ = strconv.ParseFloat(sp, 64)
+					}
+					legLP := 0.0
+					if lp, ok := leg["limit_price"].(string); ok && lp != "" {
+						legLP, _ = strconv.ParseFloat(lp, 64)
+					}
+					legStatus, _ := leg["status"].(string)
+					legType, _ := leg["type"].(string)
+					legSide, _ := leg["side"].(string)
+					legs = append(legs, gin.H{
+						"type":        legType,
+						"side":        legSide,
+						"stop_price":  legSP,
+						"limit_price": legLP,
+						"status":      legStatus,
+					})
+				}
+			}
+		}
+
 		cleanOrders = append(cleanOrders, gin.H{
 			"id":               o["id"],
 			"symbol":           o["symbol"],
@@ -22548,6 +22722,11 @@ func getAlpacaPortfolio(c *gin.Context) {
 			"filled_qty":       filledQty,
 			"filled_avg_price": filledPrice,
 			"status":           o["status"],
+			"order_class":      orderClass,
+			"order_type":       orderType,
+			"stop_price":       stopPrice,
+			"limit_price":      limitPrice,
+			"legs":             legs,
 			"created_at":       o["created_at"],
 			"filled_at":        o["filled_at"],
 		})
@@ -23169,26 +23348,37 @@ func processLiveSymbol(session LiveTradingSession, symbol string, strategy Tradi
 				TakeProfit:     sig.TakeProfit,
 				CurrentPrice:   entryPriceNative,
 				NativeCurrency: nativeCurrency,
-				InvestedAmount: session.TradeAmount,
+				InvestedAmount: convertFromUSD(float64(posQty)*entryPriceUSD, session.Currency),
 				Quantity:       posQty,
 				SignalIndex:    sig.Index,
 				CreatedAt:      time.Now(),
 			}
 			db.Create(&pos)
 
-			// Alpaca: Place order if enabled
+			// Alpaca: Place bracket order if enabled (SL/TP managed by broker)
 			if config.AlpacaEnabled && config.AlpacaApiKey != "" {
 				side := "buy"
 				if sig.Direction == "SHORT" {
 					side = "sell"
 				}
-				orderResult, err := alpacaPlaceOrder(symbol, posQty, side, config)
+				bracketOpts := map[string]float64{}
+				if sig.StopLoss > 0 {
+					bracketOpts["stop_loss"] = sig.StopLoss
+				}
+				if sig.TakeProfit > 0 {
+					bracketOpts["take_profit"] = sig.TakeProfit
+				}
+				orderResult, err := alpacaPlaceOrder(symbol, posQty, side, config, bracketOpts)
 				if err != nil {
 					logLiveEvent(session.ID, "ERROR", symbol, fmt.Sprintf("Alpaca Order fehlgeschlagen: %v", err))
 				} else {
 					pos.AlpacaOrderID = orderResult.OrderID
 					db.Model(&pos).Update("alpaca_order_id", orderResult.OrderID)
-					logLiveEvent(session.ID, "ALPACA", symbol, fmt.Sprintf("Order platziert: %s %dx %s (ID: %s, Status: %s)", side, posQty, symbol, orderResult.OrderID, orderResult.Status))
+					bracketInfo := ""
+					if orderResult.OrderClass == "bracket" {
+						bracketInfo = fmt.Sprintf(" [BRACKET SL:%.2f TP:%.2f]", sig.StopLoss, sig.TakeProfit)
+					}
+					logLiveEvent(session.ID, "ALPACA", symbol, fmt.Sprintf("Order platziert: %s %dx %s%s (ID: %s, Status: %s)", side, posQty, symbol, bracketInfo, orderResult.OrderID, orderResult.Status))
 				}
 			}
 
@@ -23287,21 +23477,19 @@ func closeLivePosition(pos *LiveTradingPosition, closePriceNative float64, reaso
 		logLiveEvent(pos.SessionID, reason, pos.Symbol, fmt.Sprintf("%s ausgelöst — %s geschlossen @ %.4f (%.2f%%, %.2f EUR)", reason, pos.Direction, closePriceNative, pos.ProfitLossPct, pos.ProfitLossAmt))
 	}
 
-	// Alpaca: Close position if order was placed
+	// Alpaca: Close position
 	if len(config) > 0 && pos.AlpacaOrderID != "" && config[0].AlpacaEnabled {
-		side := "sell"
-		if pos.Direction == "SHORT" {
-			side = "buy"
-		}
-		qty := pos.Quantity
-		if qty <= 0 {
-			qty = 1
-		}
-		orderResult, err := alpacaPlaceOrder(pos.Symbol, qty, side, config[0])
-		if err != nil {
-			logLiveEvent(pos.SessionID, "ERROR", pos.Symbol, fmt.Sprintf("Alpaca Close-Order fehlgeschlagen: %v", err))
+		if reason == "SL" || reason == "TP" {
+			// Bracket order: Alpaca handles SL/TP automatically — just log it
+			logLiveEvent(pos.SessionID, "ALPACA", pos.Symbol, fmt.Sprintf("Bracket %s von Alpaca ausgeführt — %s %s @ %.4f (P&L: %.2f%%)", reason, pos.Direction, pos.Symbol, closePriceNative, pos.ProfitLossPct))
 		} else {
-			logLiveEvent(pos.SessionID, "ALPACA", pos.Symbol, fmt.Sprintf("Close-Order: %s %dx %s (ID: %s, P&L: %.2f%%)", side, qty, pos.Symbol, orderResult.OrderID, pos.ProfitLossPct))
+			// SIGNAL/MANUAL close: close via Alpaca position API (cancels bracket legs)
+			_, err := alpacaRequest("DELETE", "/v2/positions/"+pos.Symbol, nil, config[0])
+			if err != nil {
+				logLiveEvent(pos.SessionID, "ERROR", pos.Symbol, fmt.Sprintf("Alpaca Position-Close fehlgeschlagen: %v", err))
+			} else {
+				logLiveEvent(pos.SessionID, "ALPACA", pos.Symbol, fmt.Sprintf("Position geschlossen via Alpaca: %s %s (P&L: %.2f%%)", pos.Direction, pos.Symbol, pos.ProfitLossPct))
+			}
 		}
 	}
 }
