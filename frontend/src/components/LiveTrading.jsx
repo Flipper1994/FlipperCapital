@@ -358,6 +358,7 @@ function LiveTrading({ isAdmin, token }) {
     try {
       const res = await fetch('/api/trading/live/start', { method: 'POST', headers })
       if (res.ok) {
+        setPositions([])
         fetchStatus()
         fetchSessions()
       } else {
@@ -385,6 +386,7 @@ function LiveTrading({ isAdmin, token }) {
     try {
       const res = await fetch(`/api/trading/live/session/${id}/resume`, { method: 'POST', headers })
       if (res.ok) {
+        setPositions([])
         fetchStatus()
         fetchSessions()
       } else {
