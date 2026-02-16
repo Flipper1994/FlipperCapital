@@ -23,12 +23,17 @@ echo ""
 echo "🔐 Setting permissions..."
 chmod 777 -R .
 
-# 5. Container stoppen falls laufend
+# 5. Container stoppen & alte Images entfernen
 echo ""
 echo "🛑 Stopping old containers..."
-docker compose -f docker-compose.prod.yml down 2>/dev/null
+docker compose -f docker-compose.prod.yml down --rmi local 2>/dev/null
 
-# 6. Produktion starten
+# 6. Build-Cache leeren (stellt sicher, dass Frontend/Backend komplett neu gebaut werden)
+echo ""
+echo "🧹 Clearing build cache..."
+docker builder prune -f 2>/dev/null
+
+# 7. Produktion starten
 echo ""
 echo "🚀 Starting production..."
 ./run-prod.sh
