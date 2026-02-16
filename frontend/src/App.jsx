@@ -23,6 +23,7 @@ import Profile from './components/Profile'
 import Help from './components/Help'
 import TradingArena from './components/TradingArena'
 import LiveTrading from './components/LiveTrading'
+import DaytradingStats from './components/DaytradingStats'
 import BacktestLab from './components/BacktestLab'
 
 function UnderConstruction() {
@@ -214,6 +215,11 @@ function App() {
                 path="/live-trading"
                 element={authLoading ? null : isLoggedIn ?
                   <LiveTrading isAdmin={isAdmin} token={token} /> : <Navigate to="/login" />}
+              />
+              <Route
+                path="/daytrading-stats"
+                element={authLoading ? null : isLoggedIn ?
+                  <DaytradingStats token={token} isAdmin={isAdmin} /> : <Navigate to="/login" />}
               />
             </Routes>
           </div>

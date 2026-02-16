@@ -7,6 +7,8 @@ const STRATEGY_LABELS = {
   diamond_signals: 'Diamond Signals',
 }
 
+const BETA_STRATEGIES = new Set(['regression_scalping', 'diamond_signals'])
+
 function TestOrderPanel({ headers, onOrderPlaced, tradeAmount, currency }) {
   const [symbol, setSymbol] = useState('AAPL')
   const [side, setSide] = useState('buy')
@@ -120,6 +122,8 @@ function LiveTrading({ isAdmin, token }) {
   const [alpacaPortfolio, setAlpacaPortfolio] = useState(null)
   const [alpacaPortfolioLoading, setAlpacaPortfolioLoading] = useState(false)
   const [showAlpacaOrders, setShowAlpacaOrders] = useState(false)
+  const [showBrokerInfo, setShowBrokerInfo] = useState(false)
+  const [showSessionStats, setShowSessionStats] = useState(false)
   const { formatPrice, currency } = useCurrency()
   const pollRef = useRef(null)
   const posPollRef = useRef(null)
@@ -500,7 +504,7 @@ function LiveTrading({ isAdmin, token }) {
           {config && (
             <div>
               <div className="flex items-center gap-3 mt-1 text-sm text-gray-400">
-                <span>{STRATEGY_LABELS[config.strategy] || config.strategy}</span>
+                <span>{STRATEGY_LABELS[config.strategy] || config.strategy}{BETA_STRATEGIES.has(config.strategy) && <span className="ml-1 text-[8px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">BETA</span>}</span>
                 <span className="text-gray-600">|</span>
                 <span>{config.interval}</span>
                 <span className="text-gray-600">|</span>
@@ -523,6 +527,55 @@ function LiveTrading({ isAdmin, token }) {
         </div>
         {!config && (
           <div className="text-gray-500 text-sm">Keine Konfiguration. Bitte in der Trading Arena "Start Live Trading" drücken.</div>
+        )}
+      </div>
+
+      {/* Live Trader Explainer */}
+      <div className="bg-dark-800 rounded-lg border border-dark-600 mb-4 overflow-hidden">
+        <button
+          onClick={() => setShowBrokerInfo(!showBrokerInfo)}
+          className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-dark-700/50 transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent-500/20 text-accent-400 border border-accent-500/30 font-medium">INFO</span>
+            <span className="text-xs text-gray-400">Wie funktioniert der Live Trader?</span>
+          </div>
+          <svg className={`w-4 h-4 text-gray-500 transition-transform ${showBrokerInfo ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+        {showBrokerInfo && (
+          <div className="px-4 pb-4 border-t border-dark-600 space-y-3 mt-3">
+            <div className="bg-dark-700/50 rounded-lg p-3">
+              <div className="text-[10px] text-accent-400 uppercase tracking-wider font-medium mb-1.5">Algorithmische Signalgenerierung</div>
+              <p className="text-[11px] text-gray-300 leading-relaxed">
+                Der Live Trader scannt in definierten Intervallen das konfigurierte Aktienuniversum via OHLCV-Datenfeed.
+                Pro Candle-Close wird die gewählte Strategie (z.B. Regression Scalping, NW Bollinger Bands) auf die Price-Action angewendet.
+                Entry- und Exit-Signale werden regelbasiert generiert — inklusive dynamischem Trailing Stop Loss (TSL) und optionalem Take-Profit-Level.
+                Die Positionsgröße wird automatisch via Fixed-Fractional-Sizing berechnet (EUR/USD-Konvertierung in Echtzeit).
+              </p>
+            </div>
+            {alpacaEnabled && (
+              <div className="bg-dark-700/50 rounded-lg p-3">
+                <div className="text-[10px] text-purple-400 uppercase tracking-wider font-medium mb-1.5">Broker-Execution via Alpaca Securities</div>
+                <p className="text-[11px] text-gray-300 leading-relaxed">
+                  Order-Routing über die Alpaca Securities LLC API (FINRA/SIPC-reguliert) — Direct Market Access an NYSE, NASDAQ und AMEX.
+                  <span className="text-green-400 font-medium"> Zero-Commission</span> auf alle US-Equity- und ETF-Trades.
+                  Regulatorische Pass-Through-Gebühren (nur bei Sell-Orders): FINRA TAF $0.000166/Share (Cap $8.30), SEC Fee ~$0.00/Mio, CAT Fee $0.0000265/Share.
+                  Bei typischen Positionsgrößen von 100–500€ liegen die effektiven Gesamtkosten pro Roundturn unter $0.02.
+                </p>
+              </div>
+            )}
+            <div className="bg-dark-700/50 rounded-lg p-3">
+              <div className="text-[10px] text-green-400 uppercase tracking-wider font-medium mb-1.5">Steuerlicher Vorteil: Steuerstundungseffekt</div>
+              <p className="text-[11px] text-gray-300 leading-relaxed">
+                Durch die Ausführung über einen US-Broker findet <span className="text-white font-medium">kein automatischer Kapitalertragssteuer-Abzug</span> auf realisierte Gewinne statt (keine Abgeltungssteuer an der Quelle).
+                Gewinne werden erst mit der Einkommensteuererklärung im Folgejahr fällig — das freigesetzte Kapital steht damit ganzjährig als Compound-Basis zur Verfügung.
+                Dieser Steuerstundungseffekt potenziert den Zinseszins: Reinvestierte Gewinne generieren über das gesamte Steuerjahr hinweg zusätzliche Rendite,
+                bevor die Steuerlast realisiert wird. In Kombination mit kommissionsfreier Execution ist dies die optimale Kostenstruktur für hochfrequentes Intraday-Trading.
+              </p>
+            </div>
+          </div>
         )}
       </div>
 
@@ -762,9 +815,29 @@ function LiveTrading({ isAdmin, token }) {
               <span className={`text-[10px] px-1.5 py-0.5 rounded ${alpacaPortfolio.account.paper ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'bg-green-500/20 text-green-400 border border-green-500/30'}`}>
                 {alpacaPortfolio.account.paper ? 'PAPER' : 'LIVE'}
               </span>
-              <span className={`text-[10px] px-1.5 py-0.5 rounded ${alpacaPortfolio.account.status === 'ACTIVE' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
-                {alpacaPortfolio.account.status}
-              </span>
+              {(() => {
+                const sess = status?.active_sessions?.find(s => s.alpaca_active != null)
+                const alpacaOk = sess?.alpaca_active
+                const lastChecked = sess?.alpaca_last_checked
+                const acctStatus = alpacaPortfolio.account.status
+                const isActive = acctStatus === 'ACTIVE'
+                // If we have session-level info, use it; otherwise fall back to account status
+                if (sess) {
+                  return <>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${alpacaOk ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                      {alpacaOk ? 'CONNECTED' : sess.alpaca_error || 'CONNECTION LOST'}
+                    </span>
+                    {lastChecked && (
+                      <span className="text-[9px] text-gray-600" title={sess.alpaca_error || ''}>
+                        Check: {new Date(lastChecked).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </span>
+                    )}
+                  </>
+                }
+                return <span className={`text-[10px] px-1.5 py-0.5 rounded ${isActive ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                  {isActive ? 'ACTIVE' : acctStatus}
+                </span>
+              })()}
             </div>
             <button
               onClick={() => { setAlpacaPortfolioLoading(true); fetchAlpacaPortfolio().finally(() => setAlpacaPortfolioLoading(false)) }}
@@ -790,6 +863,43 @@ function LiveTrading({ isAdmin, token }) {
               </div>
             ))}
           </div>
+
+          {/* Alpaca Performance */}
+          {alpacaPortfolio.positions.length > 0 && (() => {
+            const ap = alpacaPortfolio.positions
+            const apTotalInvested = ap.reduce((s, p) => s + (p.cost_basis || p.qty * p.avg_entry_price), 0)
+            const apTotalPnl = ap.reduce((s, p) => s + p.unrealized_pl, 0)
+            const apRenditePct = apTotalInvested > 0 ? (apTotalPnl / apTotalInvested) * 100 : 0
+            const apWins = ap.filter(p => p.unrealized_pl > 0).length
+            const apLosses = ap.filter(p => p.unrealized_pl <= 0).length
+            const apWinRate = ap.length > 0 ? (apWins / ap.length) * 100 : 0
+            const apAvgReturn = ap.length > 0 ? ap.reduce((s, p) => s + p.unrealized_pl_pct, 0) / ap.length : 0
+            const apWinPos = ap.filter(p => p.unrealized_pl_pct > 0)
+            const apLosePos = ap.filter(p => p.unrealized_pl_pct <= 0)
+            const apAvgWin = apWinPos.length > 0 ? apWinPos.reduce((s, p) => s + p.unrealized_pl_pct, 0) / apWinPos.length : 0
+            const apAvgLoss = apLosePos.length > 0 ? apLosePos.reduce((s, p) => s + p.unrealized_pl_pct, 0) / apLosePos.length : 0
+            const apRR = apAvgLoss !== 0 ? Math.abs(apAvgWin / apAvgLoss) : 0
+            return (
+              <div className="grid grid-cols-3 md:grid-cols-8 gap-2 mb-4">
+                {[
+                  { label: 'Rendite', value: `${apRenditePct >= 0 ? '+' : ''}${apRenditePct.toFixed(2)}%`, sub: `(${apTotalPnl >= 0 ? '+' : ''}$${apTotalPnl.toFixed(2)})`, color: apTotalPnl >= 0 ? 'text-green-400' : 'text-red-400' },
+                  { label: 'Trades', value: `${ap.length}`, color: 'text-white' },
+                  { label: 'Win Rate', value: `${apWinRate.toFixed(0)}%`, sub: `${apWins}W / ${apLosses}L`, color: apWinRate >= 50 ? 'text-green-400' : 'text-red-400' },
+                  { label: 'R/R', value: apRR > 0 ? apRR.toFixed(2) : '-', color: apRR >= 1 ? 'text-green-400' : apRR > 0 ? 'text-red-400' : 'text-gray-400' },
+                  { label: 'Ø / Trade', value: `${apAvgReturn >= 0 ? '+' : ''}${apAvgReturn.toFixed(2)}%`, color: apAvgReturn >= 0 ? 'text-green-400' : 'text-red-400' },
+                  { label: 'Ø Win', value: apAvgWin > 0 ? `+${apAvgWin.toFixed(2)}%` : '-', color: 'text-green-400' },
+                  { label: 'Ø Loss', value: apAvgLoss < 0 ? `${apAvgLoss.toFixed(2)}%` : '-', color: 'text-red-400' },
+                  { label: 'Investiert', value: `$${apTotalInvested.toLocaleString('de-DE', { minimumFractionDigits: 2 })}`, color: 'text-gray-300' },
+                ].map((item, i) => (
+                  <div key={i} className="bg-dark-700/50 rounded-lg p-2 text-center">
+                    <div className="text-[9px] text-gray-500 uppercase tracking-wider">{item.label}</div>
+                    <div className={`text-xs font-bold mt-0.5 ${item.color}`}>{item.value}</div>
+                    {item.sub && <div className={`text-[9px] mt-0.5 ${item.color} opacity-70`}>{item.sub}</div>}
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
 
           {/* Open Positions */}
           {alpacaPortfolio.positions.length > 0 && (
@@ -976,9 +1086,10 @@ function LiveTrading({ isAdmin, token }) {
               <span>{STRATEGY_LABELS[config?.strategy] || '-'}</span>
             </div>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2">
             {[
               { label: 'Rendite', value: `${totalRenditePct >= 0 ? '+' : ''}${totalRenditePct.toFixed(2)}%`, sub: `(${totalPnlEur >= 0 ? '+' : ''}${totalPnlEur.toFixed(2)}€)`, color: totalPnlEur >= 0 ? 'text-green-400' : 'text-red-400' },
+              { label: 'Trades', value: `${positions.length}`, sub: `${openPositions.length} offen / ${totalClosed} closed`, color: 'text-white' },
               { label: 'Win Rate', value: `${winRate.toFixed(0)}%`, sub: `${totalWins}W / ${totalLosses}L`, color: winRate >= 50 ? 'text-green-400' : 'text-red-400' },
               { label: 'R/R', value: riskReward > 0 ? riskReward.toFixed(2) : '-', sub: 'Risk/Reward', color: riskReward >= 1 ? 'text-green-400' : riskReward > 0 ? 'text-red-400' : 'text-gray-400' },
               { label: 'Ø / Trade', value: `${avgReturnPerTrade >= 0 ? '+' : ''}${avgReturnPerTrade.toFixed(2)}%`, color: avgReturnPerTrade >= 0 ? 'text-green-400' : 'text-red-400' },
@@ -994,6 +1105,295 @@ function LiveTrading({ isAdmin, token }) {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Session Statistiken (zugeklappt) */}
+      {(status?.is_running || positions.length > 0) && (() => {
+        const allPos = positions
+        const closed = allPos.filter(p => p.is_closed)
+        const open = allPos.filter(p => !p.is_closed)
+
+        // Session duration
+        const sessionStart = status?.started_at ? new Date(status.started_at) : (allPos.length > 0 ? new Date(Math.min(...allPos.map(p => new Date(p.entry_time)))) : new Date())
+        const sessionDaysRaw = (Date.now() - sessionStart) / 86400000
+        const sessionDays = Math.max(1, sessionDaysRaw)
+        const sessionWeeks = Math.max(1, sessionDays / 7)
+        const sessionMonths = Math.max(1, sessionDays / 30)
+
+        const durationStr = sessionDaysRaw < 1
+          ? `${Math.floor(sessionDaysRaw * 24)}h`
+          : sessionDaysRaw < 7
+            ? `${Math.floor(sessionDaysRaw)} Tag${Math.floor(sessionDaysRaw) !== 1 ? 'e' : ''} ${Math.floor((sessionDaysRaw % 1) * 24)}h`
+            : `${Math.floor(sessionDaysRaw)} Tage`
+
+        // Totals
+        const sPnlEur = allPos.reduce((s, p) => s + (p.profit_loss_amt || 0), 0)
+        const sInvested = allPos.reduce((s, p) => s + (p.invested_amount || 0), 0)
+        const sRenditePct = sInvested > 0 ? (sPnlEur / sInvested) * 100 : 0
+        const sWins = allPos.filter(p => (p.profit_loss_pct || 0) > 0).length
+        const sLosses = allPos.filter(p => (p.profit_loss_pct || 0) <= 0).length
+        const sWinRate = allPos.length > 0 ? (sWins / allPos.length) * 100 : 0
+        const sAvgReturn = allPos.length > 0 ? allPos.reduce((s, p) => s + (p.profit_loss_pct || 0), 0) / allPos.length : 0
+        const sAvgReturnEur = allPos.length > 0 ? sPnlEur / allPos.length : 0
+        const sWinPos = allPos.filter(p => (p.profit_loss_pct || 0) > 0)
+        const sLosePos = allPos.filter(p => (p.profit_loss_pct || 0) <= 0)
+        const sAvgWin = sWinPos.length > 0 ? sWinPos.reduce((s, p) => s + p.profit_loss_pct, 0) / sWinPos.length : 0
+        const sAvgLoss = sLosePos.length > 0 ? sLosePos.reduce((s, p) => s + p.profit_loss_pct, 0) / sLosePos.length : 0
+        const sRR = sAvgLoss !== 0 ? Math.abs(sAvgWin / sAvgLoss) : 0
+
+        // Open positions value
+        const openValue = open.reduce((s, p) => s + (p.invested_amount || 0) + (p.profit_loss_amt || 0), 0)
+        const openPnl = open.reduce((s, p) => s + (p.profit_loss_amt || 0), 0)
+
+        // Date helpers
+        const todayStart = new Date(); todayStart.setHours(0,0,0,0)
+        const todayEnd = new Date(todayStart); todayEnd.setDate(todayEnd.getDate() + 1)
+        const yesterdayStart = new Date(todayStart); yesterdayStart.setDate(yesterdayStart.getDate() - 1)
+
+        const getDateKey = (p) => {
+          const d = p.close_time ? new Date(p.close_time) : new Date(p.entry_time)
+          return d.toISOString().slice(0, 10)
+        }
+
+        // Filter: closed trades by close_time, open trades by entry_time
+        const todayTrades = closed.filter(p => {
+          const t = new Date(p.close_time)
+          return t >= todayStart && t < todayEnd
+        })
+        // Include open trades opened today
+        const todayOpen = open.filter(p => new Date(p.entry_time) >= todayStart)
+        const todayAll = [...todayTrades, ...todayOpen]
+        const todayPnl = todayAll.reduce((s, p) => s + (p.profit_loss_amt || 0), 0)
+        const todayInv = todayAll.reduce((s, p) => s + (p.invested_amount || 0), 0)
+        const todayPct = todayInv > 0 ? (todayPnl / todayInv) * 100 : 0
+        const todayWins = todayAll.filter(p => (p.profit_loss_pct || 0) > 0).length
+
+        const yesterdayTrades = closed.filter(p => {
+          const t = new Date(p.close_time)
+          return t >= yesterdayStart && t < todayStart
+        })
+        const yesterdayPnl = yesterdayTrades.reduce((s, p) => s + (p.profit_loss_amt || 0), 0)
+        const yesterdayInv = yesterdayTrades.reduce((s, p) => s + (p.invested_amount || 0), 0)
+        const yesterdayPct = yesterdayInv > 0 ? (yesterdayPnl / yesterdayInv) * 100 : 0
+        const yesterdayWins = yesterdayTrades.filter(p => (p.profit_loss_pct || 0) > 0).length
+
+        // Averages
+        const avgPnlDay = sPnlEur / sessionDays
+        const avgPnlWeek = sPnlEur / sessionWeeks
+        const avgPnlMonth = sPnlEur / sessionMonths
+        const avgPctDay = sRenditePct / sessionDays
+        const avgPctWeek = sRenditePct / sessionWeeks
+        const avgPctMonth = sRenditePct / sessionMonths
+        const avgTradesDay = allPos.length / sessionDays
+        const avgTradesWeek = allPos.length / sessionWeeks
+        const avgTradesMonth = allPos.length / sessionMonths
+
+        // Best/Worst by day (closed trades grouped by close date)
+        const dailyPnl = {}
+        closed.forEach(p => {
+          if (!p.close_time) return
+          const key = getDateKey(p)
+          if (!dailyPnl[key]) dailyPnl[key] = 0
+          dailyPnl[key] += p.profit_loss_amt || 0
+        })
+        const dailyEntries = Object.entries(dailyPnl)
+        const bestDay = dailyEntries.length > 0 ? dailyEntries.reduce((a, b) => b[1] > a[1] ? b : a) : null
+        const worstDay = dailyEntries.length > 0 ? dailyEntries.reduce((a, b) => b[1] < a[1] ? b : a) : null
+
+        // Best/Worst single trade
+        const bestTrade = allPos.length > 0 ? allPos.reduce((a, b) => (b.profit_loss_pct || 0) > (a.profit_loss_pct || 0) ? b : a) : null
+        const worstTrade = allPos.length > 0 ? allPos.reduce((a, b) => (b.profit_loss_pct || 0) < (a.profit_loss_pct || 0) ? b : a) : null
+
+        // Win/Loss streaks
+        let maxWinStreak = 0, maxLossStreak = 0, curWin = 0, curLoss = 0
+        const sortedClosed = [...closed].sort((a, b) => new Date(a.close_time) - new Date(b.close_time))
+        sortedClosed.forEach(p => {
+          if ((p.profit_loss_pct || 0) > 0) { curWin++; curLoss = 0; maxWinStreak = Math.max(maxWinStreak, curWin) }
+          else { curLoss++; curWin = 0; maxLossStreak = Math.max(maxLossStreak, curLoss) }
+        })
+
+        const pf = (v, showSign = true) => `${showSign && v >= 0 ? '+' : ''}${v.toFixed(2)}`
+        const StatCard = ({ label, value, sub, color }) => (
+          <div className="bg-dark-700/50 rounded-lg p-2">
+            <div className="text-[9px] text-gray-500 uppercase tracking-wider">{label}</div>
+            <div className={`text-xs font-bold mt-0.5 ${color || 'text-white'}`}>{value}</div>
+            {sub && <div className={`text-[9px] mt-0.5 ${color || 'text-gray-400'} opacity-70`}>{sub}</div>}
+          </div>
+        )
+
+        return (
+          <div className="bg-dark-800 rounded-lg border border-dark-600 mb-4">
+            <button
+              onClick={() => setShowSessionStats(!showSessionStats)}
+              className="w-full flex items-center justify-between p-4 text-left"
+            >
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-medium text-white">Session Statistiken</h3>
+                <span className="text-[10px] text-gray-500">{durationStr} aktiv</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className={`text-xs font-bold ${sPnlEur >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {pf(sRenditePct)}% ({pf(sPnlEur)}€)
+                </span>
+                <svg className={`w-4 h-4 text-gray-500 transition-transform ${showSessionStats ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </div>
+            </button>
+
+            {showSessionStats && (
+              <div className="px-4 pb-4 space-y-4">
+
+                {/* Gruppe 1: Gesamtübersicht */}
+                <div>
+                  <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Gesamtübersicht</div>
+                  <div className="grid grid-cols-3 md:grid-cols-5 lg:grid-cols-9 gap-1.5">
+                    <StatCard label="Rendite" value={`${pf(sRenditePct)}%`} sub={`(${pf(sPnlEur)}€)`} color={sPnlEur >= 0 ? 'text-green-400' : 'text-red-400'} />
+                    <StatCard label="Offene Pos." value={`${open.length}`} sub={`(${pf(openPnl)}€)`} color={openPnl >= 0 ? 'text-green-400' : 'text-red-400'} />
+                    <StatCard label="Trades" value={`${allPos.length}`} sub={`${sWins}W / ${sLosses}L`} color="text-white" />
+                    <StatCard label="Win Rate" value={`${sWinRate.toFixed(0)}%`} color={sWinRate >= 50 ? 'text-green-400' : 'text-red-400'} />
+                    <StatCard label="R/R" value={sRR > 0 ? sRR.toFixed(2) : '-'} color={sRR >= 1 ? 'text-green-400' : sRR > 0 ? 'text-red-400' : 'text-gray-400'} />
+                    <StatCard label="Ø / Trade" value={`${pf(sAvgReturn)}%`} sub={`(${pf(sAvgReturnEur)}€)`} color={sAvgReturn >= 0 ? 'text-green-400' : 'text-red-400'} />
+                    <StatCard label="Ø Win" value={sAvgWin > 0 ? `${pf(sAvgWin)}%` : '-'} color="text-green-400" />
+                    <StatCard label="Ø Loss" value={sAvgLoss < 0 ? `${sAvgLoss.toFixed(2)}%` : '-'} color="text-red-400" />
+                    <StatCard label="Investiert" value={`${sInvested.toFixed(0)}€`} color="text-gray-300" />
+                  </div>
+                </div>
+
+                {/* Gruppe 2: Heute / Gestern */}
+                <div>
+                  <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Zeiträume</div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-dark-700/30 rounded-lg p-3">
+                      <div className="text-[10px] text-gray-400 font-medium mb-2">Heute</div>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        <StatCard label="Rendite" value={todayAll.length > 0 ? `${pf(todayPct)}%` : '-'} sub={todayAll.length > 0 ? `(${pf(todayPnl)}€)` : null} color={todayPnl >= 0 ? 'text-green-400' : 'text-red-400'} />
+                        <StatCard label="Trades" value={`${todayAll.length}`} color="text-white" />
+                        <StatCard label="Win Rate" value={todayAll.length > 0 ? `${(todayWins / todayAll.length * 100).toFixed(0)}%` : '-'} color={todayWins / Math.max(1, todayAll.length) >= 0.5 ? 'text-green-400' : 'text-red-400'} />
+                      </div>
+                    </div>
+                    <div className="bg-dark-700/30 rounded-lg p-3">
+                      <div className="text-[10px] text-gray-400 font-medium mb-2">Gestern</div>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        <StatCard label="Rendite" value={yesterdayTrades.length > 0 ? `${pf(yesterdayPct)}%` : '-'} sub={yesterdayTrades.length > 0 ? `(${pf(yesterdayPnl)}€)` : null} color={yesterdayPnl >= 0 ? 'text-green-400' : 'text-red-400'} />
+                        <StatCard label="Trades" value={`${yesterdayTrades.length}`} color="text-white" />
+                        <StatCard label="Win Rate" value={yesterdayTrades.length > 0 ? `${(yesterdayWins / yesterdayTrades.length * 100).toFixed(0)}%` : '-'} color={yesterdayWins / Math.max(1, yesterdayTrades.length) >= 0.5 ? 'text-green-400' : 'text-red-400'} />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Gruppe 3: Durchschnitte */}
+                <div>
+                  <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Durchschnitte</div>
+                  <div className="grid grid-cols-3 md:grid-cols-6 gap-1.5">
+                    <StatCard label="Ø / Tag" value={`${pf(avgPctDay)}%`} sub={`(${pf(avgPnlDay)}€)`} color={avgPnlDay >= 0 ? 'text-green-400' : 'text-red-400'} />
+                    <StatCard label="Ø / Woche" value={`${pf(avgPctWeek)}%`} sub={`(${pf(avgPnlWeek)}€)`} color={avgPnlWeek >= 0 ? 'text-green-400' : 'text-red-400'} />
+                    <StatCard label="Ø / Monat" value={`${pf(avgPctMonth)}%`} sub={`(${pf(avgPnlMonth)}€)`} color={avgPnlMonth >= 0 ? 'text-green-400' : 'text-red-400'} />
+                    <StatCard label="Trades / Tag" value={avgTradesDay.toFixed(1)} color="text-gray-300" />
+                    <StatCard label="Trades / Woche" value={avgTradesWeek.toFixed(1)} color="text-gray-300" />
+                    <StatCard label="Trades / Monat" value={avgTradesMonth.toFixed(1)} color="text-gray-300" />
+                  </div>
+                </div>
+
+                {/* Gruppe 4: Bestleistungen */}
+                {closed.length > 0 && (
+                  <div>
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Highlights</div>
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-1.5">
+                      <StatCard label="Bester Tag" value={bestDay ? new Date(bestDay[0]).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }) : '-'} sub={bestDay ? `(${pf(bestDay[1])}€)` : null} color="text-green-400" />
+                      <StatCard label="Schlechtester Tag" value={worstDay ? new Date(worstDay[0]).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }) : '-'} sub={worstDay ? `(${pf(worstDay[1])}€)` : null} color="text-red-400" />
+                      <StatCard label="Bester Trade" value={bestTrade ? bestTrade.symbol : '-'} sub={bestTrade ? `${pf(bestTrade.profit_loss_pct)}% (${pf(bestTrade.profit_loss_amt)}€)` : null} color="text-green-400" />
+                      <StatCard label="Schlechtester Trade" value={worstTrade ? worstTrade.symbol : '-'} sub={worstTrade ? `${pf(worstTrade.profit_loss_pct)}% (${pf(worstTrade.profit_loss_amt)}€)` : null} color="text-red-400" />
+                      <StatCard label="Win-Serie" value={`${maxWinStreak}`} sub="in Folge" color="text-green-400" />
+                      <StatCard label="Loss-Serie" value={`${maxLossStreak}`} sub="in Folge" color="text-red-400" />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )
+      })()}
+
+      {/* Open Positions */}
+      {openPositions.length > 0 && (
+        <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
+          <h3 className="text-sm font-medium text-white mb-3">Offene Positionen ({openPositions.length})</h3>
+          {/* Mobile: Cards */}
+          <div className="md:hidden grid grid-cols-1 gap-2">
+            {openPositions.map(p => (
+              <div key={p.id} className="bg-dark-700 rounded-lg p-3 border border-dark-600">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-accent-400">{p.symbol}</span>
+                    <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${p.direction === 'LONG' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{p.direction}</span>
+                    {p.alpaca_order_id && <span className="text-[10px] px-1 py-0.5 rounded bg-purple-500/20 text-purple-400 border border-purple-500/30" title={`Order: ${p.alpaca_order_id}`}>ALPACA</span>}
+                    {p.symbol.includes('.') && <span className="text-[10px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30" title="Nicht über Alpaca handelbar (nur DB-Tracking)">Non-US</span>}
+                  </div>
+                  <span className={`text-sm font-bold ${p.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {p.profit_loss_pct >= 0 ? '+' : ''}{p.profit_loss_pct?.toFixed(2)}%
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+                  <div><span className="text-gray-500">Entry:</span> <span className="text-gray-300">{formatPrice(p.entry_price, p.symbol)}</span></div>
+                  <div><span className="text-gray-500">Aktuell:</span> <span className="text-white font-medium">{formatPrice(p.current_price, p.symbol)}</span></div>
+                  <div><span className="text-gray-500">Stk:</span> <span className="text-gray-300">{p.quantity || '-'}x</span></div>
+                  <div><span className="text-gray-500">Buy-In:</span> <span className="text-gray-300">{p.invested_amount?.toFixed(2)} €</span></div>
+                  <div><span className="text-gray-500">Rendite:</span> <span className={p.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}>{p.profit_loss_pct >= 0 ? '+' : ''}{p.profit_loss_pct?.toFixed(2)}% ({p.profit_loss_amt >= 0 ? '+' : ''}{p.profit_loss_amt?.toFixed(2)}€)</span></div>
+                  <div className="text-gray-600">{formatTime(p.entry_time)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          {/* Desktop: Table */}
+          <div className="hidden md:block overflow-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-gray-500 border-b border-dark-600">
+                  <th className="pb-2 pr-3">Symbol</th>
+                  <th className="pb-2 pr-3">Dir</th>
+                  <th className="pb-2 pr-3">Entry</th>
+                  <th className="pb-2 pr-3">Aktuell</th>
+                  <th className="pb-2 pr-3 text-right">Stk</th>
+                  <th className="pb-2 pr-3 text-right">Buy-In</th>
+                  <th className="pb-2 pr-3 text-right">Rendite</th>
+                  <th className="pb-2 text-right">SL / TP</th>
+                </tr>
+              </thead>
+              <tbody>
+                {openPositions.map(p => (
+                  <tr key={p.id} className="border-b border-dark-700/50">
+                    <td className="py-2 pr-3 font-medium text-accent-400">
+                      {p.symbol}
+                      {p.alpaca_order_id && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-purple-500/20 text-purple-400" title={`Order: ${p.alpaca_order_id}`}>A</span>}
+                      {p.symbol.includes('.') && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-400" title="Nicht über Alpaca handelbar (nur DB-Tracking)">Non-US</span>}
+                    </td>
+                    <td className={`py-2 pr-3 font-medium ${p.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>{p.direction}</td>
+                    <td className="py-2 pr-3 text-gray-400">
+                      <div>{formatPrice(p.entry_price, p.symbol)}</div>
+                      <div className="text-gray-600 text-[10px]">{formatTime(p.entry_time)}</div>
+                    </td>
+                    <td className="py-2 pr-3 text-white font-medium">
+                      {formatPrice(p.current_price, p.symbol)}
+                    </td>
+                    <td className="py-2 pr-3 text-right text-gray-300">{p.quantity ? `${p.quantity}x` : '-'}</td>
+                    <td className="py-2 pr-3 text-right text-gray-400">{p.invested_amount?.toFixed(2)} €</td>
+                    <td className={`py-2 pr-3 text-right font-medium ${p.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {p.profit_loss_pct >= 0 ? '+' : ''}{p.profit_loss_pct?.toFixed(2)}%
+                      <span className="text-gray-500 font-normal ml-1">({p.profit_loss_amt >= 0 ? '+' : ''}{p.profit_loss_amt?.toFixed(2)}€)</span>
+                    </td>
+                    <td className="py-2 text-right text-gray-400 text-[10px]">
+                      {p.stop_loss > 0 || p.take_profit > 0 ? (
+                        <>{p.stop_loss > 0 ? formatPrice(p.stop_loss, p.symbol) : '-'} / {p.take_profit > 0 ? formatPrice(p.take_profit, p.symbol) : '-'}</>
+                      ) : '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -1036,84 +1436,6 @@ function LiveTrading({ isAdmin, token }) {
         </div>
       )}
 
-      {/* Open Positions */}
-      {openPositions.length > 0 && (
-        <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
-          <h3 className="text-sm font-medium text-white mb-3">Offene Positionen ({openPositions.length})</h3>
-          {/* Mobile: Cards */}
-          <div className="md:hidden grid grid-cols-1 gap-2">
-            {openPositions.map(p => (
-              <div key={p.id} className="bg-dark-700 rounded-lg p-3 border border-dark-600">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-bold text-accent-400">{p.symbol}</span>
-                    <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${p.direction === 'LONG' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{p.direction}</span>
-                    {p.alpaca_order_id && <span className="text-[10px] px-1 py-0.5 rounded bg-purple-500/20 text-purple-400 border border-purple-500/30" title={`Order: ${p.alpaca_order_id}`}>ALPACA</span>}
-                  </div>
-                  <span className={`text-sm font-bold ${p.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {p.profit_loss_pct >= 0 ? '+' : ''}{p.profit_loss_pct?.toFixed(2)}%
-                  </span>
-                </div>
-                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
-                  <div><span className="text-gray-500">Entry:</span> <span className="text-gray-300">{formatPrice(p.entry_price, p.symbol)}</span></div>
-                  <div><span className="text-gray-500">Aktuell:</span> <span className="text-white font-medium">{formatPrice(p.current_price, p.symbol)}</span></div>
-                  <div><span className="text-gray-500">Stk:</span> <span className="text-gray-300">{p.quantity || '-'}x</span></div>
-                  <div><span className="text-gray-500">Buy-In:</span> <span className="text-gray-300">{p.invested_amount?.toFixed(2)} €</span></div>
-                  <div><span className="text-gray-500">Rendite:</span> <span className={p.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}>{p.profit_loss_pct >= 0 ? '+' : ''}{p.profit_loss_pct?.toFixed(2)}% ({p.profit_loss_amt >= 0 ? '+' : ''}{p.profit_loss_amt?.toFixed(2)}€)</span></div>
-                  <div className="text-gray-600">{formatTime(p.entry_time)}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-          {/* Desktop: Table */}
-          <div className="hidden md:block overflow-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-left text-gray-500 border-b border-dark-600">
-                  <th className="pb-2 pr-3">Symbol</th>
-                  <th className="pb-2 pr-3">Dir</th>
-                  <th className="pb-2 pr-3">Entry</th>
-                  <th className="pb-2 pr-3">Aktuell</th>
-                  <th className="pb-2 pr-3 text-right">Stk</th>
-                  <th className="pb-2 pr-3 text-right">Buy-In</th>
-                  <th className="pb-2 pr-3 text-right">Rendite</th>
-                  <th className="pb-2 text-right">SL / TP</th>
-                </tr>
-              </thead>
-              <tbody>
-                {openPositions.map(p => (
-                  <tr key={p.id} className="border-b border-dark-700/50">
-                    <td className="py-2 pr-3 font-medium text-accent-400">
-                      {p.symbol}
-                      {p.alpaca_order_id && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-purple-500/20 text-purple-400" title={`Order: ${p.alpaca_order_id}`}>A</span>}
-                    </td>
-                    <td className={`py-2 pr-3 font-medium ${p.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>{p.direction}</td>
-                    <td className="py-2 pr-3 text-gray-400">
-                      <div>{formatPrice(p.entry_price, p.symbol)}</div>
-                      <div className="text-gray-600 text-[10px]">{formatTime(p.entry_time)}</div>
-                    </td>
-                    <td className="py-2 pr-3 text-white font-medium">
-                      {formatPrice(p.current_price, p.symbol)}
-                    </td>
-                    <td className="py-2 pr-3 text-right text-gray-300">{p.quantity ? `${p.quantity}x` : '-'}</td>
-                    <td className="py-2 pr-3 text-right text-gray-400">{p.invested_amount?.toFixed(2)} €</td>
-                    <td className={`py-2 pr-3 text-right font-medium ${p.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {p.profit_loss_pct >= 0 ? '+' : ''}{p.profit_loss_pct?.toFixed(2)}%
-                      <span className="text-gray-500 font-normal ml-1">({p.profit_loss_amt >= 0 ? '+' : ''}{p.profit_loss_amt?.toFixed(2)}€)</span>
-                    </td>
-                    <td className="py-2 text-right text-gray-400 text-[10px]">
-                      {p.stop_loss > 0 || p.take_profit > 0 ? (
-                        <>{p.stop_loss > 0 ? formatPrice(p.stop_loss, p.symbol) : '-'} / {p.take_profit > 0 ? formatPrice(p.take_profit, p.symbol) : '-'}</>
-                      ) : '-'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
       {/* Closed Trades */}
       {closedPositions.length > 0 && (
         <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
@@ -1142,7 +1464,10 @@ function LiveTrading({ isAdmin, token }) {
               <tbody>
                 {[...closedPositions].sort((a, b) => new Date(b.close_time) - new Date(a.close_time)).map(p => (
                   <tr key={p.id} className="border-b border-dark-700/50">
-                    <td className="py-1.5 pr-2 font-medium text-accent-400">{p.symbol}</td>
+                    <td className="py-1.5 pr-2 font-medium text-accent-400">
+                      {p.symbol}
+                      {p.symbol.includes('.') && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-400" title="Nicht über Alpaca handelbar (nur DB-Tracking)">Non-US</span>}
+                    </td>
                     <td className={`py-1.5 pr-2 ${p.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>{p.direction}</td>
                     <td className="py-1.5 pr-2 text-gray-400">
                       <div>{formatPrice(p.entry_price, p.symbol)}</div>
@@ -1402,8 +1727,27 @@ function LiveTrading({ isAdmin, token }) {
                             s.is_active ? 'bg-green-400 animate-pulse' :
                             s.can_resume ? 'bg-amber-400' : 'bg-gray-600'
                           }`} />
-                          <span className="text-xs font-medium text-white">
-                            #{s.id} {STRATEGY_LABELS[s.strategy] || s.strategy} ({s.interval})
+                          <span
+                            className="text-xs font-medium text-white cursor-text"
+                            contentEditable={isAdmin}
+                            suppressContentEditableWarning
+                            onBlur={async (e) => {
+                              const newName = e.target.textContent.trim()
+                              if (newName && newName !== (s.name || `#${s.id}`)) {
+                                try {
+                                  await fetch(`/api/trading/live/session/${s.id}/name`, {
+                                    method: 'PATCH',
+                                    headers: { ...headers, 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ name: newName }),
+                                  })
+                                  fetchSessions()
+                                } catch { /* ignore */ }
+                              }
+                            }}
+                            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur() } }}
+                            title={isAdmin ? 'Klicken zum Umbenennen' : ''}
+                          >
+                            {s.name || `#${s.id} ${STRATEGY_LABELS[s.strategy] || s.strategy} (${s.interval})`}
                           </span>
                           <span className="text-[10px] text-gray-500">{s.symbols_count} Aktien</span>
                           {s.is_active && <span className="text-[10px] text-green-400 font-medium">AKTIV</span>}
@@ -1420,7 +1764,7 @@ function LiveTrading({ isAdmin, token }) {
                           {s.is_active && (
                             <span className="text-[10px] text-gray-500">Seit {formatTime(s.started_at)}</span>
                           )}
-                          {isAdmin && !s.is_active && s.can_resume && !status?.is_running && (
+                          {isAdmin && !s.is_active && s.can_resume && (
                             <button
                               onClick={(e) => { e.stopPropagation(); resumeSession(s.id) }}
                               className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-medium rounded transition-colors"

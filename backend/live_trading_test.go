@@ -18,12 +18,11 @@ import (
 func setupLiveTestDB(t *testing.T) {
 	t.Helper()
 
-	// Stop any running scheduler from previous test
+	// Stop any running schedulers from previous test
 	liveSchedulerMu.Lock()
-	if liveSchedulerRunning && liveSchedulerStop != nil {
-		close(liveSchedulerStop)
-		liveSchedulerRunning = false
-		liveSchedulerStop = nil
+	for id, state := range liveSchedulers {
+		close(state.StopChan)
+		delete(liveSchedulers, id)
 	}
 	liveSchedulerMu.Unlock()
 	time.Sleep(10 * time.Millisecond)
@@ -203,14 +202,14 @@ func TestStartLiveSession(t *testing.T) {
 
 	// Stop the scheduler so goroutine doesn't leak
 	liveSchedulerMu.Lock()
-	if liveSchedulerRunning && liveSchedulerStop != nil {
-		close(liveSchedulerStop)
-		liveSchedulerRunning = false
+	for id, state := range liveSchedulers {
+		close(state.StopChan)
+		delete(liveSchedulers, id)
 	}
 	liveSchedulerMu.Unlock()
 }
 
-func TestStartSessionNoDouble(t *testing.T) {
+func TestStartSessionMultipleAdmin(t *testing.T) {
 	setupLiveTestDB(t)
 	r, token := setupLiveRouter(t)
 
@@ -220,19 +219,22 @@ func TestStartSessionNoDouble(t *testing.T) {
 	})
 
 	// Start first session
-	postJSON(r, "/api/trading/live/start", token, nil)
+	w1 := postJSON(r, "/api/trading/live/start", token, nil)
+	if w1.Code != 200 {
+		t.Fatalf("first start failed: %d", w1.Code)
+	}
 
-	// Second start should fail
-	w := postJSON(r, "/api/trading/live/start", token, nil)
-	if w.Code != 400 {
-		t.Fatalf("expected 400 for double start, got %d", w.Code)
+	// Admin can start multiple sessions
+	w2 := postJSON(r, "/api/trading/live/start", token, nil)
+	if w2.Code != 200 {
+		t.Fatalf("admin should be able to start multiple sessions, got %d", w2.Code)
 	}
 
 	// Cleanup
 	liveSchedulerMu.Lock()
-	if liveSchedulerRunning && liveSchedulerStop != nil {
-		close(liveSchedulerStop)
-		liveSchedulerRunning = false
+	for id, state := range liveSchedulers {
+		close(state.StopChan)
+		delete(liveSchedulers, id)
 	}
 	liveSchedulerMu.Unlock()
 }
@@ -453,9 +455,9 @@ func TestGetLiveStatus(t *testing.T) {
 
 	// Cleanup
 	liveSchedulerMu.Lock()
-	if liveSchedulerRunning && liveSchedulerStop != nil {
-		close(liveSchedulerStop)
-		liveSchedulerRunning = false
+	for id, state := range liveSchedulers {
+		close(state.StopChan)
+		delete(liveSchedulers, id)
 	}
 	liveSchedulerMu.Unlock()
 }

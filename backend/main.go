@@ -830,6 +830,7 @@ type LiveTradingSession struct {
 	ID          uint       `json:"id" gorm:"primaryKey"`
 	UserID      uint       `json:"user_id" gorm:"index"`
 	ConfigID    uint       `json:"config_id"`
+	Name        string     `json:"name"`
 	Strategy    string     `json:"strategy"`
 	Interval    string     `json:"interval"`
 	ParamsJSON  string     `json:"params_json" gorm:"type:text"`
@@ -1378,12 +1379,26 @@ func main() {
 	// Clean up expired sessions on startup
 	db.Where("expiry < ?", time.Now()).Delete(&DBSession{})
 
-	// Mark orphaned live trading sessions as stopped (scheduler lost on restart)
-	now := time.Now()
-	db.Model(&LiveTradingSession{}).Where("is_active = ?", true).Updates(map[string]interface{}{
-		"is_active":  false,
-		"stopped_at": now,
-	})
+	// Auto-resume orphaned live trading sessions (scheduler lost on restart)
+	var orphanedSessions []LiveTradingSession
+	db.Where("is_active = ?", true).Find(&orphanedSessions)
+	if len(orphanedSessions) > 0 {
+		log.Printf("[LiveTrading] Auto-Resume: %d aktive Sessions gefunden, starte Scheduler neu...", len(orphanedSessions))
+		for _, session := range orphanedSessions {
+			var symbols []string
+			json.Unmarshal([]byte(session.Symbols), &symbols)
+			state := &liveSessionState{
+				StopChan:   make(chan struct{}),
+				OHLCVCache: make(map[string][]OHLCV),
+			}
+			liveSchedulerMu.Lock()
+			liveSchedulers[session.ID] = state
+			liveSchedulerMu.Unlock()
+			go runLiveScheduler(state, session.ID)
+			log.Printf("[LiveTrading] Auto-Resume: Session #%d '%s' (%s %s, %d Symbole) gestartet",
+				session.ID, session.Name, session.Strategy, session.Interval, len(symbols))
+		}
+	}
 
 	// Ensure bot users exist for portfolio comparison
 	ensureFlipperBotUser()
@@ -1546,6 +1561,7 @@ func main() {
 		api.GET("/trading/live/sessions", authMiddleware(), getLiveTradingSessions)
 		api.GET("/trading/live/session/:id", authMiddleware(), getLiveTradingSession)
 		api.POST("/trading/live/session/:id/resume", authMiddleware(), adminOnly(), resumeLiveTrading)
+		api.PATCH("/trading/live/session/:id/name", authMiddleware(), adminOnly(), renameLiveSession)
 		api.DELETE("/trading/live/session/:id", authMiddleware(), adminOnly(), deleteLiveSession)
 		api.GET("/trading/live/logs/:sessionId", authMiddleware(), getLiveTradingLogs)
 		api.POST("/trading/live/alpaca/validate", authMiddleware(), adminOnly(), validateAlpacaKeys)
@@ -22202,17 +22218,98 @@ func runTradingScan() {
 
 // ==================== Live Trading ====================
 
+// Per-session scheduler state
+type liveSessionState struct {
+	StopChan          chan struct{}
+	IsPolling         bool
+	ScanTotal         int
+	ScanProgress      int
+	CurrentSymbol     string
+	OHLCVCache        map[string][]OHLCV // symbol -> cached bars
+	CacheMu           sync.RWMutex
+	AlpacaActive      bool
+	AlpacaLastChecked time.Time
+	AlpacaError       string
+}
+
 var (
-	liveSchedulerRunning bool
-	liveSchedulerMu      sync.Mutex
-	liveSchedulerStop    chan struct{}
-	liveSchedulerPolling bool
-	liveSchedulerPollMu  sync.Mutex
-	liveActiveSessionID  uint
-	liveScanProgress     int
-	liveScanTotal        int
-	liveCurrentSymbol    string
+	liveSchedulers   = map[uint]*liveSessionState{} // sessionID -> state
+	liveSchedulerMu  sync.Mutex
 )
+
+func getLiveSessionState(sessionID uint) *liveSessionState {
+	liveSchedulerMu.Lock()
+	defer liveSchedulerMu.Unlock()
+	return liveSchedulers[sessionID]
+}
+
+// Delta period: how much data to fetch during polls (just recent bars)
+func getPollFetchPeriod(interval string) string {
+	switch interval {
+	case "5m":
+		return "2d"
+	case "15m":
+		return "5d"
+	case "60m", "1h":
+		return "7d"
+	case "2h":
+		return "14d"
+	case "4h":
+		return "1mo"
+	case "1d":
+		return "3mo"
+	case "1wk":
+		return "6mo"
+	default:
+		return "7d"
+	}
+}
+
+func mergeOHLCV(cached, fresh []OHLCV) []OHLCV {
+	if len(cached) == 0 {
+		return fresh
+	}
+	if len(fresh) == 0 {
+		return cached
+	}
+	freshStart := fresh[0].Time
+	cutIdx := len(cached)
+	for i, bar := range cached {
+		if bar.Time >= freshStart {
+			cutIdx = i
+			break
+		}
+	}
+	return append(cached[:cutIdx], fresh...)
+}
+
+// Prefetch full OHLCV for all symbols on session start/resume
+func prefetchLiveOHLCV(state *liveSessionState, symbols []string, period, yahooInterval string, sessionID uint) {
+	const maxWorkers = 10
+	sem := make(chan struct{}, maxWorkers)
+	var wg sync.WaitGroup
+
+	logLiveEvent(sessionID, "INFO", "-", fmt.Sprintf("Prefetch gestartet — lade %d Aktien (%s %s)", len(symbols), period, yahooInterval))
+	start := time.Now()
+
+	for _, sym := range symbols {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(symbol string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			ohlcv, err := fetchOHLCVFromYahoo(symbol, period, yahooInterval)
+			if err != nil || len(ohlcv) == 0 {
+				return
+			}
+			state.CacheMu.Lock()
+			state.OHLCVCache[symbol] = ohlcv
+			state.CacheMu.Unlock()
+		}(sym)
+	}
+	wg.Wait()
+	logLiveEvent(sessionID, "INFO", "-", fmt.Sprintf("Prefetch abgeschlossen — %d Aktien in %.1fs", len(symbols), time.Since(start).Seconds()))
+}
 
 func logLiveEvent(sessionID uint, level, symbol, message string) {
 	db.Create(&LiveTradingLog{
@@ -22589,6 +22686,29 @@ func alpacaTestOrder(c *gin.Context) {
 	})
 }
 
+func renameLiveSession(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	uid := userID.(uint)
+	id := c.Param("id")
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if c.BindJSON(&req) != nil || req.Name == "" {
+		c.JSON(400, gin.H{"error": "Name darf nicht leer sein"})
+		return
+	}
+
+	var session LiveTradingSession
+	if db.Where("id = ? AND user_id = ?", id, uid).First(&session).Error != nil {
+		c.JSON(404, gin.H{"error": "Session nicht gefunden"})
+		return
+	}
+
+	db.Model(&session).Update("name", req.Name)
+	c.JSON(200, gin.H{"name": req.Name})
+}
+
 func deleteLiveSession(c *gin.Context) {
 	userID, _ := c.Get("userID")
 	uid := userID.(uint)
@@ -22807,11 +22927,15 @@ func startLiveTrading(c *gin.Context) {
 	userID, _ := c.Get("userID")
 	uid := userID.(uint)
 
-	// Check no active session
-	var existing LiveTradingSession
-	if db.Where("user_id = ? AND is_active = ?", uid, true).First(&existing).Error == nil {
-		c.JSON(400, gin.H{"error": "Es läuft bereits eine aktive Session"})
-		return
+	// Non-admin: only 1 active session
+	isAdmin, _ := c.Get("isAdmin")
+	isAdminBool, _ := isAdmin.(bool)
+	if !isAdminBool {
+		var existing LiveTradingSession
+		if db.Where("user_id = ? AND is_active = ?", uid, true).First(&existing).Error == nil {
+			c.JSON(400, gin.H{"error": "Es läuft bereits eine aktive Session"})
+			return
+		}
 	}
 
 	// Load config
@@ -22821,10 +22945,21 @@ func startLiveTrading(c *gin.Context) {
 		return
 	}
 
+	// Count existing sessions for auto-naming
+	var sessionCount int64
+	db.Model(&LiveTradingSession{}).Where("user_id = ?", uid).Count(&sessionCount)
+
+	stratLabel := config.Strategy
+	labels := map[string]string{"regression_scalping": "Regression", "hybrid_ai_trend": "NW Bollinger", "diamond_signals": "Diamond"}
+	if l, ok := labels[config.Strategy]; ok {
+		stratLabel = l
+	}
+
 	now := time.Now()
 	session := LiveTradingSession{
 		UserID:      uid,
 		ConfigID:    config.ID,
+		Name:        fmt.Sprintf("%s %s #%d", stratLabel, config.Interval, sessionCount+1),
 		Strategy:    config.Strategy,
 		Interval:    config.Interval,
 		ParamsJSON:  config.ParamsJSON,
@@ -22839,17 +22974,17 @@ func startLiveTrading(c *gin.Context) {
 	db.Create(&session)
 
 	// Start scheduler
-	liveSchedulerMu.Lock()
-	if liveSchedulerRunning && liveSchedulerStop != nil {
-		close(liveSchedulerStop)
+	state := &liveSessionState{
+		StopChan:   make(chan struct{}),
+		OHLCVCache: make(map[string][]OHLCV),
 	}
-	liveSchedulerStop = make(chan struct{})
-	liveSchedulerRunning = true
-	liveActiveSessionID = session.ID
-	go runLiveScheduler(liveSchedulerStop, session.ID)
+	liveSchedulerMu.Lock()
+	liveSchedulers[session.ID] = state
 	liveSchedulerMu.Unlock()
 
-	logLiveEvent(session.ID, "INFO", "-", fmt.Sprintf("Session gestartet — Strategie: %s, Intervall: %s", session.Strategy, session.Interval))
+	go runLiveScheduler(state, session.ID)
+
+	logLiveEvent(session.ID, "INFO", "-", fmt.Sprintf("Session '%s' gestartet — Strategie: %s, Intervall: %s", session.Name, session.Strategy, session.Interval))
 
 	c.JSON(200, gin.H{"session": session, "status": "started"})
 }
@@ -22858,17 +22993,26 @@ func stopLiveTrading(c *gin.Context) {
 	userID, _ := c.Get("userID")
 	uid := userID.(uint)
 
+	// Support optional session_id param, otherwise stop first active
+	sessionIDParam := c.Query("session_id")
 	var session LiveTradingSession
-	if db.Where("user_id = ? AND is_active = ?", uid, true).First(&session).Error != nil {
-		c.JSON(400, gin.H{"error": "Keine aktive Session gefunden"})
-		return
+	if sessionIDParam != "" {
+		if db.Where("id = ? AND user_id = ? AND is_active = ?", sessionIDParam, uid, true).First(&session).Error != nil {
+			c.JSON(400, gin.H{"error": "Session nicht gefunden oder nicht aktiv"})
+			return
+		}
+	} else {
+		if db.Where("user_id = ? AND is_active = ?", uid, true).First(&session).Error != nil {
+			c.JSON(400, gin.H{"error": "Keine aktive Session gefunden"})
+			return
+		}
 	}
 
-	// Stop scheduler
+	// Stop scheduler for this session
 	liveSchedulerMu.Lock()
-	if liveSchedulerRunning && liveSchedulerStop != nil {
-		close(liveSchedulerStop)
-		liveSchedulerRunning = false
+	if state, ok := liveSchedulers[session.ID]; ok {
+		close(state.StopChan)
+		delete(liveSchedulers, session.ID)
 	}
 	liveSchedulerMu.Unlock()
 
@@ -22907,27 +23051,17 @@ func stopLiveTrading(c *gin.Context) {
 func getLiveTradingStatus(c *gin.Context) {
 	uid := liveOwnerUID(c)
 
+	// Collect all active sessions for this user
+	var activeSessions []LiveTradingSession
+	db.Where("user_id = ? AND is_active = ?", uid, true).Find(&activeSessions)
+
 	liveSchedulerMu.Lock()
-	running := liveSchedulerRunning
+	hasRunning := len(liveSchedulers) > 0
 	liveSchedulerMu.Unlock()
 
-	liveSchedulerPollMu.Lock()
-	polling := liveSchedulerPolling
-	scanProgress := liveScanProgress
-	scanTotal := liveScanTotal
-	currentSymbol := liveCurrentSymbol
-	liveSchedulerPollMu.Unlock()
-
-	result := gin.H{
-		"is_running":            running,
-		"is_polling":            polling,
-		"current_symbol":        currentSymbol,
-		"scan_progress_current": scanProgress,
-		"scan_progress_total":   scanTotal,
-	}
-
-	var session LiveTradingSession
-	if db.Where("user_id = ? AND is_active = ?", uid, true).First(&session).Error == nil {
+	// Build per-session status array
+	sessionsStatus := []gin.H{}
+	for _, session := range activeSessions {
 		var symbols []string
 		json.Unmarshal([]byte(session.Symbols), &symbols)
 
@@ -22937,41 +23071,68 @@ func getLiveTradingStatus(c *gin.Context) {
 		db.Model(&LiveTradingPosition{}).Where("session_id = ? AND is_closed = ?", session.ID, true).Count(&closedCount)
 		db.Model(&LiveTradingPosition{}).Where("session_id = ?", session.ID).Select("COALESCE(SUM(profit_loss_amt), 0)").Row().Scan(&totalPnl)
 
-		result["session_id"] = session.ID
-		result["interval"] = session.Interval
-		result["strategy"] = session.Strategy
-		result["started_at"] = session.StartedAt
-		result["last_poll_at"] = session.LastPollAt
-		result["next_poll_at"] = session.NextPollAt
-		result["total_polls"] = session.TotalPolls
-		result["symbols_count"] = len(symbols)
-		result["open_positions"] = openCount
-		result["closed_positions"] = closedCount
-		result["total_pnl"] = totalPnl
-		result["currency"] = session.Currency
+		sStatus := gin.H{
+			"session_id":       session.ID,
+			"name":             session.Name,
+			"interval":         session.Interval,
+			"strategy":         session.Strategy,
+			"started_at":       session.StartedAt,
+			"last_poll_at":     session.LastPollAt,
+			"next_poll_at":     session.NextPollAt,
+			"total_polls":      session.TotalPolls,
+			"symbols_count":    len(symbols),
+			"open_positions":   openCount,
+			"closed_positions": closedCount,
+			"total_pnl":        totalPnl,
+			"currency":         session.Currency,
+		}
+
+		liveSchedulerMu.Lock()
+		if state, ok := liveSchedulers[session.ID]; ok {
+			sStatus["is_polling"] = state.IsPolling
+			sStatus["scan_progress_current"] = state.ScanProgress
+			sStatus["scan_progress_total"] = state.ScanTotal
+			sStatus["current_symbol"] = state.CurrentSymbol
+			sStatus["alpaca_active"] = state.AlpacaActive
+			if !state.AlpacaLastChecked.IsZero() {
+				sStatus["alpaca_last_checked"] = state.AlpacaLastChecked
+			}
+			if state.AlpacaError != "" {
+				sStatus["alpaca_error"] = state.AlpacaError
+			}
+		}
+		liveSchedulerMu.Unlock()
 
 		var symbolPrices map[string]float64
 		if json.Unmarshal([]byte(session.SymbolPricesJSON), &symbolPrices) == nil && symbolPrices != nil {
-			result["symbol_prices"] = symbolPrices
+			sStatus["symbol_prices"] = symbolPrices
+		}
+
+		sessionsStatus = append(sessionsStatus, sStatus)
+	}
+
+	result := gin.H{
+		"is_running":      hasRunning || len(activeSessions) > 0,
+		"active_sessions": sessionsStatus,
+	}
+
+	// Backwards compat: if exactly 1 active session, flatten into top-level
+	if len(sessionsStatus) == 1 {
+		for k, v := range sessionsStatus[0] {
+			result[k] = v
 		}
 	}
 
-	// If not running, check for last session that can be resumed (admin only)
+	// If not running, check for last resumable session (admin only)
 	isAdmin, _ := c.Get("isAdmin")
 	isAdminBool, _ := isAdmin.(bool)
-	if !running && isAdminBool {
+	if len(activeSessions) == 0 && isAdminBool {
 		var lastSession LiveTradingSession
 		if db.Where("user_id = ? AND is_active = ?", uid, false).Order("stopped_at DESC").First(&lastSession).Error == nil {
-			// Check if config still matches
 			var config LiveTradingConfig
-			canResume := false
-			if db.Where("user_id = ?", uid).First(&config).Error == nil {
-				canResume = lastSession.Strategy == config.Strategy &&
-					lastSession.Interval == config.Interval &&
-					lastSession.ParamsJSON == config.ParamsJSON &&
-					lastSession.Symbols == config.Symbols &&
-					lastSession.LongOnly == config.LongOnly &&
-					lastSession.TradeAmount == config.TradeAmount
+			canResume := true // Sessions can always be resumed now
+			if db.Where("user_id = ?", uid).First(&config).Error != nil {
+				canResume = false
 			}
 
 			var symbols []string
@@ -22981,15 +23142,16 @@ func getLiveTradingStatus(c *gin.Context) {
 			db.Model(&LiveTradingPosition{}).Where("session_id = ? AND is_closed = ?", lastSession.ID, false).Count(&openCount)
 
 			result["last_session"] = gin.H{
-				"id":              lastSession.ID,
-				"strategy":        lastSession.Strategy,
-				"interval":        lastSession.Interval,
-				"started_at":      lastSession.StartedAt,
-				"stopped_at":      lastSession.StoppedAt,
-				"total_polls":     lastSession.TotalPolls,
-				"symbols_count":   len(symbols),
-				"open_positions":  openCount,
-				"can_resume":      canResume,
+				"id":             lastSession.ID,
+				"name":           lastSession.Name,
+				"strategy":       lastSession.Strategy,
+				"interval":       lastSession.Interval,
+				"started_at":     lastSession.StartedAt,
+				"stopped_at":     lastSession.StoppedAt,
+				"total_polls":    lastSession.TotalPolls,
+				"symbols_count":  len(symbols),
+				"open_positions": openCount,
+				"can_resume":     canResume,
 			}
 		}
 	}
@@ -23006,10 +23168,6 @@ func getLiveTradingSessions(c *gin.Context) {
 	// Load current config for resume check
 	var config LiveTradingConfig
 	hasConfig := db.Where("user_id = ?", uid).First(&config).Error == nil
-
-	liveSchedulerMu.Lock()
-	running := liveSchedulerRunning
-	liveSchedulerMu.Unlock()
 
 	results := []gin.H{}
 	for _, s := range sessions {
@@ -23028,19 +23186,12 @@ func getLiveTradingSessions(c *gin.Context) {
 			winRate = float64(wins) / float64(totalTrades) * 100
 		}
 
-		// Check if this stopped session can be resumed
-		canResume := false
-		if !s.IsActive && !running && hasConfig {
-			canResume = s.Strategy == config.Strategy &&
-				s.Interval == config.Interval &&
-				s.ParamsJSON == config.ParamsJSON &&
-				s.Symbols == config.Symbols &&
-				s.LongOnly == config.LongOnly &&
-				s.TradeAmount == config.TradeAmount
-		}
+		// Stopped sessions can be resumed (admin feature)
+		canResume := !s.IsActive && hasConfig
 
 		results = append(results, gin.H{
 			"id":            s.ID,
+			"name":          s.Name,
 			"strategy":      s.Strategy,
 			"interval":      s.Interval,
 			"symbols_count": len(symbols),
@@ -23097,15 +23248,6 @@ func resumeLiveTrading(c *gin.Context) {
 	uid := userID.(uint)
 	id := c.Param("id")
 
-	// Check no scheduler currently running
-	liveSchedulerMu.Lock()
-	if liveSchedulerRunning {
-		liveSchedulerMu.Unlock()
-		c.JSON(400, gin.H{"error": "Es läuft bereits eine aktive Session"})
-		return
-	}
-	liveSchedulerMu.Unlock()
-
 	// Load session
 	var session LiveTradingSession
 	if db.Where("id = ? AND user_id = ?", id, uid).First(&session).Error != nil {
@@ -23118,20 +23260,6 @@ func resumeLiveTrading(c *gin.Context) {
 		return
 	}
 
-	// Compare with current config
-	var config LiveTradingConfig
-	if db.Where("user_id = ?", uid).First(&config).Error != nil {
-		c.JSON(400, gin.H{"error": "Keine aktuelle Konfiguration gefunden"})
-		return
-	}
-
-	if session.Strategy != config.Strategy || session.Interval != config.Interval ||
-		session.ParamsJSON != config.ParamsJSON || session.Symbols != config.Symbols ||
-		session.LongOnly != config.LongOnly || session.TradeAmount != config.TradeAmount {
-		c.JSON(400, gin.H{"error": "Konfiguration hat sich geändert. Session kann nicht fortgesetzt werden."})
-		return
-	}
-
 	// Reactivate session
 	db.Model(&session).Updates(map[string]interface{}{
 		"is_active":  true,
@@ -23139,78 +23267,33 @@ func resumeLiveTrading(c *gin.Context) {
 	})
 
 	// Start scheduler
+	state := &liveSessionState{
+		StopChan:   make(chan struct{}),
+		OHLCVCache: make(map[string][]OHLCV),
+	}
 	liveSchedulerMu.Lock()
-	liveSchedulerStop = make(chan struct{})
-	liveSchedulerRunning = true
-	liveActiveSessionID = session.ID
-	go runLiveScheduler(liveSchedulerStop, session.ID)
+	liveSchedulers[session.ID] = state
 	liveSchedulerMu.Unlock()
 
-	logLiveEvent(session.ID, "INFO", "-", "Session fortgesetzt")
+	go runLiveScheduler(state, session.ID)
+
+	logLiveEvent(session.ID, "INFO", "-", fmt.Sprintf("Session '%s' fortgesetzt", session.Name))
 	c.JSON(200, gin.H{"session": session, "status": "resumed"})
 }
 
 // Live Scheduler
-func runLiveScheduler(stopChan chan struct{}, sessionID uint) {
+func runLiveScheduler(state *liveSessionState, sessionID uint) {
 	var session LiveTradingSession
 	if db.First(&session, sessionID).Error != nil {
 		return
 	}
 
 	dur := intervalToDuration(session.Interval)
-	const buffer = 3 * time.Second // wait 3s after candle close for Yahoo to finalize
+	const buffer = 1500 * time.Millisecond // wait 1.5s after candle close for Yahoo to finalize
 
-	// First scan immediately (for resume case)
-	runLiveScan(sessionID)
-
-	for {
-		// Calculate next aligned time: ceil(now / interval) * interval + buffer
-		now := time.Now()
-		durSec := int64(dur.Seconds())
-		nowUnix := now.Unix()
-		nextAligned := ((nowUnix / durSec) + 1) * durSec
-		waitUntil := time.Unix(nextAligned, 0).Add(buffer)
-		waitDur := waitUntil.Sub(now)
-		if waitDur <= 0 {
-			waitDur = dur
-		}
-
-		select {
-		case <-time.After(waitDur):
-			runLiveScan(sessionID)
-		case <-stopChan:
-			return
-		}
-	}
-}
-
-func runLiveScan(sessionID uint) {
-	liveSchedulerPollMu.Lock()
-	liveSchedulerPolling = true
-	liveSchedulerPollMu.Unlock()
-	defer func() {
-		liveSchedulerPollMu.Lock()
-		liveSchedulerPolling = false
-		liveSchedulerPollMu.Unlock()
-	}()
-
-	var session LiveTradingSession
-	if db.First(&session, sessionID).Error != nil || !session.IsActive {
-		return
-	}
-
+	// Prefetch full OHLCV data into cache
 	var symbols []string
 	json.Unmarshal([]byte(session.Symbols), &symbols)
-
-	// Load config for Alpaca integration
-	var liveConfig LiveTradingConfig
-	db.Where("user_id = ?", session.UserID).First(&liveConfig)
-
-	strategy := createStrategyFromJSON(session.Strategy, session.ParamsJSON)
-	if strategy == nil {
-		logLiveEvent(sessionID, "SKIP", "-", fmt.Sprintf("Unbekannte Strategie: %s", session.Strategy))
-		return
-	}
 
 	periodMap := map[string]string{
 		"5m": "60d", "15m": "60d", "60m": "2y", "1h": "2y",
@@ -23226,38 +23309,152 @@ func runLiveScan(sessionID uint) {
 		period = "60d"
 	}
 
-	liveSchedulerPollMu.Lock()
-	liveScanTotal = len(symbols)
-	liveScanProgress = 0
-	liveCurrentSymbol = ""
-	liveSchedulerPollMu.Unlock()
+	prefetchLiveOHLCV(state, symbols, period, yahooInterval, sessionID)
 
-	logLiveEvent(sessionID, "SCAN", "-", fmt.Sprintf("Poll gestartet — prüfe %d Aktien", len(symbols)))
+	// First scan immediately (uses cached data + delta fetch)
+	runLiveScan(sessionID)
 
-	priceMap := map[string]float64{}
-	for i, symbol := range symbols {
-		liveSchedulerPollMu.Lock()
-		liveScanProgress = i + 1
-		liveCurrentSymbol = symbol
-		liveSchedulerPollMu.Unlock()
+	for {
+		now := time.Now()
+		durSec := int64(dur.Seconds())
+		nowUnix := now.Unix()
+		nextAligned := ((nowUnix / durSec) + 1) * durSec
+		waitUntil := time.Unix(nextAligned, 0).Add(buffer)
+		waitDur := waitUntil.Sub(now)
+		if waitDur <= 0 {
+			waitDur = dur
+		}
 
-		if price, ok := processLiveSymbol(session, symbol, strategy, period, yahooInterval, liveConfig); ok {
-			priceMap[symbol] = price
+		select {
+		case <-time.After(waitDur):
+			runLiveScan(sessionID)
+		case <-state.StopChan:
+			return
+		}
+	}
+}
+
+func runLiveScan(sessionID uint) {
+	state := getLiveSessionState(sessionID)
+	if state == nil {
+		return
+	}
+
+	state.IsPolling = true
+	defer func() { state.IsPolling = false }()
+
+	var session LiveTradingSession
+	if db.First(&session, sessionID).Error != nil || !session.IsActive {
+		return
+	}
+
+	var symbols []string
+	json.Unmarshal([]byte(session.Symbols), &symbols)
+
+	// Load config for Alpaca integration
+	var liveConfig LiveTradingConfig
+	db.Where("user_id = ?", session.UserID).First(&liveConfig)
+
+	// Alpaca connection check before each poll
+	if liveConfig.AlpacaEnabled && liveConfig.AlpacaApiKey != "" {
+		_, err := alpacaGetAccount(liveConfig)
+		state.AlpacaLastChecked = time.Now()
+		if err != nil {
+			state.AlpacaActive = false
+			state.AlpacaError = err.Error()
+			logLiveEvent(sessionID, "ERROR", "-", fmt.Sprintf("Alpaca Verbindung fehlgeschlagen: %v", err))
+		} else {
+			state.AlpacaActive = true
+			state.AlpacaError = ""
 		}
 	}
 
-	liveSchedulerPollMu.Lock()
-	liveCurrentSymbol = ""
-	liveSchedulerPollMu.Unlock()
+	strategy := createStrategyFromJSON(session.Strategy, session.ParamsJSON)
+	if strategy == nil {
+		logLiveEvent(sessionID, "SKIP", "-", fmt.Sprintf("Unbekannte Strategie: %s", session.Strategy))
+		return
+	}
 
-	logLiveEvent(sessionID, "SCAN", "-", fmt.Sprintf("Poll abgeschlossen — %d Aktien geprüft", len(symbols)))
+	yahooInterval := session.Interval
+	intervalMap := map[string]string{"1h": "60m", "1D": "1d", "1W": "1wk"}
+	if mapped, ok := intervalMap[yahooInterval]; ok {
+		yahooInterval = mapped
+	}
+
+	// Delta period: only fetch recent bars, merge with cache
+	deltaPeriod := getPollFetchPeriod(yahooInterval)
+
+	state.ScanTotal = len(symbols)
+	state.ScanProgress = 0
+	state.CurrentSymbol = ""
+
+	scanStart := time.Now()
+	logLiveEvent(sessionID, "SCAN", "-", fmt.Sprintf("Poll gestartet — %d Aktien (delta: %s)", len(symbols), deltaPeriod))
+
+	// Parallel processing with worker pool
+	const maxWorkers = 10
+	sem := make(chan struct{}, maxWorkers)
+	var wg sync.WaitGroup
+	var priceMapMu sync.Mutex
+	var progressDone int
+	var progressMu sync.Mutex
+	priceMap := map[string]float64{}
+
+	for _, symbol := range symbols {
+		wg.Add(1)
+		sem <- struct{}{} // acquire worker slot
+		go func(sym string) {
+			defer wg.Done()
+			defer func() { <-sem }() // release worker slot
+
+			// Delta fetch: get recent bars and merge with cache
+			freshBars, err := fetchOHLCVFromYahoo(sym, deltaPeriod, yahooInterval)
+			if err == nil && len(freshBars) > 0 {
+				state.CacheMu.Lock()
+				cached := state.OHLCVCache[sym]
+				merged := mergeOHLCV(cached, freshBars)
+				state.OHLCVCache[sym] = merged
+				state.CacheMu.Unlock()
+			}
+
+			// Get full data from cache for strategy analysis
+			state.CacheMu.RLock()
+			ohlcv := state.OHLCVCache[sym]
+			state.CacheMu.RUnlock()
+
+			minBars := strategy.RequiredBars()
+			if len(ohlcv) >= minBars {
+				if price, ok := processLiveSymbolWithData(session, sym, strategy, ohlcv, liveConfig); ok {
+					priceMapMu.Lock()
+					priceMap[sym] = price
+					priceMapMu.Unlock()
+				}
+			} else {
+				logLiveEvent(sessionID, "SKIP", sym, fmt.Sprintf("Nicht genug Daten (%d/%d Bars)", len(ohlcv), minBars))
+			}
+
+			progressMu.Lock()
+			progressDone++
+			current := progressDone
+			progressMu.Unlock()
+
+			state.ScanProgress = current
+			state.CurrentSymbol = sym
+		}(symbol)
+	}
+	wg.Wait()
+
+	state.CurrentSymbol = ""
+
+	scanDuration := time.Since(scanStart)
+	logLiveEvent(sessionID, "SCAN", "-", fmt.Sprintf("Poll abgeschlossen — %d Aktien in %.1fs", len(symbols), scanDuration.Seconds()))
 
 	// Update session poll stats + symbol prices
 	now := time.Now()
 	dur := intervalToDuration(session.Interval)
 	durSec := int64(dur.Seconds())
 	nextAligned := ((now.Unix() / durSec) + 1) * durSec
-	next := time.Unix(nextAligned, 0).Add(3 * time.Second)
+	next := time.Unix(nextAligned, 0).Add(1500 * time.Millisecond)
 	pricesJSON, _ := json.Marshal(priceMap)
 	db.Model(&session).Updates(map[string]interface{}{
 		"last_poll_at":       now,
@@ -23267,12 +23464,17 @@ func runLiveScan(sessionID uint) {
 	})
 }
 
+// Legacy wrapper for test orders etc. that don't use cache
 func processLiveSymbol(session LiveTradingSession, symbol string, strategy TradingStrategy, period, yahooInterval string, config LiveTradingConfig) (float64, bool) {
 	ohlcv, err := fetchOHLCVFromYahoo(symbol, period, yahooInterval)
 	if err != nil || len(ohlcv) < 50 {
 		logLiveEvent(session.ID, "SKIP", symbol, "OHLCV nicht verfügbar")
 		return 0, false
 	}
+	return processLiveSymbolWithData(session, symbol, strategy, ohlcv, config)
+}
+
+func processLiveSymbolWithData(session LiveTradingSession, symbol string, strategy TradingStrategy, ohlcv []OHLCV, config LiveTradingConfig) (float64, bool) {
 
 	// Strip incomplete (still open) candle — only analyze fully closed bars
 	// Keep lastPrice from the latest bar (even if open) for P&L updates
@@ -23337,25 +23539,8 @@ func processLiveSymbol(session LiveTradingSession, symbol string, strategy Tradi
 				posQty = 1
 			}
 
-			pos := LiveTradingPosition{
-				SessionID:      session.ID,
-				Symbol:         symbol,
-				Direction:      sig.Direction,
-				EntryPrice:     entryPriceNative,
-				EntryPriceUSD:  entryPriceUSD,
-				EntryTime:      time.Unix(ohlcv[sig.Index].Time, 0),
-				StopLoss:       sig.StopLoss,
-				TakeProfit:     sig.TakeProfit,
-				CurrentPrice:   entryPriceNative,
-				NativeCurrency: nativeCurrency,
-				InvestedAmount: convertFromUSD(float64(posQty)*entryPriceUSD, session.Currency),
-				Quantity:       posQty,
-				SignalIndex:    sig.Index,
-				CreatedAt:      time.Now(),
-			}
-			db.Create(&pos)
-
-			// Alpaca: Place bracket order if enabled (SL/TP managed by broker)
+			// Alpaca: Place bracket order FIRST if enabled (SL/TP managed by broker)
+			alpacaOrderID := ""
 			if config.AlpacaEnabled && config.AlpacaApiKey != "" {
 				side := "buy"
 				if sig.Direction == "SHORT" {
@@ -23370,17 +23555,36 @@ func processLiveSymbol(session LiveTradingSession, symbol string, strategy Tradi
 				}
 				orderResult, err := alpacaPlaceOrder(symbol, posQty, side, config, bracketOpts)
 				if err != nil {
-					logLiveEvent(session.ID, "ERROR", symbol, fmt.Sprintf("Alpaca Order fehlgeschlagen: %v", err))
-				} else {
-					pos.AlpacaOrderID = orderResult.OrderID
-					db.Model(&pos).Update("alpaca_order_id", orderResult.OrderID)
-					bracketInfo := ""
-					if orderResult.OrderClass == "bracket" {
-						bracketInfo = fmt.Sprintf(" [BRACKET SL:%.2f TP:%.2f]", sig.StopLoss, sig.TakeProfit)
-					}
-					logLiveEvent(session.ID, "ALPACA", symbol, fmt.Sprintf("Order platziert: %s %dx %s%s (ID: %s, Status: %s)", side, posQty, symbol, bracketInfo, orderResult.OrderID, orderResult.Status))
+					logLiveEvent(session.ID, "ERROR", symbol, fmt.Sprintf("Alpaca Order fehlgeschlagen: %v — Position wird NICHT eröffnet", err))
+					continue // Skip DB entry if Alpaca order failed
 				}
+				alpacaOrderID = orderResult.OrderID
+				bracketInfo := ""
+				if orderResult.OrderClass == "bracket" {
+					bracketInfo = fmt.Sprintf(" [BRACKET SL:%.2f TP:%.2f]", sig.StopLoss, sig.TakeProfit)
+				}
+				logLiveEvent(session.ID, "ALPACA", symbol, fmt.Sprintf("Order platziert: %s %dx %s%s (ID: %s, Status: %s)", side, posQty, symbol, bracketInfo, orderResult.OrderID, orderResult.Status))
 			}
+
+			// DB: Create position only after successful Alpaca order (or if Alpaca disabled)
+			pos := LiveTradingPosition{
+				SessionID:      session.ID,
+				Symbol:         symbol,
+				Direction:      sig.Direction,
+				EntryPrice:     entryPriceNative,
+				EntryPriceUSD:  entryPriceUSD,
+				EntryTime:      time.Unix(ohlcv[sig.Index].Time, 0),
+				StopLoss:       sig.StopLoss,
+				TakeProfit:     sig.TakeProfit,
+				CurrentPrice:   entryPriceNative,
+				NativeCurrency: nativeCurrency,
+				InvestedAmount: convertFromUSD(float64(posQty)*entryPriceUSD, session.Currency),
+				Quantity:       posQty,
+				SignalIndex:    sig.Index,
+				AlpacaOrderID:  alpacaOrderID,
+				CreatedAt:      time.Now(),
+			}
+			db.Create(&pos)
 
 			hasOpenPos = true
 			existingPos = pos

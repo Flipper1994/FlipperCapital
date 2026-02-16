@@ -15,9 +15,9 @@ const TV_INTERVAL_MAP = {
 }
 
 const STRATEGIES = [
-  { value: 'regression_scalping', label: 'Regression Scalping' },
+  { value: 'regression_scalping', label: 'Regression Scalping', beta: true },
   { value: 'hybrid_ai_trend', label: 'NW Bollinger Bands' },
-  { value: 'diamond_signals', label: 'Diamond Signals' },
+  { value: 'diamond_signals', label: 'Diamond Signals', beta: true },
 ]
 
 const STRATEGY_INFO = {
@@ -419,6 +419,7 @@ function TradingArena({ isAdmin, token }) {
   const [batchProgress, setBatchProgress] = useState(null)
   const [noDataSymbols, setNoDataSymbols] = useState([])
   const [longOnly, setLongOnly] = useState(true)
+  const [usOnly, setUsOnly] = useState(false)
   const [showSimulation, setShowSimulation] = useState(false)
   const [simTradeAmount, setSimTradeAmount] = useState(500)
   const [appliedFilters, setAppliedFilters] = useState(null)
@@ -633,7 +634,9 @@ function TradingArena({ isAdmin, token }) {
 
   // Shared filtered symbols for Watchlist Performance + Simulation
   const perfFilteredSymbols = useMemo(() => {
-    if (!filtersActive || !appliedFilters || !batchResults?.per_stock) return null // null = show all
+    if (!batchResults?.per_stock) return null
+    const hasPerformanceFilters = filtersActive && appliedFilters
+    if (!hasPerformanceFilters && !usOnly) return null // null = show all
     const computePerStock = () => {
       if (!longOnly) return batchResults.per_stock
       const ps = {}
@@ -654,18 +657,21 @@ function TradingArena({ isAdmin, token }) {
       return ps
     }
     const perStock = computePerStock()
-    const f = appliedFilters
+    const f = hasPerformanceFilters ? appliedFilters : null
     const mc = batchResults.market_caps || {}
     return Object.entries(perStock).filter(([sym, m]) => {
-      if (f.minWinRate !== '' && m.win_rate < Number(f.minWinRate)) return false
-      if (f.minRR !== '' && m.risk_reward < Number(f.minRR)) return false
-      if (f.minTotalReturn !== '' && m.total_return < Number(f.minTotalReturn)) return false
-      if (f.minAvgReturn !== '' && m.avg_return < Number(f.minAvgReturn)) return false
-      if (f.minNetProfit !== '' && m.net_profit < Number(f.minNetProfit)) return false
-      if (f.minMarketCap !== '' && (mc[sym] || 0) < Number(f.minMarketCap) * 1e9) return false
+      if (usOnly && sym.includes('.')) return false
+      if (f) {
+        if (f.minWinRate !== '' && m.win_rate < Number(f.minWinRate)) return false
+        if (f.minRR !== '' && m.risk_reward < Number(f.minRR)) return false
+        if (f.minTotalReturn !== '' && m.total_return < Number(f.minTotalReturn)) return false
+        if (f.minAvgReturn !== '' && m.avg_return < Number(f.minAvgReturn)) return false
+        if (f.minNetProfit !== '' && m.net_profit < Number(f.minNetProfit)) return false
+        if (f.minMarketCap !== '' && (mc[sym] || 0) < Number(f.minMarketCap) * 1e9) return false
+      }
       return true
     }).map(([sym]) => sym)
-  }, [filtersActive, batchResults, longOnly, appliedFilters])
+  }, [filtersActive, batchResults, longOnly, usOnly, appliedFilters])
 
   // Compute timeframe from chart data or batch trades
   const backtestTimeRange = useMemo(() => {
@@ -880,6 +886,7 @@ function TradingArena({ isAdmin, token }) {
           params: strategyParams,
           symbols,
           long_only: longOnly,
+          us_only: usOnly,
           trade_amount: simTradeAmount,
           filters: appliedFilters || {},
           filters_active: filtersActive,
@@ -1008,7 +1015,7 @@ function TradingArena({ isAdmin, token }) {
               const locked = !isAdmin && s.value !== 'hybrid_ai_trend'
               return (
                 <option key={s.value} value={s.value} disabled={locked}>
-                  {s.label}{locked ? ' (in Entwicklung)' : ''}
+                  {s.label}{s.beta ? ' [BETA]' : ''}{locked ? ' (gesperrt)' : ''}
                 </option>
               )
             })}
@@ -1054,6 +1061,17 @@ function TradingArena({ isAdmin, token }) {
               className="accent-accent-500 w-3.5 h-3.5"
             />
             <span className={`text-xs font-medium ${longOnly ? 'text-accent-400' : 'text-gray-400'}`}>Long Only</span>
+          </label>
+
+          {/* US Only toggle */}
+          <label className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-dark-700 border border-dark-600 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={usOnly}
+              onChange={e => setUsOnly(e.target.checked)}
+              className="accent-accent-500 w-3.5 h-3.5"
+            />
+            <span className={`text-xs font-medium ${usOnly ? 'text-accent-400' : 'text-gray-400'}`}>US Only</span>
           </label>
 
           {/* TradingView toggle */}
@@ -1317,7 +1335,10 @@ function TradingArena({ isAdmin, token }) {
                     onClick={() => handleStrategyChange(strat.value)}
                   >
                     <div className="flex items-center justify-between mb-2">
-                      <span className={`text-xs font-medium ${isActive ? 'text-accent-400' : 'text-gray-400'}`}>{strat.label}</span>
+                      <span className={`text-xs font-medium ${isActive ? 'text-accent-400' : 'text-gray-400'}`}>
+                        {strat.label}
+                        {strat.beta && <span className="ml-1 text-[8px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 align-middle">BETA</span>}
+                      </span>
                       {data.updated_at && (
                         <span className="text-[10px] text-gray-600">
                           {new Date(data.updated_at).toLocaleDateString('de-DE')}
@@ -1663,7 +1684,7 @@ function TradingArena({ isAdmin, token }) {
           )}
           <div className="flex-1 overflow-y-auto p-2">
             {tradingWatchlist.map(item => {
-              const excluded = filtersActive && perfFilteredSymbols && !perfFilteredSymbols.includes(item.symbol)
+              const excluded = (filtersActive || usOnly) && perfFilteredSymbols && !perfFilteredSymbols.includes(item.symbol)
               const hasNoData = noDataSymbols.includes(item.symbol)
               return (
               <div
