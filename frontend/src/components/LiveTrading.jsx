@@ -1088,7 +1088,7 @@ function LiveTrading({ isAdmin, token }) {
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2">
             {[
-              { label: 'Rendite', value: `${totalRenditePct >= 0 ? '+' : ''}${totalRenditePct.toFixed(2)}%`, sub: `(${totalPnlEur >= 0 ? '+' : ''}${totalPnlEur.toFixed(2)}€)`, color: totalPnlEur >= 0 ? 'text-green-400' : 'text-red-400' },
+              { label: 'Rendite', value: `${totalRenditePct >= 0 ? '+' : ''}${totalRenditePct.toFixed(2)}%`, sub: `(${totalPnlEur >= 0 ? '+' : ''}${totalPnlEur.toFixed(2)}€)`, subColor: true, color: totalPnlEur >= 0 ? 'text-green-400' : 'text-red-400' },
               { label: 'Trades', value: `${positions.length}`, sub: `${openPositions.length} offen / ${totalClosed} closed`, color: 'text-white' },
               { label: 'Win Rate', value: `${winRate.toFixed(0)}%`, sub: `${totalWins}W / ${totalLosses}L`, color: winRate >= 50 ? 'text-green-400' : 'text-red-400' },
               { label: 'R/R', value: riskReward > 0 ? riskReward.toFixed(2) : '-', sub: 'Risk/Reward', color: riskReward >= 1 ? 'text-green-400' : riskReward > 0 ? 'text-red-400' : 'text-gray-400' },
@@ -1098,10 +1098,10 @@ function LiveTrading({ isAdmin, token }) {
               { label: 'Investiert', value: `${totalInvested.toFixed(0)}€`, color: 'text-white' },
             ].map((m, i) => (
               <div key={i} className="bg-dark-700 rounded-lg p-2.5">
-                <div className="text-[10px] text-gray-500">{m.label}</div>
+                <div className="text-[10px] text-gray-500">{m.label}{m.label === 'Rendite' && openPositions.length > 0 ? ' (inkl. offen)' : ''}</div>
                 <div className={`text-sm font-bold ${m.color || 'text-white'}`}>
                   {m.value}
-                  {m.sub && <span className="text-[10px] text-gray-500 font-normal ml-1">{m.sub}</span>}
+                  {m.sub && <span className={`ml-1 ${m.subColor ? m.color + ' font-bold' : 'text-[10px] text-gray-500 font-normal'}`}>{m.sub}</span>}
                 </div>
               </div>
             ))}

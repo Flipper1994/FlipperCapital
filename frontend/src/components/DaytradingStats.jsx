@@ -255,12 +255,28 @@ function DaytradingStats({ token, isAdmin }) {
       }
     })
 
+    // Max concurrent open positions (= min capital needed)
+    const events = []
+    positions.forEach(p => {
+      events.push({ time: new Date(p.entry_time).getTime(), delta: 1 })
+      if (p.is_closed && p.close_time) events.push({ time: new Date(p.close_time).getTime(), delta: -1 })
+    })
+    events.sort((a, b) => a.time - b.time || a.delta - b.delta)
+    let concurrent = 0, maxConcurrent = 0
+    events.forEach(e => {
+      concurrent += e.delta
+      if (concurrent > maxConcurrent) maxConcurrent = concurrent
+    })
+    const tradeAmount = positions.length > 0 ? (positions[0].invested_amount || 100) : 100
+    const minCapital = maxConcurrent * tradeAmount
+
     return {
       totalPnl, rendite, winRate, rr, profitFactor, avgReturn,
       totalTrades: all.length, totalClosed: closedPositions.length,
       wins: wins.length, losses: losses.length,
       avgWin, avgLoss, best, worst, maxDD, avgDuration,
-      maxWinStreak, maxLossStreak, totalInvested, equity: eq
+      maxWinStreak, maxLossStreak, totalInvested, equity: eq,
+      maxConcurrent, minCapital
     }
   }, [positions])
 
@@ -294,12 +310,22 @@ function DaytradingStats({ token, isAdmin }) {
   }
 
   // === Trade History ===
+  const allOpenPositions = allPositions.filter(p => !p.is_closed)
   const tradeHistory = useMemo(() => {
-    return closedPositions.map(p => ({
+    const closed = closedPositions.map(p => ({
       ...p,
       time: p.close_time,
       duration: p.entry_time && p.close_time ? (new Date(p.close_time) - new Date(p.entry_time)) / (1000 * 60) : 0,
-    })).sort((a, b) => {
+      isOpen: false,
+    }))
+    const open = allOpenPositions.map(p => ({
+      ...p,
+      time: p.entry_time,
+      close_reason: 'OPEN',
+      duration: p.entry_time ? (Date.now() - new Date(p.entry_time)) / (1000 * 60) : 0,
+      isOpen: true,
+    }))
+    return [...closed, ...open].sort((a, b) => {
       const mul = tradeSortDir === 'asc' ? 1 : -1
       if (tradeSortField === 'time') return (new Date(a.time) - new Date(b.time)) * mul
       if (tradeSortField === 'symbol') return a.symbol.localeCompare(b.symbol) * mul
@@ -307,7 +333,7 @@ function DaytradingStats({ token, isAdmin }) {
       if (tradeSortField === 'duration') return (a.duration - b.duration) * mul
       return 0
     })
-  }, [closedPositions, tradeSortField, tradeSortDir])
+  }, [closedPositions, allOpenPositions, tradeSortField, tradeSortDir])
 
   const toggleTradeSort = (field) => {
     if (tradeSortField === field) setTradeSortDir(d => d === 'asc' ? 'desc' : 'asc')
@@ -382,7 +408,7 @@ function DaytradingStats({ token, isAdmin }) {
   <div class="kpi"><div class="label">Profit Factor</div><div class="value ${s.profitFactor >= 1 ? 'green' : 'red'}">${s.profitFactor === Infinity ? '\u221E' : s.profitFactor.toFixed(2)}</div></div>
   <div class="kpi"><div class="label">\u00D8 / Trade</div><div class="value ${s.avgReturn >= 0 ? 'green' : 'red'}">${s.avgReturn >= 0 ? '+' : ''}${s.avgReturn.toFixed(2)}%</div></div>
   <div class="kpi"><div class="label">Trades</div><div class="value white">${s.totalTrades}</div><div class="sub gray">${s.totalClosed} closed</div></div>
-  <div class="kpi"><div class="label">Investiert</div><div class="value gray">${s.totalInvested.toFixed(0)}\u20AC</div></div>
+  <div class="kpi"><div class="label">Min. Kapital</div><div class="value gray">${s.minCapital.toFixed(0)}\u20AC</div><div class="sub gray">max ${s.maxConcurrent} parallel</div></div>
 </div>
 <div class="ext-grid">
   <div class="ext"><div class="label">\u00D8 Win</div><div class="value green">${s.avgWin > 0 ? '+' + s.avgWin.toFixed(2) + '%' : '-'}</div></div>
@@ -466,7 +492,7 @@ ${sorted.map(p => {
           >
             {sessions.map(s => (
               <option key={s.id} value={s.id}>
-                {s.is_active ? '\u25CF ' : ''}{s.name || `#${s.id}`} — {STRATEGY_LABELS[s.strategy] || s.strategy} ({s.interval}) — {s.total_trades || 0} Trades
+                {s.is_active ? '\u25CF ' : ''}{s.name || `#${s.id}`} — {s.interval} — {s.total_trades || 0} Trades
               </option>
             ))}
           </select>
@@ -551,7 +577,7 @@ ${sorted.map(p => {
               { label: 'Profit Factor', value: stats.profitFactor === Infinity ? '∞' : stats.profitFactor > 0 ? stats.profitFactor.toFixed(2) : '-', color: stats.profitFactor >= 1 ? 'text-green-400' : stats.profitFactor > 0 ? 'text-red-400' : 'text-gray-400' },
               { label: 'Ø / Trade', value: `${stats.avgReturn >= 0 ? '+' : ''}${stats.avgReturn.toFixed(2)}%`, color: stats.avgReturn >= 0 ? 'text-green-400' : 'text-red-400' },
               { label: 'Trades', value: `${stats.totalTrades}`, sub: `${stats.totalClosed} closed`, color: 'text-white' },
-              { label: 'Investiert', value: `${stats.totalInvested.toFixed(0)}€`, color: 'text-gray-300' },
+              { label: 'Min. Kapital', value: `${stats.minCapital.toFixed(0)}€`, sub: `max ${stats.maxConcurrent} parallel`, color: 'text-gray-300' },
             ].map((m, i) => (
               <div key={i} className="bg-dark-800 rounded-lg border border-dark-600 p-3">
                 <div className="text-[10px] text-gray-500 uppercase tracking-wider">{m.label}</div>
@@ -736,6 +762,7 @@ ${sorted.map(p => {
                         {p.alpaca_order_id && <span className="text-[10px] px-1 py-0.5 rounded bg-purple-500/20 text-purple-400">ALPACA</span>}
                         {p.symbol.includes('.') && <span className="text-[10px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-400">Non-US</span>}
                         <span className={`text-[10px] px-1 py-0.5 rounded ${
+                          p.close_reason === 'OPEN' ? 'bg-accent-500/20 text-accent-400 animate-pulse' :
                           p.close_reason === 'TP' ? 'bg-green-500/20 text-green-400' :
                           p.close_reason === 'SL' ? 'bg-red-500/20 text-red-400' :
                           p.close_reason === 'SIGNAL' ? 'bg-yellow-500/20 text-yellow-400' :
@@ -748,16 +775,16 @@ ${sorted.map(p => {
                     </div>
                     <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[10px]">
                       <div><span className="text-gray-500">Entry:</span> <span className="text-gray-300">{formatPrice(p.entry_price, p.symbol)}</span></div>
-                      <div><span className="text-gray-500">Exit:</span> <span className="text-gray-300">{formatPrice(p.close_price, p.symbol)}</span></div>
+                      <div><span className="text-gray-500">{p.isOpen ? 'Aktuell:' : 'Exit:'}</span> <span className="text-gray-300">{formatPrice(p.isOpen ? p.current_price : p.close_price, p.symbol)}</span></div>
                       <div><span className="text-gray-500">P&L:</span> <span className={(p.profit_loss_amt || 0) >= 0 ? 'text-green-400' : 'text-red-400'}>{(p.profit_loss_amt || 0) >= 0 ? '+' : ''}{(p.profit_loss_amt || 0).toFixed(2)}€</span></div>
                       <div><span className="text-gray-500">Dauer:</span> <span className="text-gray-300">{formatDuration(p.duration)}</span></div>
-                      <div className="col-span-2 text-gray-600">{formatTime(p.close_time)}</div>
+                      <div className="col-span-2 text-gray-600">{p.isOpen ? `Seit ${formatTime(p.entry_time)}` : formatTime(p.close_time)}</div>
                     </div>
                   </div>
                 ))}
               </div>
               {/* Desktop Table */}
-              <div className="hidden md:block overflow-auto max-h-[600px]">
+              <div className="hidden md:block overflow-auto max-h-[600px] pr-2">
                 <table className="w-full text-xs">
                   <thead className="sticky top-0 bg-dark-800">
                     <tr className="text-left text-gray-500 border-b border-dark-600">
@@ -784,8 +811,8 @@ ${sorted.map(p => {
                   </thead>
                   <tbody>
                     {tradeHistory.map(p => (
-                      <tr key={p.id} className="border-b border-dark-700/50 hover:bg-dark-700/30 transition-colors">
-                        <td className="py-1.5 pr-2 text-gray-500 text-[10px]">{formatTime(p.close_time)}</td>
+                      <tr key={p.id} className={`border-b border-dark-700/50 hover:bg-dark-700/30 transition-colors ${p.isOpen ? 'bg-accent-500/5' : ''}`}>
+                        <td className="py-1.5 pr-2 text-gray-500 text-[10px]">{formatTime(p.isOpen ? p.entry_time : p.close_time)}</td>
                         <td className="py-1.5 pr-2 font-medium text-accent-400">
                           {p.symbol}
                           {p.alpaca_order_id && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-purple-500/20 text-purple-400">A</span>}
@@ -793,7 +820,7 @@ ${sorted.map(p => {
                         </td>
                         <td className={`py-1.5 pr-2 ${p.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>{p.direction}</td>
                         <td className="py-1.5 pr-2 text-gray-400">{formatPrice(p.entry_price, p.symbol)}</td>
-                        <td className="py-1.5 pr-2 text-gray-400">{formatPrice(p.close_price, p.symbol)}</td>
+                        <td className="py-1.5 pr-2 text-gray-400">{p.isOpen ? formatPrice(p.current_price, p.symbol) : formatPrice(p.close_price, p.symbol)}</td>
                         <td className="py-1.5 pr-2 text-right text-gray-300">{p.quantity ? `${p.quantity}x` : '-'}</td>
                         <td className={`py-1.5 pr-2 text-right font-medium ${(p.profit_loss_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                           {(p.profit_loss_pct || 0) >= 0 ? '+' : ''}{(p.profit_loss_pct || 0).toFixed(2)}%
@@ -803,13 +830,14 @@ ${sorted.map(p => {
                         </td>
                         <td className="py-1.5 pr-2 text-right">
                           <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                            p.close_reason === 'OPEN' ? 'bg-accent-500/20 text-accent-400' :
                             p.close_reason === 'TP' ? 'bg-green-500/20 text-green-400' :
                             p.close_reason === 'SL' ? 'bg-red-500/20 text-red-400' :
                             p.close_reason === 'SIGNAL' ? 'bg-yellow-500/20 text-yellow-400' :
                             'bg-gray-500/20 text-gray-400'
                           }`}>{p.close_reason}</span>
                         </td>
-                        <td className="py-1.5 text-right text-gray-500">{formatDuration(p.duration)}</td>
+                        <td className="py-1.5 pr-3 text-right text-gray-500">{formatDuration(p.duration)}</td>
                       </tr>
                     ))}
                   </tbody>
