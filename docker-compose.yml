@@ -21,6 +21,7 @@ services:
       - TWELVE_DATA_API_KEY=${TWELVE_DATA_API_KEY}
       - ALPACA_DATA_KEY=${ALPACA_DATA_KEY}
       - ALPACA_DATA_SECRET=${ALPACA_DATA_SECRET}
+      - ALPACA_WS_DISABLED=${ALPACA_WS_DISABLED}
     volumes:
       - ./watchlist.db:/data/watchlist.db
     networks:
