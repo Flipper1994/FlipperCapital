@@ -1685,6 +1685,7 @@ func main() {
 		api.POST("/trading/watchlist/import", authMiddleware(), adminOnly(), importWatchlistToTrading)
 		api.DELETE("/trading/watchlist/:id", authMiddleware(), adminOnly(), removeFromTradingWatchlist)
 		api.POST("/trading/backtest", authMiddleware(), runBacktestHandler)
+		api.POST("/trading/backtest-debug", authMiddleware(), backtestDebugHandler)
 		api.GET("/trading/backtest-results/:symbol", authMiddleware(), getBacktestResultsHandler)
 		api.POST("/trading/backtest-batch", authMiddleware(), adminOnly(), backtestBatchHandler)
 		api.POST("/trading/backtest-watchlist", authMiddleware(), backtestWatchlistHandler)
@@ -15046,6 +15047,8 @@ type SmartMoneyFlowStrategy struct {
 	BandExpansion float64 `json:"band_expansion"` // Max band multiplier (Pine: maxMult=2.2)
 	DotCooldown   int     `json:"dot_cooldown"`   // Retest cooldown bars (Pine: dotCooldown=12)
 	RiskReward    float64 `json:"risk_reward"`
+	cachedData    *smfData // cached compute() result per request
+	cachedLen     int      // len(ohlcv) for cache invalidation
 }
 
 func (s *SmartMoneyFlowStrategy) defaults() {
@@ -15094,6 +15097,11 @@ func (s *SmartMoneyFlowStrategy) compute(ohlcv []OHLCV) *smfData {
 	s.defaults()
 	n := len(ohlcv)
 
+	// Return cached result if available (Analyze, Overlays, Indicators share same data)
+	if s.cachedData != nil && s.cachedLen == n {
+		return s.cachedData
+	}
+
 	opens := make([]float64, n)
 	closes := make([]float64, n)
 	for i, bar := range ohlcv {
@@ -15115,19 +15123,21 @@ func (s *SmartMoneyFlowStrategy) compute(ohlcv []OHLCV) *smfData {
 		}
 	}
 
-	// Money flow: rolling sum of clv*volume
+	// Money flow: sliding window O(n) instead of naive O(n*FlowWindow)
 	raw := make([]float64, n)
+	rawAbs := make([]float64, n)
 	for i := range ohlcv {
 		raw[i] = clv[i] * ohlcv[i].Volume
+		rawAbs[i] = math.Abs(raw[i])
 	}
 	mfRatio := make([]float64, n)
+	num, den := 0.0, 0.0
 	for i := 0; i < n; i++ {
-		start := i - s.FlowWindow + 1
-		if start < 0 { start = 0 }
-		num, den := 0.0, 0.0
-		for j := start; j <= i; j++ {
-			num += raw[j]
-			den += math.Abs(raw[j])
+		num += raw[i]
+		den += rawAbs[i]
+		if i >= s.FlowWindow {
+			num -= raw[i-s.FlowWindow]
+			den -= rawAbs[i-s.FlowWindow]
 		}
 		if den == 0 {
 			mfRatio[i] = 0
@@ -15185,7 +15195,10 @@ func (s *SmartMoneyFlowStrategy) compute(ohlcv []OHLCV) *smfData {
 		}
 	}
 
-	return &smfData{basisOpen: bO, basisClose: bC, upper: upper, lower: lower, regime: regime, strength: strength, mfSm: mfSm, atr: atr}
+	result := &smfData{basisOpen: bO, basisClose: bC, upper: upper, lower: lower, regime: regime, strength: strength, mfSm: mfSm, atr: atr}
+	s.cachedData = result
+	s.cachedLen = n
+	return result
 }
 
 func (s *SmartMoneyFlowStrategy) Analyze(ohlcv []OHLCV) []StrategySignal {
@@ -22381,7 +22394,15 @@ func runBacktestHandler(c *gin.Context) {
 	}
 
 	result := runArenaBacktest(ohlcv, strategy)
-	log.Printf("[Arena-Single] %s: bars=%d trades=%d winrate=%.1f%% interval=%s", symbol, len(ohlcv), len(result.Trades), result.Metrics.WinRate, interval)
+	// Recalculate metrics from closed trades only (open trades still shown in chart)
+	closedTrades := make([]ArenaBacktestTrade, 0)
+	for _, t := range result.Trades {
+		if !t.IsOpen {
+			closedTrades = append(closedTrades, t)
+		}
+	}
+	result.Metrics = recalcMetrics(closedTrades)
+	log.Printf("[Arena-Single] %s: bars=%d trades=%d closed=%d winrate=%.1f%% interval=%s", symbol, len(ohlcv), len(result.Trades), len(closedTrades), result.Metrics.WinRate, interval)
 	result.ChartData = ohlcv
 
 	// Compute indicators if strategy supports it
@@ -22554,11 +22575,182 @@ type WatchlistBacktestResult struct {
 	SkippedSymbols []string                        `json:"skipped_symbols,omitempty"`
 }
 
+// backtestDebugHandler runs the same backtest via both the single and batch code paths
+// and compares results to diagnose discrepancies.
+func backtestDebugHandler(c *gin.Context) {
+	var req struct {
+		Symbol   string                 `json:"symbol"`
+		Strategy string                 `json:"strategy"`
+		Interval string                 `json:"interval"`
+		Params   map[string]interface{} `json:"params"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	symbol := strings.ToUpper(strings.TrimSpace(req.Symbol))
+	interval := req.Interval
+	if interval == "" {
+		interval = "4h"
+	}
+
+	// Path A: exactly like runBacktestHandler (single backtest)
+	ohlcvSingle, errA := getOHLCVCached(symbol, interval, 24*time.Hour)
+	var singleTrades int
+	var singleClosed int
+	var singleMetrics ArenaBacktestMetrics
+	var singleBars int
+	var singleFirstBar, singleLastBar int64
+	if errA == nil {
+		singleBars = len(ohlcvSingle)
+		if singleBars > 0 {
+			singleFirstBar = ohlcvSingle[0].Time
+			singleLastBar = ohlcvSingle[singleBars-1].Time
+		}
+		stratA, _ := instantiateStrategy(req.Strategy, req.Params)
+		resultA := runArenaBacktest(ohlcvSingle, stratA)
+		singleTrades = len(resultA.Trades)
+		for _, t := range resultA.Trades {
+			if !t.IsOpen {
+				singleClosed++
+			}
+		}
+		closedOnly := make([]ArenaBacktestTrade, 0)
+		for _, t := range resultA.Trades {
+			if !t.IsOpen {
+				closedOnly = append(closedOnly, t)
+			}
+		}
+		singleMetrics = recalcMetrics(closedOnly)
+	}
+
+	// Path B: exactly like backtestWatchlistHandler (batch backtest)
+	ohlcvBatch, errB := getOHLCVCached(symbol, interval, 24*time.Hour)
+	var batchTrades int
+	var batchClosed int
+	var batchMetrics ArenaBacktestMetrics
+	var batchBars int
+	var batchFirstBar, batchLastBar int64
+	if errB == nil {
+		batchBars = len(ohlcvBatch)
+		if batchBars > 0 {
+			batchFirstBar = ohlcvBatch[0].Time
+			batchLastBar = ohlcvBatch[batchBars-1].Time
+		}
+		stratB, _ := instantiateStrategy(req.Strategy, req.Params)
+		resultB := runArenaBacktest(ohlcvBatch, stratB)
+		batchTrades = len(resultB.Trades)
+		for _, t := range resultB.Trades {
+			if !t.IsOpen {
+				batchClosed++
+			}
+		}
+		closedOnly := make([]ArenaBacktestTrade, 0)
+		for _, t := range resultB.Trades {
+			if !t.IsOpen {
+				closedOnly = append(closedOnly, t)
+			}
+		}
+		batchMetrics = recalcMetrics(closedOnly)
+	}
+
+	// Check for duplicate timestamps in OHLCV data
+	dupes := 0
+	if errA == nil {
+		seen := make(map[int64]bool)
+		for _, bar := range ohlcvSingle {
+			if seen[bar.Time] {
+				dupes++
+			}
+			seen[bar.Time] = true
+		}
+	}
+
+	c.JSON(200, gin.H{
+		"symbol":   symbol,
+		"interval": interval,
+		"strategy": req.Strategy,
+		"single": gin.H{
+			"error":      fmt.Sprintf("%v", errA),
+			"bars":       singleBars,
+			"first_bar":  singleFirstBar,
+			"last_bar":   singleLastBar,
+			"all_trades": singleTrades,
+			"closed":     singleClosed,
+			"metrics":    singleMetrics,
+		},
+		"batch": gin.H{
+			"error":      fmt.Sprintf("%v", errB),
+			"bars":       batchBars,
+			"first_bar":  batchFirstBar,
+			"last_bar":   batchLastBar,
+			"all_trades": batchTrades,
+			"closed":     batchClosed,
+			"metrics":    batchMetrics,
+		},
+		"ohlcv_duplicate_timestamps": dupes,
+		"data_identical":             fmt.Sprintf("%v", singleBars == batchBars && singleFirstBar == batchFirstBar && singleLastBar == batchLastBar),
+	})
+}
+
+// recalcMetrics recalculates backtest metrics from a filtered trades slice.
+func recalcMetrics(trades []ArenaBacktestTrade) ArenaBacktestMetrics {
+	m := ArenaBacktestMetrics{TotalTrades: len(trades)}
+	if len(trades) == 0 {
+		return m
+	}
+	totalReturn := 0.0
+	var winReturns, lossReturns []float64
+	equity := 100.0
+	peak := equity
+	maxDD := 0.0
+	for _, t := range trades {
+		totalReturn += t.ReturnPct
+		if t.ReturnPct >= 0 {
+			m.Wins++
+			winReturns = append(winReturns, t.ReturnPct)
+		} else {
+			m.Losses++
+			lossReturns = append(lossReturns, t.ReturnPct)
+		}
+		equity *= (1 + t.ReturnPct/100)
+		if equity > peak {
+			peak = equity
+		}
+		dd := (peak - equity) / peak * 100
+		if dd > maxDD {
+			maxDD = dd
+		}
+	}
+	m.WinRate = float64(m.Wins) / float64(m.TotalTrades) * 100
+	m.TotalReturn = totalReturn
+	m.AvgReturn = totalReturn / float64(m.TotalTrades)
+	m.MaxDrawdown = maxDD
+	m.NetProfit = equity - 100
+	if len(winReturns) > 0 && len(lossReturns) > 0 {
+		avgWin := 0.0
+		for _, w := range winReturns {
+			avgWin += w
+		}
+		avgWin /= float64(len(winReturns))
+		avgLoss := 0.0
+		for _, l := range lossReturns {
+			avgLoss += math.Abs(l)
+		}
+		avgLoss /= float64(len(lossReturns))
+		if avgLoss > 0 {
+			m.RiskReward = avgWin / avgLoss
+		}
+	}
+	return m
+}
+
 func backtestWatchlistHandler(c *gin.Context) {
 	var req struct {
 		Strategy string                 `json:"strategy"`
 		Interval string                 `json:"interval"`
 		Params   map[string]interface{} `json:"params"`
+		USOnly   bool                   `json:"us_only"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "Ungültige Anfrage"})
@@ -22585,8 +22777,15 @@ func backtestWatchlistHandler(c *gin.Context) {
 	}
 
 	// Get trading watchlist symbols
+	var allWatchlist []TradingWatchlistItem
+	db.Find(&allWatchlist)
 	var watchlist []TradingWatchlistItem
-	db.Find(&watchlist)
+	for _, w := range allWatchlist {
+		if req.USOnly && isNonUSStock(w.Symbol) {
+			continue
+		}
+		watchlist = append(watchlist, w)
+	}
 	if len(watchlist) == 0 {
 		c.JSON(400, gin.H{"error": "Trading Watchlist ist leer"})
 		return
@@ -22606,6 +22805,66 @@ func backtestWatchlistHandler(c *gin.Context) {
 	c.Writer.Flush()
 
 	total := len(watchlist)
+
+	// === Pre-warm cache via Alpaca batch fetch (50 symbols/request instead of 1-by-1) ===
+	if alpacaDataKey != "" {
+		cacheInterval := interval
+		switch interval {
+		case "1h":
+			cacheInterval = "60m"
+		case "1D":
+			cacheInterval = "1d"
+		case "1W":
+			cacheInterval = "1wk"
+		}
+
+		// Bulk-check which symbols are already cached (single query)
+		var cacheEntries []OHLCVCache
+		db.Select("symbol, updated_at").Where("interval = ?", cacheInterval).Find(&cacheEntries)
+		cacheMap := make(map[string]time.Time, len(cacheEntries))
+		for _, ce := range cacheEntries {
+			cacheMap[ce.Symbol] = ce.UpdatedAt
+		}
+
+		var uncachedUS []string
+		for _, w := range watchlist {
+			if isNonUSStock(w.Symbol) {
+				continue
+			}
+			if updatedAt, ok := cacheMap[w.Symbol]; ok && time.Since(updatedAt) < 24*time.Hour {
+				continue
+			}
+			uncachedUS = append(uncachedUS, w.Symbol)
+		}
+
+		if len(uncachedUS) > 0 {
+			log.Printf("[Arena-Batch] Pre-warming %d uncached US symbols via Alpaca batch", len(uncachedUS))
+			prefetchJSON, _ := json.Marshal(gin.H{
+				"type": "prefetch", "uncached": len(uncachedUS), "total": total,
+			})
+			fmt.Fprintf(c.Writer, "data: %s\n\n", prefetchJSON)
+			c.Writer.Flush()
+
+			const batchSize = 50
+			for i := 0; i < len(uncachedUS); i += batchSize {
+				end := i + batchSize
+				if end > len(uncachedUS) {
+					end = len(uncachedUS)
+				}
+				batch := uncachedUS[i:end]
+				batchResult, err := fetchOHLCVBatchFromAlpaca(batch, interval)
+				if err == nil {
+					for _, sym := range batch {
+						if bars, ok := batchResult[sym]; ok && len(bars) > 0 {
+							saveOHLCVCache(sym, cacheInterval, bars)
+						}
+					}
+				}
+			}
+			log.Printf("[Arena-Batch] Pre-warm complete")
+		}
+	}
+
 	var completed int64
 	results := make([]stockResult, total)
 	var wg sync.WaitGroup
@@ -22645,8 +22904,10 @@ func backtestWatchlistHandler(c *gin.Context) {
 					closedTrades = append(closedTrades, t)
 				}
 			}
-			log.Printf("[Arena-Batch] %s: bars=%d trades=%d closed=%d winrate=%.1f%% interval=%s", symbol, len(ohlcv), len(result.Trades), len(closedTrades), result.Metrics.WinRate, interval)
-			results[i] = stockResult{Symbol: symbol, Trades: closedTrades, Metrics: result.Metrics}
+			// Recalculate metrics from closed trades only (consistent with single backtest display)
+			metrics := recalcMetrics(closedTrades)
+			log.Printf("[Arena-Batch] %s: bars=%d trades=%d closed=%d winrate=%.1f%% interval=%s", symbol, len(ohlcv), len(result.Trades), len(closedTrades), metrics.WinRate, interval)
+			results[i] = stockResult{Symbol: symbol, Trades: closedTrades, Metrics: metrics}
 			progressCh <- progressMsg{Index: i, Symbol: symbol}
 		}(idx, item.Symbol)
 	}
@@ -22985,6 +23246,84 @@ func fetchOHLCVFromAlpaca(symbol, interval string) ([]OHLCV, error) {
 	}
 
 	return allBars, nil
+}
+
+// fetchOHLCVBatchFromAlpaca fetches bars for multiple symbols in one request using
+// the multi-symbol endpoint. Returns a map of symbol → []OHLCV.
+// Alpaca allows up to ~50 symbols per request on the multi-bar endpoint.
+func fetchOHLCVBatchFromAlpaca(symbols []string, interval string) (map[string][]OHLCV, error) {
+	if alpacaDataKey == "" || alpacaDataSecret == "" {
+		return nil, fmt.Errorf("alpaca data keys not configured")
+	}
+	alpacaInterval, ok := alpacaIntervalMap[interval]
+	if !ok {
+		return nil, fmt.Errorf("unsupported alpaca interval: %s", interval)
+	}
+	lookback := alpacaLookbackMap[alpacaInterval]
+	if lookback == 0 {
+		lookback = 60 * 24 * time.Hour
+	}
+	start := time.Now().Add(-lookback).Format(time.RFC3339)
+
+	result := make(map[string][]OHLCV)
+	symbolsParam := strings.Join(symbols, ",")
+	pageToken := ""
+
+	for {
+		if alpacaRateTicker != nil {
+			<-alpacaRateTicker.C
+		}
+
+		reqURL := fmt.Sprintf("https://data.alpaca.markets/v2/stocks/bars?symbols=%s&timeframe=%s&start=%s&limit=10000&feed=iex&adjustment=split",
+			url.QueryEscape(symbolsParam), alpacaInterval, url.QueryEscape(start))
+		if pageToken != "" {
+			reqURL += "&page_token=" + url.QueryEscape(pageToken)
+		}
+
+		req, _ := http.NewRequest("GET", reqURL, nil)
+		req.Header.Set("APCA-API-KEY-ID", alpacaDataKey)
+		req.Header.Set("APCA-API-SECRET-KEY", alpacaDataSecret)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("alpaca batch request failed: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != 200 {
+			return nil, fmt.Errorf("alpaca batch returned status %d: %s", resp.StatusCode, string(body))
+		}
+
+		// Multi-symbol response: { "bars": { "AAPL": [...], "MSFT": [...] }, "next_page_token": "..." }
+		var raw struct {
+			Bars          map[string][]AlpacaBar `json:"bars"`
+			NextPageToken string                 `json:"next_page_token"`
+		}
+		if err := json.Unmarshal(body, &raw); err != nil {
+			return nil, fmt.Errorf("alpaca batch parse error: %v", err)
+		}
+
+		for sym, bars := range raw.Bars {
+			for _, bar := range bars {
+				t, err := time.Parse(time.RFC3339, bar.T)
+				if err != nil {
+					continue
+				}
+				result[sym] = append(result[sym], OHLCV{
+					Time: t.Unix(), Open: bar.O, High: bar.H,
+					Low: bar.L, Close: bar.C, Volume: bar.V,
+				})
+			}
+		}
+
+		if raw.NextPageToken == "" {
+			break
+		}
+		pageToken = raw.NextPageToken
+	}
+
+	return result, nil
 }
 
 func isNonUSStock(symbol string) bool {
@@ -24655,6 +24994,8 @@ func getLiveTradingStatus(c *gin.Context) {
 	result := gin.H{
 		"is_running":      hasRunning || len(activeSessions) > 0,
 		"active_sessions": sessionsStatus,
+		"alpaca_ws":       sharedWS != nil && sharedWS.IsConnected(),
+		"alpaca_configured": alpacaDataKey != "",
 	}
 
 	// Backwards compat: if exactly 1 active session, flatten into top-level
@@ -26516,6 +26857,7 @@ func isUSMarketOpen() bool {
 func arenaPrefetchHandler(c *gin.Context) {
 	var req struct {
 		Interval string `json:"interval"`
+		USOnly   bool   `json:"us_only"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.Interval == "" {
 		req.Interval = "4h"
@@ -26530,9 +26872,12 @@ func arenaPrefetchHandler(c *gin.Context) {
 	var watchlist []TradingWatchlistItem
 	db.Find(&watchlist)
 
-	symbols := make([]string, len(watchlist))
-	for i, w := range watchlist {
-		symbols[i] = w.Symbol
+	var symbols []string
+	for _, w := range watchlist {
+		if req.USOnly && isNonUSStock(w.Symbol) {
+			continue
+		}
+		symbols = append(symbols, w.Symbol)
 	}
 	total := len(symbols)
 
@@ -26547,97 +26892,129 @@ func arenaPrefetchHandler(c *gin.Context) {
 		cacheInterval = "1wk"
 	}
 
-	// Check which symbols need fetching
-	type workItem struct {
-		symbol string
-		cached bool
+	// Bulk-load cache timestamps (single query instead of N individual queries)
+	var cacheEntries []OHLCVCache
+	db.Select("symbol, updated_at").Where("interval = ?", cacheInterval).Find(&cacheEntries)
+	cacheMap := make(map[string]time.Time, len(cacheEntries))
+	for _, ce := range cacheEntries {
+		cacheMap[ce.Symbol] = ce.UpdatedAt
 	}
-	var work []workItem
+
+	// Separate cached vs. uncached symbols
+	var cachedSymbols, uncachedUS, uncachedNonUS []string
 	for _, sym := range symbols {
-		var cache OHLCVCache
-		if db.Where("symbol = ? AND interval = ?", sym, cacheInterval).First(&cache).Error == nil {
-			if time.Since(cache.UpdatedAt) < 2*time.Hour {
-				work = append(work, workItem{sym, true})
-				continue
-			}
-		}
-		work = append(work, workItem{sym, false})
-	}
-
-	var fetched, cached, failed int64
-	sem := make(chan struct{}, 10) // 10 parallel workers
-	var wg sync.WaitGroup
-
-	// Serialize SSE writes through a channel (concurrent c.Writer access = race condition)
-	type prefetchProgress struct {
-		Current int64
-		Total   int
-		Symbol  string
-		Done    bool
-		Fetched int64
-		Cached  int64
-		Failed  int64
-	}
-	progressCh := make(chan prefetchProgress, total+1)
-
-	for _, w := range work {
-		wg.Add(1)
-		if w.cached {
-			go func() {
-				defer wg.Done()
-				atomic.AddInt64(&cached, 1)
-				progressCh <- prefetchProgress{Symbol: ""}
-			}()
+		if updatedAt, ok := cacheMap[sym]; ok && time.Since(updatedAt) < 2*time.Hour {
+			cachedSymbols = append(cachedSymbols, sym)
 			continue
 		}
-
-		go func(sym string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			useAlpaca := alpacaDataKey != "" && !isNonUSStock(sym)
-			var ohlcv []OHLCV
-			var err error
-
-			if useAlpaca {
-				ohlcv, err = fetchOHLCVFromAlpaca(sym, req.Interval)
-			}
-			if !useAlpaca || err != nil || len(ohlcv) == 0 {
-				yahooIv := cacheInterval
-				period := backtestPeriodMap[yahooIv]
-				if period == "" {
-					period = "60d"
-				}
-				ohlcv, err = fetchOHLCVFromYahoo(sym, period, yahooIv)
-			}
-
-			if err == nil && len(ohlcv) > 0 {
-				saveOHLCVCache(sym, cacheInterval, ohlcv)
-				atomic.AddInt64(&fetched, 1)
-			} else {
-				atomic.AddInt64(&failed, 1)
-			}
-
-			progressCh <- prefetchProgress{Symbol: sym}
-		}(w.symbol)
+		if isNonUSStock(sym) {
+			uncachedNonUS = append(uncachedNonUS, sym)
+		} else {
+			uncachedUS = append(uncachedUS, sym)
+		}
 	}
 
-	// Close channel when all workers done
+	// Only count symbols that actually need fetching
+	fetchTotal := len(uncachedUS) + len(uncachedNonUS)
+	var fetched, failed int64
+	type prefetchProgress struct {
+		Symbol string
+		Source string // "alpaca", "yahoo", "failed"
+	}
+	progressCh := make(chan prefetchProgress, fetchTotal+1)
+
+	// Helper: fetch single symbol via Yahoo and report progress
+	fetchYahoo := func(sym string, wg *sync.WaitGroup, sem chan struct{}) {
+		defer wg.Done()
+		sem <- struct{}{}
+		defer func() { <-sem }()
+		yahooIv := cacheInterval
+		period := backtestPeriodMap[yahooIv]
+		if period == "" {
+			period = "60d"
+		}
+		ohlcv, err := fetchOHLCVFromYahoo(sym, period, yahooIv)
+		if err == nil && len(ohlcv) > 0 {
+			saveOHLCVCache(sym, cacheInterval, ohlcv)
+			atomic.AddInt64(&fetched, 1)
+			progressCh <- prefetchProgress{Symbol: sym, Source: "yahoo"}
+		} else {
+			atomic.AddInt64(&failed, 1)
+			progressCh <- prefetchProgress{Symbol: sym, Source: "failed"}
+		}
+	}
+
+	// Emit cache summary immediately (before goroutine, so frontend knows right away)
+	cachedCount := len(cachedSymbols)
+	if fetchTotal == 0 {
+		// Everything cached — emit complete immediately
+		completeJSON, _ := json.Marshal(gin.H{
+			"type": "complete", "fetched": 0, "cached": cachedCount, "failed": 0,
+		})
+		fmt.Fprintf(c.Writer, "data: %s\n\n", completeJSON)
+		c.Writer.Flush()
+		return
+	}
+	// Tell frontend: X cached, Y to fetch
+	initJSON, _ := json.Marshal(gin.H{
+		"type": "init", "cached": cachedCount, "fetch_total": fetchTotal, "total": total,
+	})
+	fmt.Fprintf(c.Writer, "data: %s\n\n", initJSON)
+	c.Writer.Flush()
+
 	go func() {
-		wg.Wait()
+		// 1) Batch-fetch US symbols via Alpaca (50 per batch), collect failures
+		var yahooFallback []string
+		if alpacaDataKey != "" && len(uncachedUS) > 0 {
+			const batchSize = 50
+			for i := 0; i < len(uncachedUS); i += batchSize {
+				end := i + batchSize
+				if end > len(uncachedUS) {
+					end = len(uncachedUS)
+				}
+				batch := uncachedUS[i:end]
+
+				batchResult, err := fetchOHLCVBatchFromAlpaca(batch, req.Interval)
+				for _, sym := range batch {
+					if err == nil && len(batchResult[sym]) > 0 {
+						saveOHLCVCache(sym, cacheInterval, batchResult[sym])
+						atomic.AddInt64(&fetched, 1)
+						progressCh <- prefetchProgress{Symbol: sym, Source: "alpaca"}
+					} else {
+						yahooFallback = append(yahooFallback, sym)
+					}
+				}
+			}
+		} else {
+			// No Alpaca keys — all US symbols go to Yahoo
+			yahooFallback = uncachedUS
+		}
+
+		// 2) All Yahoo fetches in parallel: failed Alpaca symbols + non-US symbols
+		allYahoo := append(yahooFallback, uncachedNonUS...)
+		if len(allYahoo) > 0 {
+			var wg sync.WaitGroup
+			sem := make(chan struct{}, 20) // 20 parallel Yahoo workers
+			for _, sym := range allYahoo {
+				wg.Add(1)
+				go fetchYahoo(sym, &wg, sem)
+			}
+			wg.Wait()
+		}
+
 		close(progressCh)
 	}()
 
-	// Single goroutine writes SSE (no race) — use manual format like backtestWatchlistHandler
+	// Single goroutine writes SSE — no race on c.Writer
 	var current int64
 	for msg := range progressCh {
 		current++
 		progressJSON, _ := json.Marshal(gin.H{
 			"type":    "progress",
 			"current": current,
-			"total":   total,
+			"total":   fetchTotal,
 			"symbol":  msg.Symbol,
+			"source":  msg.Source,
 		})
 		fmt.Fprintf(c.Writer, "data: %s\n\n", progressJSON)
 		c.Writer.Flush()
@@ -26646,7 +27023,7 @@ func arenaPrefetchHandler(c *gin.Context) {
 	completeJSON, _ := json.Marshal(gin.H{
 		"type":    "complete",
 		"fetched": atomic.LoadInt64(&fetched),
-		"cached":  atomic.LoadInt64(&cached),
+		"cached":  cachedCount,
 		"failed":  atomic.LoadInt64(&failed),
 	})
 	fmt.Fprintf(c.Writer, "data: %s\n\n", completeJSON)

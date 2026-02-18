@@ -1,0 +1,135 @@
+================================================================================
+SBSW VERGLEICH: Card vs Einzelbacktest
+================================================================================
+
+ERWARTETES ERGEBNIS (nach Fix):
+  Card (Watchlist Performance):  X% WR | R/R Y | ZT
+  Einzelbacktest (oben):         X% WR | R/R Y | ZT   ← IDENTISCH
+  → Beide zeigen dieselben Werte
+
+================================================================================
+AKTUELLER CODE-FLOW: CARD (Watchlist Performance Grid)
+================================================================================
+
+1. Backend: backtestWatchlistHandler
+   → getOHLCVCached("SBSW", "5m", 24h) → z.B. 4500 Bars
+   → runArenaBacktest(ohlcv, strategy) → z.B. 50 Trades (Long+Short+Open)
+   → closedTrades = Trades ohne IsOpen → z.B. 48 Trades (Long+Short)
+   → recalcMetrics(closedTrades) → total_trades=48, win_rate=X%
+   → per_stock["SBSW"] = { total_trades: 48, win_rate: X%, ... }
+   → allTrades: 48 Trades für SBSW (nur closed, Long+Short)
+
+2. Frontend empfängt:
+   batchResults.per_stock["SBSW"] = { total_trades: 48 }
+   batchResults.trades = [...48 SBSW trades (Long+Short)..., ...andere Aktien...]
+
+3. WatchlistBatchPanel bekommt:
+   longOnly = true        ← DEFAULT IST TRUE! (Zeile 601)
+   filterSymbols = [...US Symbole...]
+
+4. batchPerStock Berechnung (Zeile 300):
+   longOnly=true → geht in den Neuberechnungs-Zweig
+   → Filtert batchResults.trades:
+     - t.direction !== 'LONG' → SHORT Trades RAUS
+     - t.is_open → offene RAUS (Backend hat schon gefiltert, keine offenen drin)
+     - !filterSymbols.has(t.symbol) → nur US Symbole
+   → Ergebnis für SBSW: nur LONG closed Trades → z.B. 25 Trades
+   → Card zeigt: 25T, X% WR, R/R Y
+
+================================================================================
+AKTUELLER CODE-FLOW: EINZELBACKTEST (Klick auf Card)
+================================================================================
+
+1. Klick: onSelectStock("SBSW", null, true)
+   → selectStock("SBSW", null, fromBatch=true)
+   → runBacktestNow("SBSW", "hybrid_ai_trend", "5m", params)
+
+2. Backend: runBacktestHandler
+   → getOHLCVCached("SBSW", "5m", 24h) → GLEICHE 4500 Bars
+   → runArenaBacktest(ohlcv, strategy) → GLEICHE 50 Trades
+   → closedTrades = 48 Trades
+   → result.Metrics = recalcMetrics(closedTrades) → total_trades=48
+   → result.Trades = ALLE 50 Trades (inkl. 2 offene!) ← WICHTIG
+
+3. Frontend empfängt:
+   backtestResults.metrics = { total_trades: 48 }  (closed only)
+   backtestResults.trades = [...50 Trades (Long+Short+Open)...]
+
+4. filteredTrades (Zeile 815-819):
+   longOnly=true → backtestResults.trades.filter(t => t.direction === 'LONG')
+   → Ergebnis: alle LONG Trades (closed + OPEN!) → z.B. 26 Trades
+
+5. filteredMetrics (Zeile 871-895):
+   longOnly=true → Neuberechnung aus filteredTrades (26 LONG Trades inkl. Open)
+   → total_trades=26, win_rate=Y%
+
+6. ArenaBacktestPanel zeigt: 26T, Y% WR, R/R Z
+
+================================================================================
+DAS PROBLEM
+================================================================================
+
+CARD:  25 LONG closed Trades   (is_open gefiltert auf Zeile 305)
+DETAIL: 26 LONG Trades          (is_open NICHT gefiltert auf Zeile 818!)
+
+→ Kleine Differenz (1-2 Trades) durch offene Trades.
+→ ABER: User sieht ~53 vs ~25 → Faktor 2!
+
+DAS KANN NICHT AUS DIESEM CODE KOMMEN (Differenz wäre nur 1-2 Trades).
+
+================================================================================
+ALTERNATIVE ERKLÄRUNG: DATEN-DIFFERENZ
+================================================================================
+
+Wenn die OHLCV-Daten UNTERSCHIEDLICH sind zwischen Batch und Einzelbacktest,
+dann produziert runArenaBacktest() komplett andere Ergebnisse.
+
+Wann können die Daten abweichen?
+→ Background-Worker startOHLCVCacheWorker() aktualisiert Cache kontinuierlich
+→ Prefetch schreibt Alpaca-Daten (z.B. 4500 Bars für 60 Tage)
+→ Background-Worker überschreibt mit Yahoo-Daten (z.B. 2300 Bars für 60 Tage)
+→ Verschiedene Quellen = verschiedene Bar-Anzahl = verschiedene Trades!
+
+Alpaca IEX für 5m/60d: ~4500 Bars
+Yahoo Finance für 5m/60d: ~4500 Bars (sollte ähnlich sein)
+
+ABER: Yahoo hat manchmal weniger Bars (fehlende Tage, Feiertage anders)
+      Alpaca könnte Extended Hours Bars haben
+
+→ Wenn Batch mit 4500 Bars lief und Einzelbacktest mit 2300 Bars:
+   50 Trades vs 25 Trades = Faktor 2 ✓ PASST!
+
+================================================================================
+WIE PRÜFEN?
+================================================================================
+
+Der Debug-Endpoint zeigt es:
+  POST /api/trading/backtest-debug
+  Body: {"symbol":"SBSW","strategy":"hybrid_ai_trend","interval":"5m","params":{}}
+
+  → Gibt aus:
+    single.bars vs batch.bars        → GLEICH? Wenn nein = Datenproblem
+    single.all_trades vs batch.all_trades → GLEICH?
+    ohlcv_duplicate_timestamps        → > 0? Dann Duplikate im Cache!
+
+================================================================================
+EMPFOHLENER FIX
+================================================================================
+
+1. Einzelbacktest sollte NICHT getOHLCVCached() mit frischem Fetch aufrufen,
+   sondern IMMER den gecachten Batch-Wert nutzen.
+
+   ODER BESSER:
+
+2. Beim Klick auf die Card: KEIN neuer Backend-Request.
+   Stattdessen die Batch-Ergebnisse (trades, metrics) direkt aus
+   batchResults.trades für dieses Symbol anzeigen.
+
+   → Garantiert identische Werte
+   → Schneller (kein API-Call)
+   → Chart-Daten separat nachladen (nur OHLCV für den Chart)
+
+3. Zusätzlich: filteredTrades im Einzelbacktest sollte is_open konsistent
+   behandeln (entweder überall filtern oder nirgends).
+
+================================================================================

@@ -59,4 +59,8 @@ markos_cutout_fixed.png
 europe150_import.json
 
 # Integration tests (enthalten Credentials)
-frontend/src/tests/live_trading_integration.test.mjswatchlist.db.corrupt.bak
+frontend/src/tests/live_trading_integration.test.mjs
+
+# DB Backups/Altlasten
+*.db.old
+*.db.corrupt.bak

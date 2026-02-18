@@ -7,9 +7,24 @@ import { useCurrency } from '../context/CurrencyContext'
 // Skeleton building blocks
 const Sk = ({ className = '' }) => <div className={`bg-dark-700 rounded animate-pulse ${className}`} />
 
-function ArenaSkeleton() {
+function ArenaSkeleton({ loadingInfo }) {
   return (
-    <div className="space-y-4">
+    <div className="relative space-y-4">
+      {/* Spinner overlay */}
+      <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
+        <div className="bg-dark-900/80 backdrop-blur-sm rounded-2xl px-8 py-6 flex flex-col items-center gap-3 shadow-xl border border-dark-600">
+          <svg className="animate-spin h-10 w-10 text-accent-500" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+          {loadingInfo && (
+            <>
+              <span className="text-sm text-white font-medium">{loadingInfo.label}</span>
+              <span className="text-xs text-gray-400">{loadingInfo.detail}</span>
+              <div className="w-48 bg-dark-700 rounded-full h-1.5 overflow-hidden">
+                <div className="h-full bg-accent-500 rounded-full transition-all duration-300" style={{ width: `${Math.max(loadingInfo.pct, 2)}%` }} />
+              </div>
+            </>
+          )}
+        </div>
+      </div>
       {/* Chart skeleton */}
       <div className="bg-dark-800 rounded-lg border border-dark-600 p-4">
         <div className="flex items-center gap-3 mb-3">
@@ -269,11 +284,14 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
 
   const batchMetrics = useMemo(() => {
     if (!longOnly && !filterSymbols) return batchResults.metrics
+
+    // Filter trades for recalculation
     let trades = batchResults?.trades || []
     if (longOnly) trades = trades.filter(t => t.direction === 'LONG')
     if (filterSymbols) { const set = new Set(filterSymbols); trades = trades.filter(t => set.has(t.symbol)) }
     trades = trades.filter(t => !t.is_open)
     if (trades.length === 0) return batchResults.metrics
+
     let wins = 0, losses = 0, totalReturn = 0, totalWinReturn = 0, totalLossReturn = 0
     let equity = 100, peak = 100, maxDD = 0
     for (const t of trades) {
@@ -298,12 +316,28 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
   }, [batchResults, longOnly, filterSymbols])
 
   const batchPerStock = useMemo(() => {
-    if (!longOnly && !filterSymbols) return batchResults.per_stock || {}
+    const ps = batchResults.per_stock || {}
+
+    // No filters active → use backend metrics directly
+    if (!longOnly && !filterSymbols) return ps
+
+    // Filters active but NOT Long Only → just filter per_stock by symbol list (keep backend metrics)
+    if (!longOnly && filterSymbols) {
+      const symbolSet = new Set(filterSymbols)
+      const result = {}
+      for (const [sym, metrics] of Object.entries(ps)) {
+        if (symbolSet.has(sym)) result[sym] = metrics
+      }
+      return result
+    }
+
+    // Long Only active → must recalculate from trades (backend doesn't separate Long/Short)
+    const symbolSet = filterSymbols ? new Set(filterSymbols) : null
     const perStock = {}
     for (const t of (batchResults?.trades || [])) {
-      if (longOnly && t.direction !== 'LONG') continue
+      if (t.direction !== 'LONG') continue
       if (t.is_open) continue
-      if (filterSymbols && !new Set(filterSymbols).has(t.symbol)) continue
+      if (symbolSet && !symbolSet.has(t.symbol)) continue
       if (!perStock[t.symbol]) perStock[t.symbol] = []
       perStock[t.symbol].push(t)
     }
@@ -593,6 +627,9 @@ function TradingArena({ isAdmin, token }) {
   const [sessionName, setSessionName] = useState('')
   const [showSessionNameDialog, setShowSessionNameDialog] = useState(false)
 
+  // When clicking from batch results, override single backtest with batch data
+  const batchOverrideRef = useRef(null)
+
   // Prefetch state
   const [prefetchStatus, setPrefetchStatus] = useState(null) // null | 'fetching' | 'done'
   const [prefetchProgress, setPrefetchProgress] = useState(null)
@@ -693,57 +730,8 @@ function TradingArena({ isAdmin, token }) {
   // Prefetch + Auto-Batch beim Laden (admin only)
   useEffect(() => {
     if (!isAdmin || !token) return
-    let cancelled = false
-    const controller = new AbortController()
-    prefetchAbortRef.current = controller
-    const runPrefetch = async () => {
-      setPrefetchStatus('fetching')
-      setPrefetchProgress(null)
-      try {
-        const res = await fetch('/api/trading/arena/prefetch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ interval: INTERVAL_MAP[interval] || '4h' }),
-          signal: controller.signal,
-        })
-        if (!res.ok || !res.body) throw new Error('prefetch failed')
-        const reader = res.body.getReader()
-        const decoder = new TextDecoder()
-        let buffer = ''
-        let latestProgress = null
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split('\n')
-          buffer = lines.pop()
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const msg = JSON.parse(line.slice(6))
-                if (cancelled) return
-                if (msg.type === 'progress') {
-                  latestProgress = { current: msg.current, total: msg.total, symbol: msg.symbol }
-                } else if (msg.type === 'complete') {
-                  setPrefetchStatus('done')
-                }
-              } catch { /* ignore parse error */ }
-            }
-          }
-          // Update once per network chunk — naturally rate-limited by I/O
-          if (latestProgress) setPrefetchProgress({ ...latestProgress })
-        }
-      } catch {
-        // Prefetch failed — continue anyway
-      }
-      if (!cancelled) {
-        setPrefetchStatus('done')
-        // Auto-trigger batch backtest after prefetch
-        runBatchBacktest(backtestStrategy, interval, strategyParams)
-      }
-    }
-    runPrefetch()
-    return () => { cancelled = true }
+    runPrefetchAndBatch(backtestStrategy, interval, strategyParams, usOnly)
+    return () => { if (prefetchAbortRef.current) prefetchAbortRef.current.abort() }
   }, [token, isAdmin]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Search with debounce
@@ -790,6 +778,13 @@ function TradingArena({ isAdmin, token }) {
       })
       if (res.ok) {
         const data = await res.json()
+        // When clicked from batch results: use batch trades+metrics, single backtest only for chart
+        if (batchOverrideRef.current) {
+          data.singleTrades = data.trades // preserve for marker filtering
+          data.trades = batchOverrideRef.current.trades
+          data.metrics = batchOverrideRef.current.metrics
+          batchOverrideRef.current = null
+        }
         setBacktestResults(data)
         setAllStrategyResults(prev => ({
           ...prev,
@@ -822,32 +817,33 @@ function TradingArena({ isAdmin, token }) {
     if (!backtestResults?.markers) return null
     if (!longOnly) return backtestResults.markers
 
-    // Build set of valid marker times from LONG trades
+    // Use single backtest trades for timestamp matching (not batch-overridden trades)
+    const sourceTrades = (backtestResults?.singleTrades || backtestResults?.trades || [])
+      .filter(t => t.direction === 'LONG')
+
     const validEntryTimes = new Set()
     const validExitTimes = new Set()
-    if (filteredTrades) {
-      filteredTrades.forEach(t => {
-        validEntryTimes.add(t.entry_time)
-        if (t.exit_time) validExitTimes.add(t.exit_time)
-      })
-    }
+    sourceTrades.forEach(t => {
+      validEntryTimes.add(t.entry_time)
+      if (t.exit_time) validExitTimes.add(t.exit_time)
+    })
 
     return backtestResults.markers.filter(m => {
       // LONG entry markers
       if (m.text === 'LONG' || m.text === '◆ LONG') return validEntryTimes.has(m.time)
-      // SHORT becomes SELL (exit for LONG position) — keep if it's an exit time
+      // SHORT at LONG exit time = position close → keep
       if (m.text === 'SHORT' || m.text === '◆ SHORT') return validExitTimes.has(m.time)
       // SL/TP/SIGNAL markers — keep if they match a LONG trade exit time
       if (['SL', 'TP', 'SIGNAL'].includes(m.text)) return validExitTimes.has(m.time)
       return true
     }).map(m => {
-      // Transform SHORT to SELL
+      // Transform SHORT to SELL for clarity
       if (m.text === 'SHORT' || m.text === '◆ SHORT') {
         return { ...m, text: 'SELL', color: '#f59e0b', shape: 'arrowDown', position: 'aboveBar' }
       }
       return m
     })
-  }, [backtestResults?.markers, longOnly, filteredTrades])
+  }, [backtestResults?.markers, backtestResults?.singleTrades, backtestResults?.trades, longOnly])
 
   const filteredMetrics = useMemo(() => {
     if (!filteredTrades || !longOnly) return backtestResults?.metrics || null
@@ -981,7 +977,7 @@ function TradingArena({ isAdmin, token }) {
     })
   }, [perfFilteredSymbols, filtersActive, longOnly, simTradeAmount]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const runBatchBacktest = useCallback(async (strategy, iv, params) => {
+  const runBatchBacktest = useCallback(async (strategy, iv, params, usOnlyFlag = true) => {
     // Cancel previous batch request if still running
     if (batchAbortRef.current) batchAbortRef.current.abort()
     const controller = new AbortController()
@@ -989,6 +985,7 @@ function TradingArena({ isAdmin, token }) {
 
     setBatchLoading(true)
     setBatchProgress(null)
+    setBatchResults(null) // Reset old results → shows skeleton with spinner
     try {
       const res = await fetch('/api/trading/backtest-watchlist', {
         method: 'POST',
@@ -1000,6 +997,7 @@ function TradingArena({ isAdmin, token }) {
           strategy,
           interval: INTERVAL_MAP[iv] || '4h',
           params,
+          us_only: usOnlyFlag,
         }),
         signal: controller.signal,
       })
@@ -1040,6 +1038,61 @@ function TradingArena({ isAdmin, token }) {
     batchAbortRef.current = null
   }, [token])
 
+  // Prefetch OHLCV data for interval, then run batch backtest
+  const runPrefetchAndBatch = useCallback(async (strategy, iv, params, usOnlyFlag = true) => {
+    if (isAdmin && token) {
+      // Cancel previous prefetch AND batch (may still be running from different strategy)
+      if (prefetchAbortRef.current) prefetchAbortRef.current.abort()
+      if (batchAbortRef.current) batchAbortRef.current.abort()
+      const controller = new AbortController()
+      prefetchAbortRef.current = controller
+
+      setPrefetchStatus('fetching')
+      setPrefetchProgress(null)
+      try {
+        const res = await fetch('/api/trading/arena/prefetch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ interval: INTERVAL_MAP[iv] || '4h', us_only: usOnlyFlag }),
+          signal: controller.signal,
+        })
+        if (!res.ok || !res.body) throw new Error('prefetch failed')
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        let latestProgress = null
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop()
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const msg = JSON.parse(line.slice(6))
+                if (controller.signal.aborted) return
+                if (msg.type === 'init') {
+                  latestProgress = { current: 0, total: msg.fetch_total, symbol: '', source: 'cache', cached: msg.cached, fetchTotal: msg.fetch_total }
+                } else if (msg.type === 'progress') {
+                  latestProgress = { current: msg.current, total: msg.total, symbol: msg.symbol, source: msg.source }
+                } else if (msg.type === 'complete') {
+                  setPrefetchStatus('done')
+                }
+              } catch { /* ignore parse error */ }
+            }
+          }
+          if (latestProgress) setPrefetchProgress({ ...latestProgress })
+        }
+      } catch {
+        // Prefetch failed or aborted
+      }
+      if (controller.signal.aborted) return
+      setPrefetchStatus('done')
+    }
+    runBatchBacktest(strategy, iv, params, usOnlyFlag)
+  }, [token, isAdmin, runBatchBacktest])
+
   // Auto-backtest on strategy change
   const handleStrategyChange = (newStrategy) => {
     if (!isAdmin && newStrategy !== 'hybrid_ai_trend') return
@@ -1056,6 +1109,13 @@ function TradingArena({ isAdmin, token }) {
     if (selectedSymbol) {
       runBacktestNow(selectedSymbol, newStrategy, newIv, newParams)
     }
+    // Kill any running prefetch (e.g. initial pageload prefetch with old interval)
+    if (prefetchAbortRef.current) prefetchAbortRef.current.abort()
+    setPrefetchStatus('done')
+    // Clear stale batch results immediately (may be from previous strategy/interval)
+    setBatchResults(null)
+    // Batch directly — no prefetch needed (batch handler fetches missing data itself)
+    runBatchBacktest(newStrategy, newIv, newParams, usOnly)
   }
 
   // Auto-backtest on interval change
@@ -1065,6 +1125,13 @@ function TradingArena({ isAdmin, token }) {
     if (selectedSymbol) {
       runBacktestNow(selectedSymbol, backtestStrategy, newIv, strategyParams)
     }
+    // Kill any running prefetch
+    if (prefetchAbortRef.current) prefetchAbortRef.current.abort()
+    setPrefetchStatus('done')
+    // Clear stale batch results immediately
+    setBatchResults(null)
+    // Batch directly — no prefetch needed (batch handler fetches missing data itself)
+    runBatchBacktest(backtestStrategy, newIv, strategyParams, usOnly)
   }
 
   // Debounced auto-backtest on param change
@@ -1101,6 +1168,17 @@ function TradingArena({ isAdmin, token }) {
     let useParams = strategyParams
     let useInterval = interval
 
+    // When clicking from batch: use batch trades+metrics (guaranteed consistent with cards)
+    if (fromBatch && batchResults) {
+      const symTrades = (batchResults.trades || []).filter(t => t.symbol === symbol)
+      const symMetrics = batchResults.per_stock?.[symbol]
+      if (symMetrics && symTrades.length > 0) {
+        batchOverrideRef.current = { trades: symTrades, metrics: symMetrics }
+      }
+    } else {
+      batchOverrideRef.current = null
+    }
+
     // Load per-symbol settings only when NOT clicking from batch results
     // (batch results were calculated with current params/interval — keep them consistent)
     if (!fromBatch) {
@@ -1125,7 +1203,7 @@ function TradingArena({ isAdmin, token }) {
       if (data && Object.keys(data).length > 0) setAllStrategyResults(data)
     }).catch(() => {})
 
-    // Auto-trigger backtest — nicht mehr blockiert durch await
+    // Auto-trigger backtest — loads chart data + indicators. Batch override merges in runBacktestNow.
     runBacktestNow(symbol, backtestStrategy, useInterval, useParams)
   }
 
@@ -1260,12 +1338,24 @@ function TradingArena({ isAdmin, token }) {
   const currentParams = STRATEGY_PARAMS[backtestStrategy] || []
 
   // Compute loading label and percentage for overlay
+  const sourceLabel = (src) => {
+    if (src === 'alpaca') return 'Alpaca'
+    if (src === 'yahoo') return 'Yahoo'
+    if (src === 'cache') return 'Cache'
+    if (src === 'failed') return 'Fehler'
+    return ''
+  }
   const loadingInfo = useMemo(() => {
     if (prefetchStatus === 'fetching') {
       const p = prefetchProgress
       if (!p || p.total === 0) return { label: 'Aktualisiere Kursdaten', pct: 0, detail: 'Prüfe Cache...' }
+      if (p.current === 0 && p.cached > 0) {
+        return { label: 'Aktualisiere Kursdaten', pct: 0, detail: `${p.cached} im Cache, lade ${p.fetchTotal} verbleibende...` }
+      }
       const pct = Math.round((p.current / p.total) * 100)
-      return { label: 'Aktualisiere Kursdaten', pct, detail: `${p.symbol || '...'} (${p.current}/${p.total})` }
+      const src = p.source ? ` via ${sourceLabel(p.source)}` : ''
+      const detail = `${p.symbol || '...'}${src} (${p.current}/${p.total})`
+      return { label: 'Aktualisiere Kursdaten', pct, detail }
     }
     if (batchLoading) {
       const p = batchProgress
@@ -1288,14 +1378,12 @@ function TradingArena({ isAdmin, token }) {
                 <span className="text-sm text-white font-medium truncate">{loadingInfo.label}</span>
                 <span className="text-xs text-gray-400 ml-2 shrink-0">{loadingInfo.detail}</span>
               </div>
-              {loadingInfo.pct > 0 && (
-                <div className="w-full bg-dark-700 rounded-full h-1.5 overflow-hidden">
-                  <div
-                    className="h-full bg-accent-500 rounded-full transition-all duration-300"
-                    style={{ width: `${loadingInfo.pct}%` }}
-                  />
-                </div>
-              )}
+              <div className="w-full bg-dark-700 rounded-full h-1.5 overflow-hidden">
+                <div
+                  className={`h-full bg-accent-500 rounded-full transition-all duration-300 ${loadingInfo.pct === 0 ? 'animate-pulse' : ''}`}
+                  style={{ width: `${Math.max(loadingInfo.pct, 2)}%` }}
+                />
+              </div>
             </div>
             <button
               onClick={skipLoading}
@@ -1379,7 +1467,7 @@ function TradingArena({ isAdmin, token }) {
           <button
             onClick={() => {
               if (selectedSymbol) runBacktestNow(selectedSymbol, backtestStrategy, interval, strategyParams)
-              runBatchBacktest(backtestStrategy, interval, strategyParams)
+              runBatchBacktest(backtestStrategy, interval, strategyParams, usOnly)
             }}
             disabled={!selectedSymbol || backtestLoading}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
@@ -1513,11 +1601,6 @@ function TradingArena({ isAdmin, token }) {
           ))}
         </div>
 
-        {/* Content skeleton while loading */}
-        {isGlobalLoading && !batchResults ? (
-          <ArenaSkeleton />
-        ) : <>
-
         {/* TradingView Embed */}
         {selectedSymbol && showTradingView && (
           <div className="mb-4 rounded-lg overflow-hidden border border-dark-600">
@@ -1579,8 +1662,9 @@ function TradingArena({ isAdmin, token }) {
           <div className="bg-dark-800 rounded-lg border border-dark-600 p-2 mb-4">
             <div className="flex items-center gap-3 mb-2 px-2">
               <h2 className="text-white font-bold text-lg">
-                {selectedStock?.name || selectedSymbol}{' '}
-                <span className="text-gray-400 font-normal text-base">({selectedSymbol})</span>
+                {selectedStock?.name ? (
+                  <>{selectedStock.name}{' '}<span className="text-gray-400 font-normal text-base">({selectedSymbol})</span></>
+                ) : selectedSymbol}
               </h2>
               <span className="text-gray-500 text-xs ml-auto">{INTERVAL_MAP[interval] || interval}</span>
             </div>
@@ -1934,7 +2018,6 @@ function TradingArena({ isAdmin, token }) {
           </div>
         )}
 
-        </>}
       </div>
 
       {/* Sidebar */}

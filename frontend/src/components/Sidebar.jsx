@@ -4,6 +4,8 @@ import { NavLink } from 'react-router-dom'
 function Sidebar({ isLoggedIn, isAdmin, user, isOpen, onClose }) {
   const [unreadCount, setUnreadCount] = useState(0)
   const [liveSessionActive, setLiveSessionActive] = useState(false)
+  const [alpacaWS, setAlpacaWS] = useState(null) // null=unknown, true=connected, false=disconnected
+  const [alpacaConfigured, setAlpacaConfigured] = useState(false)
 
   useEffect(() => {
     if (!isLoggedIn) { setUnreadCount(0); return }
@@ -35,6 +37,8 @@ function Sidebar({ isLoggedIn, isAdmin, user, isOpen, onClose }) {
         if (res.ok) {
           const data = await res.json()
           setLiveSessionActive(!!data.is_running)
+          setAlpacaConfigured(!!data.alpaca_configured)
+          setAlpacaWS(!!data.alpaca_ws)
         }
       } catch { /* ignore */ }
     }
@@ -201,6 +205,19 @@ function Sidebar({ isLoggedIn, isAdmin, user, isOpen, onClose }) {
             </>
           )}
         </nav>
+
+        {isLoggedIn && (
+          <div className="px-4 py-2 border-t border-dark-600">
+            <div className="flex items-center gap-2">
+              <span className={`w-2 h-2 rounded-full shrink-0 ${
+                alpacaWS ? 'bg-green-400' : alpacaConfigured ? 'bg-red-400 animate-pulse' : 'bg-gray-600'
+              }`} />
+              <span className="text-[11px] text-gray-500">
+                Alpaca WS {alpacaWS ? 'verbunden' : alpacaConfigured ? 'getrennt' : 'nicht konfiguriert'}
+              </span>
+            </div>
+          </div>
+        )}
 
         {isLoggedIn && user && (
           <div className="p-4 border-t border-dark-600">
