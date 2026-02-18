@@ -236,7 +236,7 @@ function getDefaultParams(strategy) {
   return obj
 }
 
-function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSelectStock, filterSymbols, timeRange, formatTimeRange, tradeAmount }) {
+function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSelectStock, filterSymbols, timeRange, formatTimeRange, tradeAmount, tradesFrom }) {
   const [sortCol, setSortCol] = useState('entry_time')
   const [sortDir, setSortDir] = useState('desc')
   const [stocksVisible, setStocksVisible] = useState(60)
@@ -265,12 +265,20 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
 
   const sortIndicator = (col) => sortCol === col ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''
 
+  const tradesFromUnix = useMemo(() => {
+    if (!tradesFrom) return 0
+    return Math.floor(new Date(tradesFrom).getTime() / 1000)
+  }, [tradesFrom])
+
   const filteredBatchTrades = useMemo(() => {
     if (!batchResults?.trades) return []
     let trades = longOnly ? batchResults.trades.filter(t => t.direction === 'LONG') : batchResults.trades
     if (filterSymbols) {
       const set = new Set(filterSymbols)
       trades = trades.filter(t => set.has(t.symbol))
+    }
+    if (tradesFromUnix > 0) {
+      trades = trades.filter(t => t.entry_time >= tradesFromUnix)
     }
     return [...trades].sort((a, b) => {
       let va = a[sortCol], vb = b[sortCol]
@@ -280,15 +288,16 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
       if (va > vb) return sortDir === 'asc' ? 1 : -1
       return 0
     })
-  }, [batchResults?.trades, sortCol, sortDir, longOnly, filterSymbols])
+  }, [batchResults?.trades, sortCol, sortDir, longOnly, filterSymbols, tradesFromUnix])
 
   const batchMetrics = useMemo(() => {
-    if (!longOnly && !filterSymbols) return batchResults.metrics
+    if (!longOnly && !filterSymbols && !tradesFromUnix) return batchResults.metrics
 
     // Filter trades for recalculation
     let trades = batchResults?.trades || []
     if (longOnly) trades = trades.filter(t => t.direction === 'LONG')
     if (filterSymbols) { const set = new Set(filterSymbols); trades = trades.filter(t => set.has(t.symbol)) }
+    if (tradesFromUnix > 0) trades = trades.filter(t => t.entry_time >= tradesFromUnix)
     trades = trades.filter(t => !t.is_open)
     if (trades.length === 0) return batchResults.metrics
 
@@ -313,16 +322,16 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
       avg_return: total > 0 ? totalReturn / total : 0, max_drawdown: maxDD,
       net_profit: equity - 100, total_trades: total, wins, losses,
     }
-  }, [batchResults, longOnly, filterSymbols])
+  }, [batchResults, longOnly, filterSymbols, tradesFromUnix])
 
   const batchPerStock = useMemo(() => {
     const ps = batchResults.per_stock || {}
 
     // No filters active → use backend metrics directly
-    if (!longOnly && !filterSymbols) return ps
+    if (!longOnly && !filterSymbols && !tradesFromUnix) return ps
 
-    // Filters active but NOT Long Only → just filter per_stock by symbol list (keep backend metrics)
-    if (!longOnly && filterSymbols) {
+    // Filters active but NOT Long Only and no time filter → just filter per_stock by symbol list
+    if (!longOnly && filterSymbols && !tradesFromUnix) {
       const symbolSet = new Set(filterSymbols)
       const result = {}
       for (const [sym, metrics] of Object.entries(ps)) {
@@ -331,13 +340,14 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
       return result
     }
 
-    // Long Only active → must recalculate from trades (backend doesn't separate Long/Short)
+    // Must recalculate from trades (longOnly, tradesFrom, or both)
     const symbolSet = filterSymbols ? new Set(filterSymbols) : null
     const perStock = {}
     for (const t of (batchResults?.trades || [])) {
-      if (t.direction !== 'LONG') continue
+      if (longOnly && t.direction !== 'LONG') continue
       if (t.is_open) continue
       if (symbolSet && !symbolSet.has(t.symbol)) continue
+      if (tradesFromUnix > 0 && t.entry_time < tradesFromUnix) continue
       if (!perStock[t.symbol]) perStock[t.symbol] = []
       perStock[t.symbol].push(t)
     }
@@ -359,7 +369,7 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
       }
     }
     return result
-  }, [batchResults, longOnly, filterSymbols])
+  }, [batchResults, longOnly, filterSymbols, tradesFromUnix])
 
   const formatTime = (ts) => {
     if (!ts) return '-'
@@ -621,6 +631,7 @@ function TradingArena({ isAdmin, token }) {
   const [simTradeAmount, setSimTradeAmount] = useState(500)
   const [appliedFilters, setAppliedFilters] = useState(null)
   const [filtersActive, setFiltersActive] = useState(false)
+  const [tradesFrom, setTradesFrom] = useState('')
   const filterFormRef = useRef(null)
   const [simResults, setSimResults] = useState(null)
   const [strategyParams, setStrategyParams] = useState(() => getDefaultParams('hybrid_ai_trend'))
@@ -874,11 +885,18 @@ function TradingArena({ isAdmin, token }) {
 
   // Shared filtered symbols for Watchlist Performance + Simulation
   // Heavy per-stock metrics — only recompute when batch data or longOnly changes
+  const tradesFromUnixMain = useMemo(() => {
+    if (!tradesFrom) return 0
+    return Math.floor(new Date(tradesFrom).getTime() / 1000)
+  }, [tradesFrom])
+
   const perStockMetrics = useMemo(() => {
     if (!batchResults?.per_stock) return null
-    if (!longOnly) return batchResults.per_stock
+    if (!longOnly && !tradesFromUnixMain) return batchResults.per_stock
     const ps = {}
-    const allTrades = batchResults.trades.filter(t => t.direction === 'LONG')
+    let allTrades = batchResults.trades
+    if (longOnly) allTrades = allTrades.filter(t => t.direction === 'LONG')
+    if (tradesFromUnixMain > 0) allTrades = allTrades.filter(t => t.entry_time >= tradesFromUnixMain)
     const bySymbol = {}
     allTrades.forEach(t => { (bySymbol[t.symbol] = bySymbol[t.symbol] || []).push(t) })
     Object.entries(bySymbol).forEach(([sym, trades]) => {
@@ -893,7 +911,7 @@ function TradingArena({ isAdmin, token }) {
       ps[sym] = { win_rate: trades.length ? (wins / trades.length) * 100 : 0, risk_reward: avgLoss > 0 ? avgWin / avgLoss : 0, total_return: totalReturn, avg_return: trades.length ? totalReturn / trades.length : 0, net_profit: eq - 100, total_trades: trades.length }
     })
     return ps
-  }, [batchResults, longOnly])
+  }, [batchResults, longOnly, tradesFromUnixMain])
 
   // Light filter — runs fast when usOnly/appliedFilters change
   const perfFilteredSymbols = useMemo(() => {
@@ -953,6 +971,10 @@ function TradingArena({ isAdmin, token }) {
     let trades = batchResults.trades
     if (symbolSet) trades = trades.filter(t => symbolSet.has(t.symbol))
     if (longOnly) trades = trades.filter(t => t.direction === 'LONG')
+    if (tradesFrom) {
+      const cutoff = Math.floor(new Date(tradesFrom).getTime() / 1000)
+      if (cutoff > 0) trades = trades.filter(t => t.entry_time >= cutoff)
+    }
     const amt = simTradeAmount || 500
     const simTrades = trades.map(t => ({
       ...t, invested: amt, profitEUR: amt * (t.return_pct / 100),
@@ -975,7 +997,7 @@ function TradingArena({ isAdmin, token }) {
       wins, losses: simTrades.length - wins, openCount, maxParallel, requiredCapital,
       roi: requiredCapital > 0 ? (totalProfit / requiredCapital) * 100 : 0,
     })
-  }, [perfFilteredSymbols, filtersActive, longOnly, simTradeAmount]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [perfFilteredSymbols, filtersActive, longOnly, simTradeAmount, tradesFrom]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const runBatchBacktest = useCallback(async (strategy, iv, params, usOnlyFlag = true) => {
     // Cancel previous batch request if still running
@@ -1512,6 +1534,20 @@ function TradingArena({ isAdmin, token }) {
             <span className={`text-xs font-medium ${usOnly ? 'text-accent-400' : 'text-gray-400'}`}>US Only</span>
           </label>
 
+          {/* Trades ab Datum */}
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-dark-700 border border-dark-600">
+            <span className="text-xs text-gray-400 whitespace-nowrap">Trades ab</span>
+            <input
+              type="datetime-local"
+              value={tradesFrom}
+              onChange={e => setTradesFrom(e.target.value)}
+              className="bg-transparent border-none text-xs text-accent-400 focus:outline-none w-[145px] [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:opacity-50"
+            />
+            {tradesFrom && (
+              <button onClick={() => setTradesFrom('')} className="text-gray-500 hover:text-gray-300 text-sm leading-none" title="Filter zurücksetzen">×</button>
+            )}
+          </div>
+
           {/* TradingView toggle */}
           <button
             onClick={() => setShowTradingView(!showTradingView)}
@@ -1898,7 +1934,7 @@ function TradingArena({ isAdmin, token }) {
           </div>
         )}
 
-        {batchResults && !batchLoading && <WatchlistBatchPanel batchResults={batchResults} strategy={backtestStrategy} interval={interval} longOnly={longOnly} onSelectStock={selectStock} filterSymbols={perfFilteredSymbols} timeRange={batchTimeRange} formatTimeRange={formatTimeRange} tradeAmount={simTradeAmount} />}
+        {batchResults && !batchLoading && <WatchlistBatchPanel batchResults={batchResults} strategy={backtestStrategy} interval={interval} longOnly={longOnly} onSelectStock={selectStock} filterSymbols={perfFilteredSymbols} timeRange={batchTimeRange} formatTimeRange={formatTimeRange} tradeAmount={simTradeAmount} tradesFrom={tradesFrom} />}
 
         {/* Simulation Section */}
         {batchResults && !batchLoading && (

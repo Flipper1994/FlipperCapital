@@ -25648,6 +25648,35 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 				posQty = 1
 			}
 
+			// Scale SL/TP from signal entry price to actual entry price (proportional)
+			actualSL := sig.StopLoss
+			actualTP := sig.TakeProfit
+			if sig.EntryPrice > 0 && entryPriceNative != sig.EntryPrice {
+				ratio := entryPriceNative / sig.EntryPrice
+				if actualSL > 0 {
+					actualSL = math.Round(actualSL*ratio*100) / 100
+				}
+				if actualTP > 0 {
+					actualTP = math.Round(actualTP*ratio*100) / 100
+				}
+			}
+			// Alpaca guard: TP must be > entry + 0.01 (LONG) or < entry - 0.01 (SHORT)
+			if sig.Direction == "LONG" {
+				if actualTP > 0 && actualTP <= entryPriceNative+0.01 {
+					actualTP = math.Round((entryPriceNative*1.005)*100) / 100 // fallback: +0.5%
+				}
+				if actualSL > 0 && actualSL >= entryPriceNative-0.01 {
+					actualSL = math.Round((entryPriceNative*0.995)*100) / 100 // fallback: -0.5%
+				}
+			} else {
+				if actualTP > 0 && actualTP >= entryPriceNative-0.01 {
+					actualTP = math.Round((entryPriceNative*0.995)*100) / 100
+				}
+				if actualSL > 0 && actualSL <= entryPriceNative+0.01 {
+					actualSL = math.Round((entryPriceNative*1.005)*100) / 100
+				}
+			}
+
 			// Alpaca: Place bracket order FIRST if enabled (SL/TP managed by broker)
 			alpacaOrderID := ""
 			if config.AlpacaEnabled && config.AlpacaApiKey != "" {
@@ -25656,11 +25685,11 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 					side = "sell"
 				}
 				bracketOpts := map[string]float64{}
-				if sig.StopLoss > 0 {
-					bracketOpts["stop_loss"] = sig.StopLoss
+				if actualSL > 0 {
+					bracketOpts["stop_loss"] = actualSL
 				}
-				if sig.TakeProfit > 0 {
-					bracketOpts["take_profit"] = sig.TakeProfit
+				if actualTP > 0 {
+					bracketOpts["take_profit"] = actualTP
 				}
 				orderResult, err := alpacaPlaceOrder(symbol, posQty, side, config, bracketOpts)
 				if err != nil {
@@ -25670,7 +25699,7 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 				alpacaOrderID = orderResult.OrderID
 				bracketInfo := ""
 				if orderResult.OrderClass == "bracket" {
-					bracketInfo = fmt.Sprintf(" [BRACKET SL:%.2f TP:%.2f]", sig.StopLoss, sig.TakeProfit)
+					bracketInfo = fmt.Sprintf(" [BRACKET SL:%.2f TP:%.2f]", actualSL, actualTP)
 				}
 				logLiveEvent(session.ID, "ALPACA", symbol, fmt.Sprintf("Order platziert: %s %gx %s%s (ID: %s, Status: %s)", side, posQty, symbol, bracketInfo, orderResult.OrderID, orderResult.Status))
 			}
@@ -25683,8 +25712,8 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 				EntryPrice:     entryPriceNative,
 				EntryPriceUSD:  entryPriceUSD,
 				EntryTime:      time.Now(),
-				StopLoss:       sig.StopLoss,
-				TakeProfit:     sig.TakeProfit,
+				StopLoss:       actualSL,
+				TakeProfit:     actualTP,
 				CurrentPrice:   entryPriceNative,
 				NativeCurrency: nativeCurrency,
 				InvestedAmount: convertFromUSD(posQty*entryPriceUSD, session.Currency),
@@ -25699,11 +25728,11 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 			existingPos = pos
 			slInfo := ""
 			tpInfo := ""
-			if sig.StopLoss > 0 {
-				slInfo = fmt.Sprintf(", SL: %.2f", sig.StopLoss)
+			if actualSL > 0 {
+				slInfo = fmt.Sprintf(", SL: %.2f", actualSL)
 			}
-			if sig.TakeProfit > 0 {
-				tpInfo = fmt.Sprintf(", TP: %.2f", sig.TakeProfit)
+			if actualTP > 0 {
+				tpInfo = fmt.Sprintf(", TP: %.2f", actualTP)
 			}
 			logLiveEvent(session.ID, "OPEN", symbol, fmt.Sprintf("%s eröffnet @ %.4f %s%s%s", sig.Direction, entryPriceNative, nativeCurrency, slInfo, tpInfo))
 
