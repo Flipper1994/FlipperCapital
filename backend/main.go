@@ -1107,16 +1107,15 @@ func alpacaPlaceOrder(symbol string, qty float64, side string, config LiveTradin
 		"time_in_force": tif,
 	}
 
-	// Bracket order with SL/TP (Alpaca requires whole shares for bracket/oto orders)
+	// Bracket order with SL/TP — Alpaca requires whole shares for bracket/oto orders.
+	// If fractional and SL/TP needed: round to nearest whole share so Alpaca manages SL/TP.
 	var sl, tp float64
 	if len(opts) > 0 {
 		sl = opts[0]["stop_loss"]
 		tp = opts[0]["take_profit"]
 	}
-	hasBracket := (sl > 0 || tp > 0)
-	if hasBracket && isFractional {
-		// Round up to whole shares — Alpaca forbids fractional bracket orders
-		qty = math.Ceil(qty)
+	if isFractional && (sl > 0 || tp > 0) {
+		qty = math.Round(qty)
 		if qty < 1 {
 			qty = 1
 		}
@@ -25589,6 +25588,16 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 
 	signals := strategy.Analyze(ohlcv)
 
+	// Debug: Log latest signal for this symbol
+	if len(signals) > 0 {
+		lastSig := signals[len(signals)-1]
+		sigBarTime := time.Unix(ohlcv[lastSig.Index].Time, 0).Format("15:04")
+		sigPrice := ohlcv[lastSig.Index].Close
+		logLiveEvent(session.ID, "DEBUG", symbol, fmt.Sprintf("Signal: %s @ %s (Kerze %s, Kurs: %.4f)", lastSig.Direction, time.Now().Format("15:04:05"), sigBarTime, sigPrice))
+	} else {
+		logLiveEvent(session.ID, "DEBUG", symbol, fmt.Sprintf("Kein Signal @ %s (Kerzen: %d)", time.Now().Format("15:04:05"), len(ohlcv)))
+	}
+
 	// Guard: if session has no StartedAt, skip ALL signal processing
 	// (prevents retroactive trading on sessions that haven't been started yet)
 	if session.StartedAt.IsZero() || session.StartedAt.Year() < 2000 {
@@ -25623,7 +25632,8 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 				continue
 			}
 
-			entryPriceNative := sig.EntryPrice
+			// Use current market price (last closed candle's close) instead of backtest signal price
+			entryPriceNative := ohlcv[len(ohlcv)-1].Close
 			entryPriceUSD := entryPriceNative
 			if nativeCurrency != "USD" {
 				entryPriceUSD = convertToUSD(entryPriceNative, nativeCurrency)
@@ -25672,7 +25682,7 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 				Direction:      sig.Direction,
 				EntryPrice:     entryPriceNative,
 				EntryPriceUSD:  entryPriceUSD,
-				EntryTime:      time.Unix(ohlcv[sig.Index].Time, 0),
+				EntryTime:      time.Now(),
 				StopLoss:       sig.StopLoss,
 				TakeProfit:     sig.TakeProfit,
 				CurrentPrice:   entryPriceNative,

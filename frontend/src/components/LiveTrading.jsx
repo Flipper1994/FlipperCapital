@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useCurrency } from '../context/CurrencyContext'
 import ArenaChart from './ArenaChart'
@@ -113,7 +113,8 @@ function LiveTrading({ isAdmin, token }) {
   const [symbolPrices, setSymbolPrices] = useState({})
   const [countdown, setCountdown] = useState(null)
   const [showDebug, setShowDebug] = useState(false)
-  const [hiddenLogLevels, setHiddenLogLevels] = useState(new Set())
+  const [hiddenLogLevels, setHiddenLogLevels] = useState(new Set(['DEBUG']))
+  const [debugSearch, setDebugSearch] = useState('')
   const [debugLogs, setDebugLogs] = useState([])
   const [lastLogId, setLastLogId] = useState(0)
   const [notificationsEnabled, setNotificationsEnabled] = useState(false)
@@ -130,6 +131,8 @@ function LiveTrading({ isAdmin, token }) {
   const [showAlpacaOrders, setShowAlpacaOrders] = useState(false)
   const [ordersPage, setOrdersPage] = useState(1)
   const [ordersSearch, setOrdersSearch] = useState('')
+  const [alpacaPosSort, setAlpacaPosSort] = useState({ field: null, dir: 'desc' })
+  const [appPosSort, setAppPosSort] = useState({ field: null, dir: 'desc' })
   const [showBrokerInfo, setShowBrokerInfo] = useState(false)
   const [showSessionStats, setShowSessionStats] = useState(false)
   const [analysisSymbol, setAnalysisSymbol] = useState(null)
@@ -499,6 +502,36 @@ function LiveTrading({ isAdmin, token }) {
   const symbols = config?.symbols || []
   const openPositions = positions.filter(p => !p.is_closed)
   const closedPositions = positions.filter(p => p.is_closed)
+
+  const toggleSort = (setter) => (field) => {
+    setter(prev => {
+      if (prev.field === field) return prev.dir === 'desc' ? { field, dir: 'asc' } : { field: null, dir: 'desc' }
+      return { field, dir: 'desc' }
+    })
+  }
+  const toggleAlpacaSort = toggleSort(setAlpacaPosSort)
+  const toggleAppSort = toggleSort(setAppPosSort)
+
+  const sortedAlpacaPositions = useMemo(() => {
+    const pos = alpacaPortfolio?.positions || []
+    if (!alpacaPosSort.field) return pos
+    const { field, dir } = alpacaPosSort
+    return [...pos].sort((a, b) => {
+      const va = field === 'market_value' ? a.market_value : a.unrealized_pl_pct
+      const vb = field === 'market_value' ? b.market_value : b.unrealized_pl_pct
+      return dir === 'desc' ? vb - va : va - vb
+    })
+  }, [alpacaPortfolio?.positions, alpacaPosSort])
+
+  const sortedAppPositions = useMemo(() => {
+    if (!appPosSort.field) return openPositions
+    const { field, dir } = appPosSort
+    return [...openPositions].sort((a, b) => {
+      const va = field === 'marktwert' ? ((a.invested_amount || 0) + (a.profit_loss_amt || 0)) : (a.profit_loss_pct || 0)
+      const vb = field === 'marktwert' ? ((b.invested_amount || 0) + (b.profit_loss_amt || 0)) : (b.profit_loss_pct || 0)
+      return dir === 'desc' ? vb - va : va - vb
+    })
+  }, [openPositions, appPosSort])
 
   // Per-symbol aggregation
   const symbolStats = {}
@@ -1096,12 +1129,16 @@ function LiveTrading({ isAdmin, token }) {
                       <th className="pb-2 pr-3 text-right">Stück</th>
                       <th className="pb-2 pr-3 text-right">Einstieg</th>
                       <th className="pb-2 pr-3 text-right">Aktuell</th>
-                      <th className="pb-2 pr-3 text-right">Marktwert</th>
-                      <th className="pb-2 text-right">Rendite</th>
+                      <th className="pb-2 pr-3 text-right cursor-pointer select-none hover:text-gray-300 transition-colors" onClick={() => toggleAlpacaSort('market_value')}>
+                        Marktwert {alpacaPosSort.field === 'market_value' ? (alpacaPosSort.dir === 'desc' ? '↓' : '↑') : ''}
+                      </th>
+                      <th className="pb-2 text-right cursor-pointer select-none hover:text-gray-300 transition-colors" onClick={() => toggleAlpacaSort('rendite')}>
+                        Rendite {alpacaPosSort.field === 'rendite' ? (alpacaPosSort.dir === 'desc' ? '↓' : '↑') : ''}
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
-                    {alpacaPortfolio.positions.map((p, i) => (
+                    {sortedAlpacaPositions.map((p, i) => (
                       <tr key={i} className="border-t border-dark-600/50">
                         <td className="py-2 pr-3 font-medium text-accent-400">{p.name || p.symbol} <span className="text-[10px] text-gray-500 ml-1">{p.symbol}</span></td>
                         <td className={`py-2 pr-3 font-medium ${p.side === 'long' ? 'text-green-400' : 'text-red-400'}`}>{p.side.toUpperCase()}</td>
@@ -1599,12 +1636,17 @@ function LiveTrading({ isAdmin, token }) {
                   <th className="pb-2 pr-3">Aktuell</th>
                   <th className="pb-2 pr-3 text-right">Stk</th>
                   <th className="pb-2 pr-3 text-right">Buy-In</th>
-                  <th className="pb-2 pr-3 text-right">Rendite</th>
+                  <th className="pb-2 pr-3 text-right cursor-pointer select-none hover:text-gray-300 transition-colors" onClick={() => toggleAppSort('marktwert')}>
+                    Marktwert {appPosSort.field === 'marktwert' ? (appPosSort.dir === 'desc' ? '↓' : '↑') : ''}
+                  </th>
+                  <th className="pb-2 pr-3 text-right cursor-pointer select-none hover:text-gray-300 transition-colors" onClick={() => toggleAppSort('rendite')}>
+                    Rendite {appPosSort.field === 'rendite' ? (appPosSort.dir === 'desc' ? '↓' : '↑') : ''}
+                  </th>
                   <th className="pb-2 text-right">SL / TP</th>
                 </tr>
               </thead>
               <tbody>
-                {openPositions.map(p => (
+                {sortedAppPositions.map(p => (
                   <tr key={p.id} className="border-b border-dark-700/50">
                     <td className="py-2 pr-3 font-medium text-accent-400">
                       {p.symbol}
@@ -1621,6 +1663,7 @@ function LiveTrading({ isAdmin, token }) {
                     </td>
                     <td className="py-2 pr-3 text-right text-gray-300">{p.quantity ? `${p.quantity}x` : '-'}</td>
                     <td className="py-2 pr-3 text-right text-gray-400">{p.invested_amount?.toFixed(2)} €</td>
+                    <td className="py-2 pr-3 text-right text-gray-300">{((p.invested_amount || 0) + (p.profit_loss_amt || 0)).toFixed(2)} €</td>
                     <td className={`py-2 pr-3 text-right font-medium ${p.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       {p.profit_loss_pct >= 0 ? '+' : ''}{p.profit_loss_pct?.toFixed(2)}%
                       <span className="text-gray-500 font-normal ml-1">({p.profit_loss_amt >= 0 ? '+' : ''}{p.profit_loss_amt?.toFixed(2)}€)</span>
@@ -1879,6 +1922,7 @@ function LiveTrading({ isAdmin, token }) {
               TRADE: 'text-purple-400',
               ALPACA: 'text-purple-400',
               REFRESH: 'text-cyan-400',
+              DEBUG: 'text-teal-400',
               DATA_MISMATCH: 'text-orange-500',
             }
             const levelBg = {
@@ -1895,10 +1939,22 @@ function LiveTrading({ isAdmin, token }) {
               TRADE: 'bg-purple-500/20 border-purple-500/30',
               ALPACA: 'bg-purple-500/20 border-purple-500/30',
               REFRESH: 'bg-cyan-500/20 border-cyan-500/30',
+              DEBUG: 'bg-teal-500/20 border-teal-500/30',
               DATA_MISMATCH: 'bg-orange-500/30 border-orange-500/40',
             }
             const allLevels = [...new Set(debugLogs.map(l => l.level))].sort()
-            const filteredLogs = debugLogs.filter(l => !hiddenLogLevels.has(l.level))
+            const searchLower = debugSearch.toLowerCase()
+            const filteredLogs = debugLogs.filter(l => {
+              if (hiddenLogLevels.has(l.level)) return false
+              if (searchLower) {
+                const time = new Date(l.created_at).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                return l.symbol?.toLowerCase().includes(searchLower) ||
+                  l.message?.toLowerCase().includes(searchLower) ||
+                  l.level?.toLowerCase().includes(searchLower) ||
+                  time.includes(searchLower)
+              }
+              return true
+            })
             const toggleLevel = (level) => {
               setHiddenLogLevels(prev => {
                 const next = new Set(prev)
@@ -1909,8 +1965,19 @@ function LiveTrading({ isAdmin, token }) {
             }
             return (
               <div className="px-4 pb-4 border-t border-dark-600">
+                <div className="flex items-center gap-2 mt-3 mb-2">
+                  <input
+                    type="text"
+                    placeholder="Suche: Ticker, Signal, Zeit..."
+                    value={debugSearch}
+                    onChange={e => setDebugSearch(e.target.value)}
+                    className="bg-dark-700 border border-dark-600 rounded px-2 py-1 text-xs text-gray-300 w-48 focus:outline-none focus:border-accent-500 placeholder-gray-600"
+                  />
+                  {debugSearch && <button onClick={() => setDebugSearch('')} className="text-[10px] text-gray-500 hover:text-gray-300">×</button>}
+                  <span className="text-[10px] text-gray-600 ml-auto">{filteredLogs.length}/{debugLogs.length}</span>
+                </div>
                 {allLevels.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-1.5 mt-3 mb-2">
+                  <div className="flex flex-wrap items-center gap-1.5 mb-2">
                     <span className="text-[10px] text-gray-600 mr-1">Filter:</span>
                     {allLevels.map(level => (
                       <button
