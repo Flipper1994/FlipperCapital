@@ -1016,7 +1016,11 @@ function TradingArena({ isAdmin, token }) {
           if (line.startsWith('data: ')) {
             try {
               const msg = JSON.parse(line.slice(6))
-              if (msg.type === 'progress') {
+              if (msg.type === 'prefetch') {
+                latestProgress = { current: 0, total: msg.total, symbol: '', prefetching: true, uncached: msg.uncached }
+              } else if (msg.type === 'prefetch_progress') {
+                latestProgress = { current: 0, total: latestProgress?.total || msg.total, symbol: '', prefetching: true, prefetchCurrent: msg.current, prefetchTotal: msg.total }
+              } else if (msg.type === 'progress') {
                 latestProgress = { current: msg.current, total: msg.total, symbol: msg.symbol }
               } else if (msg.type === 'result') {
                 setBatchResults(msg.data)
@@ -1359,7 +1363,14 @@ function TradingArena({ isAdmin, token }) {
     }
     if (batchLoading) {
       const p = batchProgress
-      if (!p) return { label: 'Starte Watchlist Backtest', pct: 0, detail: 'Strategien werden geladen...' }
+      if (!p) return { label: 'Starte Watchlist Backtest', pct: 0, detail: 'Verbinde...' }
+      if (p.prefetching) {
+        if (p.prefetchCurrent != null) {
+          const pct = Math.round((p.prefetchCurrent / p.prefetchTotal) * 100)
+          return { label: 'Lade Kursdaten', pct, detail: `${p.prefetchCurrent}/${p.prefetchTotal} Aktien via Alpaca` }
+        }
+        return { label: 'Lade Kursdaten', pct: 0, detail: `${p.uncached || '?'} Aktien nicht im Cache` }
+      }
       const pct = Math.round((p.current / p.total) * 100)
       return { label: 'Watchlist Backtest läuft', pct, detail: `Teste ${p.symbol || '...'} (${p.current}/${p.total})` }
     }

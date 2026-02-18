@@ -245,11 +245,9 @@ function LiveTrading({ isAdmin, token }) {
   useEffect(() => {
     fetchStatus()
     fetchSessions().then(list => {
-      // If no sessionId in URL, redirect to first active or newest session
+      // If no sessionId in URL, redirect to newest session (list is sorted by id DESC)
       if (!urlSessionId && list && list.length > 0) {
-        const active = list.find(s => s.is_active)
-        const target = active || list[0]
-        navigate(`/live-trading/${target.id}`, { replace: true })
+        navigate(`/live-trading/${list[0].id}`, { replace: true })
       }
     })
     if (urlSessionId) {

@@ -1107,11 +1107,23 @@ func alpacaPlaceOrder(symbol string, qty float64, side string, config LiveTradin
 		"time_in_force": tif,
 	}
 
-	// Bracket order with SL/TP
+	// Bracket order with SL/TP (Alpaca requires whole shares for bracket/oto orders)
 	var sl, tp float64
 	if len(opts) > 0 {
 		sl = opts[0]["stop_loss"]
 		tp = opts[0]["take_profit"]
+	}
+	hasBracket := (sl > 0 || tp > 0)
+	if hasBracket && isFractional {
+		// Round up to whole shares — Alpaca forbids fractional bracket orders
+		qty = math.Ceil(qty)
+		if qty < 1 {
+			qty = 1
+		}
+		qtyStr = fmt.Sprintf("%d", int(qty))
+		isFractional = false
+		orderBody["qty"] = qtyStr
+		orderBody["time_in_force"] = "gtc"
 	}
 	if sl > 0 && tp > 0 {
 		orderBody["order_class"] = "bracket"
@@ -22846,6 +22858,7 @@ func backtestWatchlistHandler(c *gin.Context) {
 			c.Writer.Flush()
 
 			const batchSize = 50
+			var prewarmDone int
 			for i := 0; i < len(uncachedUS); i += batchSize {
 				end := i + batchSize
 				if end > len(uncachedUS) {
@@ -22860,6 +22873,12 @@ func backtestWatchlistHandler(c *gin.Context) {
 						}
 					}
 				}
+				prewarmDone += len(batch)
+				pJSON, _ := json.Marshal(gin.H{
+					"type": "prefetch_progress", "current": prewarmDone, "total": len(uncachedUS),
+				})
+				fmt.Fprintf(c.Writer, "data: %s\n\n", pJSON)
+				c.Writer.Flush()
 			}
 			log.Printf("[Arena-Batch] Pre-warm complete")
 		}
