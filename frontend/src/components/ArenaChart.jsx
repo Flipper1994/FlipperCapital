@@ -1,5 +1,21 @@
-import { useEffect, useRef } from 'react'
+import { Component, useEffect, useRef } from 'react'
 import { createChart } from 'lightweight-charts'
+
+class ChartErrorBoundary extends Component {
+  state = { hasError: false, error: null }
+  static getDerivedStateFromError(error) { return { hasError: true, error } }
+  componentDidCatch(err) { console.error('[ChartErrorBoundary]', err) }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="w-full flex items-center justify-center bg-dark-800 rounded-lg border border-red-500/30 text-red-400 text-sm p-4" style={{ minHeight: 200 }}>
+          Chart-Fehler: {this.state.error?.message || 'Unbekannter Fehler'} — Bitte Aktie oder Strategie wechseln.
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 const INTERVAL_PERIOD_MAP = {
   '1m': '1d',
@@ -13,12 +29,14 @@ const INTERVAL_PERIOD_MAP = {
   '1mo': 'max',
 }
 
-function ArenaChart({ symbol, interval = '60m', token, markers, overlays, customData }) {
+function ArenaChart({ symbol, interval = '60m', token, markers, overlays, customData, loading }) {
   const chartContainerRef = useRef(null)
   const chartRef = useRef(null)
 
   useEffect(() => {
     if (!symbol || !chartContainerRef.current) return
+    // Don't fetch from API while backtest is loading — show skeleton instead
+    if (loading && !customData?.length) return
     let cancelled = false
 
     const initChart = async () => {
@@ -50,6 +68,8 @@ function ArenaChart({ symbol, interval = '60m', token, markers, overlays, custom
         chartRef.current.remove()
         chartRef.current = null
       }
+
+      try {
 
       const isIntraday = ['1m', '5m', '15m', '60m', '2h', '4h'].includes(interval)
 
@@ -112,37 +132,41 @@ function ArenaChart({ symbol, interval = '60m', token, markers, overlays, custom
       // Overlay lines and band fills
       if (overlays?.length) {
         overlays.forEach(overlay => {
-          const pts = overlay.data
-            .filter(d => d.time)
-            .map(d => ({ time: d.time, value: d.value }))
+          try {
+            if (!overlay.data?.length) return
+            const pts = overlay.data
+              .filter(d => d.time && Number.isFinite(d.value))
+              .map(d => ({ time: d.time, value: d.value }))
+            if (!pts.length) return
 
-          if (overlay.fill_color) {
-            // Area series for band fill effect
-            const areaSeries = chart.addAreaSeries({
-              lineColor: overlay.color || '#888',
-              lineWidth: overlay.style === 2 ? 1 : 2,
-              lineStyle: overlay.style || 0,
-              topColor: overlay.invert_fill ? 'rgba(0,0,0,0)' : overlay.fill_color,
-              bottomColor: overlay.invert_fill ? overlay.fill_color : 'rgba(0,0,0,0)',
-              priceScaleId: 'right',
-              lastValueVisible: false,
-              priceLineVisible: false,
-              crosshairMarkerVisible: false,
-              invertFilledArea: !!overlay.invert_fill,
-            })
-            areaSeries.setData(pts)
-          } else {
-            // Standard line series
-            const lineSeries = chart.addLineSeries({
-              color: overlay.color || '#888',
-              lineWidth: overlay.style === 2 ? 1 : 2,
-              lineStyle: overlay.style || 0,
-              priceScaleId: 'right',
-              lastValueVisible: false,
-              priceLineVisible: false,
-              crosshairMarkerVisible: false,
-            })
-            lineSeries.setData(pts)
+            if (overlay.fill_color) {
+              const areaSeries = chart.addAreaSeries({
+                lineColor: overlay.color || '#888',
+                lineWidth: overlay.style === 2 ? 1 : 2,
+                lineStyle: overlay.style || 0,
+                topColor: overlay.invert_fill ? 'rgba(0,0,0,0)' : overlay.fill_color,
+                bottomColor: overlay.invert_fill ? overlay.fill_color : 'rgba(0,0,0,0)',
+                priceScaleId: 'right',
+                lastValueVisible: false,
+                priceLineVisible: false,
+                crosshairMarkerVisible: false,
+                invertFilledArea: !!overlay.invert_fill,
+              })
+              areaSeries.setData(pts)
+            } else {
+              const lineSeries = chart.addLineSeries({
+                color: overlay.color || '#888',
+                lineWidth: overlay.style === 2 ? 1 : 2,
+                lineStyle: overlay.style || 0,
+                priceScaleId: 'right',
+                lastValueVisible: false,
+                priceLineVisible: false,
+                crosshairMarkerVisible: false,
+              })
+              lineSeries.setData(pts)
+            }
+          } catch (err) {
+            console.warn('[ArenaChart] Overlay render error:', overlay.name, err)
           }
         })
       }
@@ -175,6 +199,10 @@ function ArenaChart({ symbol, interval = '60m', token, markers, overlays, custom
 
       // Store cleanup for resize
       chartRef.current._resizeCleanup = () => window.removeEventListener('resize', handleResize)
+
+      } catch (err) {
+        console.error('[ArenaChart] Chart render error:', err)
+      }
     }
 
     initChart()
@@ -187,11 +215,29 @@ function ArenaChart({ symbol, interval = '60m', token, markers, overlays, custom
         chartRef.current = null
       }
     }
-  }, [symbol, interval, token, markers, overlays, customData])
+  }, [symbol, interval, token, markers, overlays, customData, loading])
+
+  if (loading && !customData?.length) {
+    return (
+      <div className="w-full rounded-lg overflow-hidden flex items-center justify-center bg-dark-900" style={{ minHeight: 450 }}>
+        <div className="flex flex-col items-center gap-3">
+          <svg className="animate-spin h-8 w-8 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          <span className="text-gray-400 text-sm">Backtest läuft...</span>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div ref={chartContainerRef} className="w-full rounded-lg overflow-hidden" style={{ minHeight: 450 }} />
   )
 }
 
-export default ArenaChart
+function ArenaChartWithBoundary(props) {
+  return <ChartErrorBoundary><ArenaChart {...props} /></ChartErrorBoundary>
+}
+
+export default ArenaChartWithBoundary

@@ -473,13 +473,13 @@ func TestProcessLiveSymbol_OpensPosition(t *testing.T) {
 			t.Errorf("entry price <= 0: %.4f", pos.EntryPrice)
 		}
 		if pos.Quantity <= 0 {
-			t.Errorf("quantity <= 0: %d", pos.Quantity)
+			t.Errorf("quantity <= 0: %.6f", pos.Quantity)
 		}
 		if pos.InvestedAmount <= 0 {
 			t.Errorf("invested amount <= 0: %.2f", pos.InvestedAmount)
 		}
 		// Invested should be qty * entry (in USD since Currency=USD)
-		expected := float64(pos.Quantity) * pos.EntryPriceUSD
+		expected := pos.Quantity * pos.EntryPriceUSD
 		if math.Abs(pos.InvestedAmount-expected) > 0.01 {
 			t.Errorf("invested amount %.2f != qty*entry %.2f", pos.InvestedAmount, expected)
 		}
@@ -766,28 +766,26 @@ func TestCloseLivePosition_LongLoss(t *testing.T) {
 }
 
 // ============================================================
-// 8. Delta Fetch Period Tests
+// 8. Delta Fetch Period Tests (OHLCV Cache Worker)
 // ============================================================
 
-func TestGetPollFetchPeriod(t *testing.T) {
+func TestGetOHLCVDeltaPeriod(t *testing.T) {
 	tests := []struct {
 		interval string
 		expected string
 	}{
-		{"5m", "2d"},
+		{"5m", "1d"},
 		{"15m", "5d"},
-		{"60m", "7d"},
-		{"1h", "7d"},
-		{"2h", "14d"},
-		{"4h", "1mo"},
+		{"60m", "5d"},
 		{"1d", "3mo"},
 		{"1wk", "6mo"},
-		{"unknown", "7d"},
+		{"1mo", "2y"},
+		{"unknown", "5d"},
 	}
 	for _, tt := range tests {
-		result := getPollFetchPeriod(tt.interval)
+		result := getOHLCVDeltaPeriod(tt.interval)
 		if result != tt.expected {
-			t.Errorf("getPollFetchPeriod(%q) = %q, want %q", tt.interval, result, tt.expected)
+			t.Errorf("getOHLCVDeltaPeriod(%q) = %q, want %q", tt.interval, result, tt.expected)
 		}
 	}
 }
@@ -877,7 +875,7 @@ func TestTradeHistory_CompleteLifecycle(t *testing.T) {
 		}
 		// Quantity must be positive
 		if pos.Quantity <= 0 {
-			t.Errorf("quantity must be > 0, got %d", pos.Quantity)
+			t.Errorf("quantity must be > 0, got %.6f", pos.Quantity)
 		}
 		// InvestedAmount must be positive
 		if pos.InvestedAmount <= 0 {
@@ -1144,19 +1142,16 @@ func TestGapRecovery_DeltaWindowCoversGap(t *testing.T) {
 		deltaPeriod string
 		maxGapHours float64
 	}{
-		{"5m", "2d", 48},
+		{"5m", "1d", 24},
 		{"15m", "5d", 120},
-		{"60m", "7d", 168},
-		{"1h", "7d", 168},
-		{"2h", "14d", 336},
-		{"4h", "1mo", 720},
+		{"60m", "5d", 120},
 		{"1d", "3mo", 2160},
 		{"1wk", "6mo", 4320},
 	}
 
 	for _, iv := range intervals {
 		t.Run(iv.name, func(t *testing.T) {
-			deltaPeriod := getPollFetchPeriod(iv.name)
+			deltaPeriod := getOHLCVDeltaPeriod(iv.name)
 			if deltaPeriod != iv.deltaPeriod {
 				t.Errorf("delta period mismatch: got %s expected %s", deltaPeriod, iv.deltaPeriod)
 			}

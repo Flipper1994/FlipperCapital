@@ -64,6 +64,10 @@ function App() {
       const res = await fetch('/api/verify', {
         headers: { 'Authorization': `Bearer ${token}` }
       })
+      if (!res.ok && res.status === 401) {
+        clearAuth()
+        return
+      }
       const data = await res.json()
       if (data.valid) {
         setIsLoggedIn(true)
@@ -73,7 +77,10 @@ function App() {
         clearAuth()
       }
     } catch {
-      clearAuth()
+      // Network error (502, offline, etc.) — keep session, don't logout
+      if (localStorage.getItem('authToken')) {
+        setIsLoggedIn(true)
+      }
     } finally {
       setAuthLoading(false)
     }
@@ -212,7 +219,7 @@ function App() {
                   <TradingArena isAdmin={isAdmin} token={token} /> : <Navigate to="/login" />}
               />
               <Route
-                path="/live-trading"
+                path="/live-trading/:sessionId?"
                 element={authLoading ? null : isLoggedIn ?
                   <LiveTrading isAdmin={isAdmin} token={token} /> : <Navigate to="/login" />}
               />

@@ -1,5 +1,21 @@
-import { useEffect, useRef } from 'react'
+import { Component, useEffect, useRef } from 'react'
 import { createChart } from 'lightweight-charts'
+
+class IndicatorErrorBoundary extends Component {
+  state = { hasError: false, error: null }
+  static getDerivedStateFromError(error) { return { hasError: true, error } }
+  componentDidCatch(err) { console.error('[IndicatorErrorBoundary]', err) }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="w-full flex items-center justify-center bg-dark-800 rounded-lg border border-red-500/30 text-red-400 text-sm p-4" style={{ minHeight: 100 }}>
+          Indikator-Fehler: {this.state.error?.message || 'Unbekannter Fehler'}
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 function ArenaIndicatorChart({ indicators, markers, strategyName }) {
   const chartContainerRef = useRef(null)
@@ -14,6 +30,8 @@ function ArenaIndicatorChart({ indicators, markers, strategyName }) {
       chartRef.current.remove()
       chartRef.current = null
     }
+
+    try {
 
     const chart = createChart(chartContainerRef.current, {
       layout: {
@@ -46,50 +64,55 @@ function ArenaIndicatorChart({ indicators, markers, strategyName }) {
     let markerSeries = null
 
     indicators.forEach(series => {
-      if (series.type === 'histogram') {
-        const histSeries = chart.addHistogramSeries({
-          priceFormat: { type: 'price', precision: 2 },
-          priceScaleId: 'right',
-        })
-        histSeries.setData(
-          series.data.filter(d => d.time).map(d => ({
-            time: d.time,
-            value: d.value,
-            color: d.color || series.color || '#6366f1',
-          }))
-        )
-        if (!markerSeries) markerSeries = histSeries
-      } else if (series.type === 'reference_line') {
-        // Horizontal dashed reference line (e.g. osc thresholds at 75/50/25)
-        const refData = indicators[0]?.data
-        if (refData?.length) {
-          const refLine = chart.addLineSeries({
-            color: series.color || '#4b5563',
-            lineWidth: 1,
-            lineStyle: 2,
+      try {
+        if (!series.data?.length) return
+        const validPt = d => d.time && Number.isFinite(d.value)
+        if (series.type === 'histogram') {
+          const histSeries = chart.addHistogramSeries({
+            priceFormat: { type: 'price', precision: 2 },
             priceScaleId: 'right',
-            crosshairMarkerVisible: false,
+          })
+          histSeries.setData(
+            series.data.filter(validPt).map(d => ({
+              time: d.time,
+              value: d.value,
+              color: d.color || series.color || '#6366f1',
+            }))
+          )
+          if (!markerSeries) markerSeries = histSeries
+        } else if (series.type === 'reference_line') {
+          const refData = indicators[0]?.data
+          if (refData?.length) {
+            const refLine = chart.addLineSeries({
+              color: series.color || '#4b5563',
+              lineWidth: 1,
+              lineStyle: 2,
+              priceScaleId: 'right',
+              crosshairMarkerVisible: false,
+              lastValueVisible: false,
+              priceLineVisible: false,
+            })
+            const val = series.data?.[0]?.value ?? 0
+            refLine.setData(refData.filter(d => d.time).map(d => ({ time: d.time, value: val })))
+          }
+        } else if (series.type === 'line') {
+          const lineSeries = chart.addLineSeries({
+            color: series.color || '#f59e0b',
+            lineWidth: 2,
+            priceScaleId: 'right',
             lastValueVisible: false,
             priceLineVisible: false,
           })
-          const val = series.data?.[0]?.value ?? 0
-          refLine.setData(refData.filter(d => d.time).map(d => ({ time: d.time, value: val })))
+          lineSeries.setData(
+            series.data.filter(validPt).map(d => ({
+              time: d.time,
+              value: d.value,
+            }))
+          )
+          if (!markerSeries) markerSeries = lineSeries
         }
-      } else if (series.type === 'line') {
-        const lineSeries = chart.addLineSeries({
-          color: series.color || '#f59e0b',
-          lineWidth: 2,
-          priceScaleId: 'right',
-          lastValueVisible: false,
-          priceLineVisible: false,
-        })
-        lineSeries.setData(
-          series.data.filter(d => d.time).map(d => ({
-            time: d.time,
-            value: d.value,
-          }))
-        )
-        if (!markerSeries) markerSeries = lineSeries
+      } catch (err) {
+        console.warn('[ArenaIndicatorChart] Series render error:', series.name, err)
       }
     })
 
@@ -117,18 +140,23 @@ function ArenaIndicatorChart({ indicators, markers, strategyName }) {
 
     chart.timeScale().fitContent()
 
-    // Resize handler
+    // Resize handler (must be inside try — chart is block-scoped)
     const handleResize = () => {
       if (chartContainerRef.current && chartRef.current) {
         chartRef.current.applyOptions({ width: chartContainerRef.current.clientWidth })
       }
     }
     window.addEventListener('resize', handleResize)
-    chart._resizeCleanup = () => window.removeEventListener('resize', handleResize)
+    chartRef.current._resizeCleanup = () => window.removeEventListener('resize', handleResize)
+
+    } catch (err) {
+      console.error('[ArenaIndicatorChart] Chart render error:', err)
+      return
+    }
 
     return () => {
-      window.removeEventListener('resize', handleResize)
       if (chartRef.current) {
+        if (chartRef.current._resizeCleanup) chartRef.current._resizeCleanup()
         chartRef.current.remove()
         chartRef.current = null
       }
@@ -155,4 +183,8 @@ function ArenaIndicatorChart({ indicators, markers, strategyName }) {
   )
 }
 
-export default ArenaIndicatorChart
+function ArenaIndicatorChartWithBoundary(props) {
+  return <IndicatorErrorBoundary><ArenaIndicatorChart {...props} /></IndicatorErrorBoundary>
+}
+
+export default ArenaIndicatorChartWithBoundary

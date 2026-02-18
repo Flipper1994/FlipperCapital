@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,11 +16,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -778,11 +781,21 @@ type ArenaStrategySettings struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
-// Weekly OHLCV cache table
+// Weekly OHLCV cache table (legacy — migrated to OHLCVCache)
 type WeeklyOHLCVCache struct {
 	ID        uint      `gorm:"primaryKey"`
 	Symbol    string    `gorm:"uniqueIndex;not null"`
 	DataJSON  string    `gorm:"type:text"`
+	UpdatedAt time.Time `gorm:"autoUpdateTime"`
+}
+
+// Universal OHLCV cache — replaces WeeklyOHLCVCache (interval-agnostic)
+type OHLCVCache struct {
+	ID        uint      `gorm:"primaryKey"`
+	Symbol    string    `gorm:"uniqueIndex:idx_ohlcv_sym_iv;not null"`
+	Interval  string    `gorm:"uniqueIndex:idx_ohlcv_sym_iv;not null"` // 5m, 15m, 60m, 1d, 1wk, 1mo
+	DataJSON  string    `gorm:"type:text"`
+	BarCount  int       `gorm:"default:0"`
 	UpdatedAt time.Time `gorm:"autoUpdateTime"`
 }
 
@@ -808,7 +821,7 @@ type BacktestLabHistory struct {
 // Live Trading
 type LiveTradingConfig struct {
 	ID            uint      `json:"id" gorm:"primaryKey"`
-	UserID        uint      `json:"user_id" gorm:"uniqueIndex;not null"`
+	UserID        uint      `json:"user_id" gorm:"index;not null"`
 	Strategy      string    `json:"strategy"`
 	Interval      string    `json:"interval"`
 	ParamsJSON    string    `json:"params_json" gorm:"type:text"`
@@ -838,7 +851,7 @@ type LiveTradingSession struct {
 	LongOnly    bool       `json:"long_only"`
 	TradeAmount float64    `json:"trade_amount"`
 	Currency    string     `json:"currency" gorm:"default:'EUR'"`
-	IsActive    bool       `json:"is_active" gorm:"default:true;index"`
+	IsActive    bool       `json:"is_active" gorm:"index"`
 	StartedAt   time.Time  `json:"started_at"`
 	StoppedAt   *time.Time `json:"stopped_at"`
 	LastPollAt  *time.Time `json:"last_poll_at"`
@@ -868,7 +881,7 @@ type LiveTradingPosition struct {
 	InvestedAmount float64    `json:"invested_amount"`
 	ProfitLossAmt  float64    `json:"profit_loss_amt"`
 	NativeCurrency string     `json:"native_currency"`
-	Quantity       int        `json:"quantity"`
+	Quantity       float64    `json:"quantity"`
 	SignalIndex    int        `json:"signal_index"`
 	AlpacaOrderID  string     `json:"alpaca_order_id"`
 	CreatedAt      time.Time  `json:"created_at"`
@@ -976,6 +989,35 @@ var sessions = make(map[string]Session) // Legacy in-memory cache, DB is source 
 var httpClient = &http.Client{Timeout: 10 * time.Second}
 var twelveDataAPIKey string
 
+// Alpaca Data API keys (separate from per-session trading keys)
+var (
+	alpacaDataKey    string // env: ALPACA_DATA_KEY
+	alpacaDataSecret string // env: ALPACA_DATA_SECRET
+	alpacaRateTicker *time.Ticker
+)
+
+// TwelveData daily call counter (800/day limit)
+var (
+	twelveDataCallsToday  int64
+	twelveDataCounterDate string
+	twelveDataCounterMu   sync.Mutex
+)
+
+func checkTwelveDataBudget() bool {
+	twelveDataCounterMu.Lock()
+	defer twelveDataCounterMu.Unlock()
+	today := time.Now().Format("2006-01-02")
+	if twelveDataCounterDate != today {
+		twelveDataCallsToday = 0
+		twelveDataCounterDate = today
+	}
+	if twelveDataCallsToday >= 750 {
+		return false
+	}
+	twelveDataCallsToday++
+	return true
+}
+
 // ==================== Alpaca Broker Integration ====================
 
 func alpacaBaseURL(paper bool) string {
@@ -1043,16 +1085,26 @@ type AlpacaOrderLeg struct {
 	Status string
 }
 
-func alpacaPlaceOrder(symbol string, qty int, side string, config LiveTradingConfig, opts ...map[string]float64) (*AlpacaOrderResult, error) {
+func alpacaPlaceOrder(symbol string, qty float64, side string, config LiveTradingConfig, opts ...map[string]float64) (*AlpacaOrderResult, error) {
 	if qty <= 0 {
-		return nil, fmt.Errorf("alpaca: qty must be > 0, got %d", qty)
+		return nil, fmt.Errorf("alpaca: qty must be > 0, got %.6f", qty)
+	}
+	qtyStr := fmt.Sprintf("%g", qty)
+	isFractional := qty != float64(int(qty))
+	if !isFractional {
+		qtyStr = fmt.Sprintf("%d", int(qty))
+	}
+	// Alpaca requires "day" for fractional orders
+	tif := "gtc"
+	if isFractional {
+		tif = "day"
 	}
 	orderBody := map[string]interface{}{
 		"symbol":        symbol,
-		"qty":           fmt.Sprintf("%d", qty),
+		"qty":           qtyStr,
 		"side":          side,
 		"type":          "market",
-		"time_in_force": "gtc",
+		"time_in_force": tif,
 	}
 
 	// Bracket order with SL/TP
@@ -1145,7 +1197,7 @@ func alpacaGetPositions(config LiveTradingConfig) ([]map[string]interface{}, err
 
 func alpacaGetOrders(config LiveTradingConfig) ([]map[string]interface{}, error) {
 	baseURL := alpacaBaseURL(config.AlpacaPaper)
-	req, err := http.NewRequest("GET", baseURL+"/v2/orders?status=closed&limit=50&direction=desc", nil)
+	req, err := http.NewRequest("GET", baseURL+"/v2/orders?status=all&limit=500&direction=desc&nested=true", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1300,18 +1352,72 @@ func main() {
 		fmt.Println("[Config] Twelve Data API key configured - will use as fallback for monthly data")
 	}
 
+	alpacaDataKey = os.Getenv("ALPACA_DATA_KEY")
+	alpacaDataSecret = os.Getenv("ALPACA_DATA_SECRET")
+	if alpacaDataKey != "" && alpacaDataSecret != "" {
+		alpacaRateTicker = time.NewTicker(350 * time.Millisecond) // ~170 req/min (under 200 limit)
+		fmt.Println("[Config] Alpaca Data API keys configured — using as primary data source")
+	}
+
 	var err error
 	db, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
 	if err != nil {
 		panic("Failed to connect to database: " + err.Error())
 	}
 
-	// Drop unique indexes before AutoMigrate (changed to non-unique index)
+	// SQLite WAL mode: enables concurrent reads + background writes without "database is locked"
+	db.Exec("PRAGMA journal_mode=WAL")
+	db.Exec("PRAGMA busy_timeout=5000")
+	db.Exec("PRAGMA synchronous=NORMAL")
+
+	// Drop unique indexes before AutoMigrate to prevent table recreation.
+	// GORM SQLite migrator's parseDDL marks columns with UNIQUE INDEX as Unique=true,
+	// but field.Unique is false for uniqueIndex tags → MigrateColumnUnique sees mismatch
+	// → triggers recreateTable (very slow for large tables). Dropping indexes first avoids
+	// the mismatch; AutoMigrate recreates them quickly via CREATE INDEX.
 	db.Exec("DROP INDEX IF EXISTS idx_flipper_bot_positions_symbol")
 	db.Exec("DROP INDEX IF EXISTS idx_lutz_positions_symbol")
 	db.Exec("DROP INDEX IF EXISTS idx_arena_strategy_settings_strategy")
+	db.Exec("DROP INDEX IF EXISTS idx_ohlcv_sym_iv")
+	db.Exec("DROP INDEX IF EXISTS idx_weekly_ohlcv_caches_symbol")
+	db.Exec("DROP INDEX IF EXISTS idx_stock_performances_symbol")
+	db.Exec("DROP INDEX IF EXISTS idx_aggressive_stock_performances_symbol")
+	db.Exec("DROP INDEX IF EXISTS idx_quant_stock_performances_symbol")
+	db.Exec("DROP INDEX IF EXISTS idx_ditz_stock_performances_symbol")
+	db.Exec("DROP INDEX IF EXISTS idx_trader_stock_performances_symbol")
+	db.Exec("DROP INDEX IF EXISTS idx_trading_watchlist_items_symbol")
+	db.Exec("DROP INDEX IF EXISTS idx_sym_strat")
+	db.Exec("DROP INDEX IF EXISTS idx_signal_vis_sym_month")
+	db.Exec("DROP INDEX IF EXISTS idx_bot_filter_configs_bot_name")
+	db.Exec("DROP INDEX IF EXISTS idx_system_settings_key")
+	db.Exec("DROP INDEX IF EXISTS idx_b_xtrender_configs_mode")
 
-	db.AutoMigrate(&User{}, &Stock{}, &Category{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{}, &DBSession{}, &BotLog{}, &BotTodo{}, &BXtrenderConfig{}, &BXtrenderQuantConfig{}, &QuantStockPerformance{}, &QuantTrade{}, &QuantPosition{}, &BXtrenderDitzConfig{}, &DitzStockPerformance{}, &DitzTrade{}, &DitzPosition{}, &BXtrenderTraderConfig{}, &TraderStockPerformance{}, &TraderTrade{}, &TraderPosition{}, &SystemSetting{}, &BotStockAllowlist{}, &BotFilterConfig{}, &SignalListFilterConfig{}, &SignalListVisibility{}, &UserNotification{}, &TradingWatchlistItem{}, &TradingVirtualPosition{}, &ArenaBacktestHistory{}, &ArenaStrategySettings{}, &WeeklyOHLCVCache{}, &BacktestLabHistory{}, &LiveTradingConfig{}, &LiveTradingSession{}, &LiveTradingPosition{}, &LiveTradingLog{})
+	db.AutoMigrate(&User{}, &Stock{}, &Category{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{}, &DBSession{}, &BotLog{}, &BotTodo{}, &BXtrenderConfig{}, &BXtrenderQuantConfig{}, &QuantStockPerformance{}, &QuantTrade{}, &QuantPosition{}, &BXtrenderDitzConfig{}, &DitzStockPerformance{}, &DitzTrade{}, &DitzPosition{}, &BXtrenderTraderConfig{}, &TraderStockPerformance{}, &TraderTrade{}, &TraderPosition{}, &SystemSetting{}, &BotStockAllowlist{}, &BotFilterConfig{}, &SignalListFilterConfig{}, &SignalListVisibility{}, &UserNotification{}, &TradingWatchlistItem{}, &TradingVirtualPosition{}, &ArenaBacktestHistory{}, &ArenaStrategySettings{}, &WeeklyOHLCVCache{}, &OHLCVCache{}, &BacktestLabHistory{}, &LiveTradingConfig{}, &LiveTradingSession{}, &LiveTradingPosition{}, &LiveTradingLog{})
+
+	// Migrate WeeklyOHLCVCache → OHLCVCache (one-time)
+	var weeklyCount int64
+	db.Model(&WeeklyOHLCVCache{}).Count(&weeklyCount)
+	var ohlcvWeeklyCount int64
+	db.Model(&OHLCVCache{}).Where("interval = ?", "1wk").Count(&ohlcvWeeklyCount)
+	if weeklyCount > 0 && ohlcvWeeklyCount == 0 {
+		log.Printf("[OHLCVCache] Migrating %d WeeklyOHLCVCache entries...", weeklyCount)
+		var weeklyCaches []WeeklyOHLCVCache
+		db.Find(&weeklyCaches)
+		for _, wc := range weeklyCaches {
+			var ohlcv []OHLCV
+			barCount := 0
+			if json.Unmarshal([]byte(wc.DataJSON), &ohlcv) == nil {
+				barCount = len(ohlcv)
+			}
+			db.Create(&OHLCVCache{
+				Symbol:   wc.Symbol,
+				Interval: "1wk",
+				DataJSON: wc.DataJSON,
+				BarCount: barCount,
+			})
+		}
+		log.Printf("[OHLCVCache] Migration done: %d entries migrated", weeklyCount)
+	}
 
 	// Ensure existing users are visible in ranking (new column defaults to false in SQLite)
 	db.Exec("UPDATE users SET visible_in_ranking = 1 WHERE visible_in_ranking = 0 OR visible_in_ranking IS NULL")
@@ -1379,24 +1485,60 @@ func main() {
 	// Clean up expired sessions on startup
 	db.Where("expiry < ?", time.Now()).Delete(&DBSession{})
 
+	// Drop old unique index on live_trading_configs.user_id (now supports multiple configs per user)
+	db.Exec("DROP INDEX IF EXISTS idx_live_trading_configs_user_id")
+
+	// Migrate old sessions without per-session config: assign global user config
+	var legacySessions []LiveTradingSession
+	db.Where("config_id = 0 OR config_id IS NULL").Find(&legacySessions)
+	for _, ls := range legacySessions {
+		var userConfig LiveTradingConfig
+		if db.Where("user_id = ?", ls.UserID).Order("updated_at DESC").First(&userConfig).Error == nil {
+			db.Model(&ls).Update("config_id", userConfig.ID)
+			log.Printf("[Migration] Session #%d (%s): ConfigID → %d", ls.ID, ls.Name, userConfig.ID)
+		}
+	}
+
+	// Initialize shared WebSocket for live trading (before auto-resume)
+	initSharedWS()
+
 	// Auto-resume orphaned live trading sessions (scheduler lost on restart)
 	var orphanedSessions []LiveTradingSession
 	db.Where("is_active = ?", true).Find(&orphanedSessions)
 	if len(orphanedSessions) > 0 {
-		log.Printf("[LiveTrading] Auto-Resume: %d aktive Sessions gefunden, starte Scheduler neu...", len(orphanedSessions))
+		log.Printf("[LiveTrading] Auto-Resume: %d aktive Sessions gefunden", len(orphanedSessions))
 		for _, session := range orphanedSessions {
+			// Sessions that were never truly started (ghost sessions from GORM default:true bug) → deactivate
+			if session.StartedAt.IsZero() {
+				log.Printf("[LiveTrading] Session #%d '%s' war nie gestartet (ghost) — deaktiviere", session.ID, session.Name)
+				db.Model(&session).Update("is_active", false)
+				continue
+			}
 			var symbols []string
 			json.Unmarshal([]byte(session.Symbols), &symbols)
 			state := &liveSessionState{
-				StopChan:   make(chan struct{}),
-				OHLCVCache: make(map[string][]OHLCV),
+				StopChan: make(chan struct{}),
 			}
 			liveSchedulerMu.Lock()
 			liveSchedulers[session.ID] = state
 			liveSchedulerMu.Unlock()
-			go runLiveScheduler(state, session.ID)
-			log.Printf("[LiveTrading] Auto-Resume: Session #%d '%s' (%s %s, %d Symbole) gestartet",
-				session.ID, session.Name, session.Strategy, session.Interval, len(symbols))
+
+			// Check if session has Alpaca WS capability
+			var liveConfig LiveTradingConfig
+			if session.ConfigID > 0 {
+				db.First(&liveConfig, session.ConfigID)
+			} else {
+				db.Where("user_id = ?", session.UserID).Order("updated_at DESC").First(&liveConfig)
+			}
+			if liveConfig.AlpacaEnabled && liveConfig.AlpacaApiKey != "" {
+				state.Mode = "websocket"
+				go runLiveWebSocket(state, session.ID, liveConfig)
+			} else {
+				state.Mode = "polling"
+				go runLiveScheduler(state, session.ID)
+			}
+			log.Printf("[LiveTrading] Auto-Resume: Session #%d '%s' (%s %s, %d Symbole, mode: %s) gestartet",
+				session.ID, session.Name, session.Strategy, session.Interval, len(symbols), state.Mode)
 		}
 	}
 
@@ -1546,6 +1688,7 @@ func main() {
 		api.GET("/trading/backtest-results/:symbol", authMiddleware(), getBacktestResultsHandler)
 		api.POST("/trading/backtest-batch", authMiddleware(), adminOnly(), backtestBatchHandler)
 		api.POST("/trading/backtest-watchlist", authMiddleware(), backtestWatchlistHandler)
+		api.POST("/trading/arena/prefetch", authMiddleware(), arenaPrefetchHandler)
 		api.GET("/trading/strategy-settings", authMiddleware(), getStrategySettings)
 		api.POST("/trading/strategy-settings", authMiddleware(), saveStrategySettings)
 		api.GET("/trading/positions", authMiddleware(), getTradingPositions)
@@ -1564,6 +1707,7 @@ func main() {
 		api.PATCH("/trading/live/session/:id/name", authMiddleware(), adminOnly(), renameLiveSession)
 		api.DELETE("/trading/live/session/:id", authMiddleware(), adminOnly(), deleteLiveSession)
 		api.GET("/trading/live/logs/:sessionId", authMiddleware(), getLiveTradingLogs)
+		api.POST("/trading/live/analyze", authMiddleware(), analyzeLiveSymbolHandler)
 		api.POST("/trading/live/alpaca/validate", authMiddleware(), adminOnly(), validateAlpacaKeys)
 		api.POST("/trading/live/alpaca/test-order", authMiddleware(), adminOnly(), alpacaTestOrder)
 		api.GET("/trading/live/alpaca/portfolio", authMiddleware(), getAlpacaPortfolio)
@@ -1764,6 +1908,13 @@ func main() {
 
 	// Start the daily stock update scheduler
 	go startDailyUpdateScheduler()
+
+	// Start persistent OHLCV cache background worker (only without Alpaca — Alpaca uses on-demand prefetch)
+	if alpacaDataKey == "" {
+		go startOHLCVCacheWorker()
+	} else {
+		log.Println("[OHLCVCache] Background worker disabled — Alpaca active, using on-demand prefetch")
+	}
 
 	r.Run(":8080")
 }
@@ -2525,6 +2676,40 @@ func getHistory(c *gin.Context) {
 	period := c.DefaultQuery("period", "6mo")
 	interval := c.DefaultQuery("interval", "1d")
 
+	// For monthly interval: use persistent cache (saves Yahoo + TwelveData calls)
+	if interval == "1mo" {
+		cached, err := getMonthlyOHLCVCached(symbol, 12*time.Hour)
+		if err == nil && len(cached) > 0 {
+			c.JSON(http.StatusOK, gin.H{
+				"symbol":            symbol,
+				"data":              cached,
+				"requestedInterval": "1mo",
+				"actualInterval":    "1mo",
+				"source":            "cache",
+			})
+			return
+		}
+	}
+
+	// For non-monthly intervals: check OHLCV cache first (getOHLCVCached handles 2h/4h aggregation)
+	if interval != "1mo" {
+		cached, err := getOHLCVCached(symbol, interval, 15*time.Minute)
+		if err == nil && len(cached) > 0 {
+			cutoff := periodToTime(period)
+			filtered := filterOHLCVAfter(cached, cutoff)
+			if len(filtered) > 0 {
+				c.JSON(http.StatusOK, gin.H{
+					"symbol":            symbol,
+					"data":              filtered,
+					"requestedInterval": interval,
+					"actualInterval":    interval,
+					"source":            "cache",
+				})
+				return
+			}
+		}
+	}
+
 	// Map 2h/4h to 60m fetch + aggregation (Yahoo doesn't support 2h/4h natively)
 	requestedInterval := interval
 	aggregateFactor := 0
@@ -2787,6 +2972,10 @@ func fetchIntervalAndAggregateToMonthly(symbol, interval string) ([]OHLCV, error
 func fetchMonthlyFromTwelveData(symbol string) ([]OHLCV, error) {
 	if twelveDataAPIKey == "" {
 		return nil, fmt.Errorf("no Twelve Data API key configured")
+	}
+
+	if !checkTwelveDataBudget() {
+		return nil, fmt.Errorf("TWELVE_DATA_RATE_LIMIT: daily budget exhausted (750/800)")
 	}
 
 	apiURL := fmt.Sprintf("https://api.twelvedata.com/time_series?symbol=%s&interval=1month&outputsize=5000&apikey=%s",
@@ -3633,41 +3822,15 @@ func getDaysFromYearStart() int {
 }
 
 func getHistoricalPrice(symbol string, period string) float64 {
-	apiURL := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/chart/%s?range=%s&interval=1d",
-		url.QueryEscape(symbol), period)
-
-	req, _ := http.NewRequest("GET", apiURL, nil)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-
-	resp, err := httpClient.Do(req)
-	if err != nil || resp.StatusCode != 200 {
+	data := fetchHistoricalData(symbol, period)
+	if len(data) == 0 {
 		return 0
 	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-
-	var yahooResp YahooChartResponse
-	if err := json.Unmarshal(body, &yahooResp); err != nil {
-		return 0
-	}
-
-	if len(yahooResp.Chart.Result) == 0 {
-		return 0
-	}
-
-	result := yahooResp.Chart.Result[0]
-	if len(result.Indicators.Quote) == 0 || len(result.Indicators.Quote[0].Close) == 0 {
-		return 0
-	}
-
-	// Return the first valid close price
-	for _, price := range result.Indicators.Quote[0].Close {
-		if price > 0 {
-			return price
+	for _, d := range data {
+		if d.Close > 0 {
+			return d.Close
 		}
 	}
-
 	return 0
 }
 
@@ -4204,7 +4367,7 @@ const histCacheTTL = 10 * time.Minute
 func fetchHistoricalData(symbol string, period string) []OHLCV {
 	cacheKey := symbol + ":" + period
 
-	// Check cache first
+	// 1. In-memory cache (ultra short-term dedup)
 	histCacheMu.RLock()
 	if entry, ok := histCache[cacheKey]; ok && time.Since(entry.FetchedAt) < histCacheTTL {
 		histCacheMu.RUnlock()
@@ -4212,6 +4375,25 @@ func fetchHistoricalData(symbol string, period string) []OHLCV {
 	}
 	histCacheMu.RUnlock()
 
+	// 2. Persistent cache (OHLCVCache "1d")
+	var dbCache OHLCVCache
+	if db.Where("symbol = ? AND interval = ?", symbol, "1d").First(&dbCache).Error == nil {
+		if time.Since(dbCache.UpdatedAt) < 12*time.Hour {
+			var fullData []OHLCV
+			if json.Unmarshal([]byte(dbCache.DataJSON), &fullData) == nil && len(fullData) > 0 {
+				cutoff := periodToTime(period)
+				filtered := filterOHLCVAfter(fullData, cutoff)
+				if len(filtered) > 0 {
+					histCacheMu.Lock()
+					histCache[cacheKey] = histCacheEntry{Data: filtered, FetchedAt: time.Now()}
+					histCacheMu.Unlock()
+					return filtered
+				}
+			}
+		}
+	}
+
+	// 3. Yahoo fetch (existing logic)
 	apiURL := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/chart/%s?range=%s&interval=1d",
 		url.QueryEscape(symbol), period)
 
@@ -4273,12 +4455,56 @@ func fetchHistoricalData(symbol string, period string) []OHLCV {
 		}
 	}
 
-	// Store in cache
+	// 4. Store in both caches
+	saveOHLCVCache(symbol, "1d", data)
 	histCacheMu.Lock()
 	histCache[cacheKey] = histCacheEntry{Data: data, FetchedAt: time.Now()}
 	histCacheMu.Unlock()
 
 	return data
+}
+
+// periodToTime converts a Yahoo-style period string to a cutoff time
+func periodToTime(period string) time.Time {
+	now := time.Now()
+	switch period {
+	case "1d":
+		return now.AddDate(0, 0, -1)
+	case "5d":
+		return now.AddDate(0, 0, -5)
+	case "1mo":
+		return now.AddDate(0, -1, 0)
+	case "3mo":
+		return now.AddDate(0, -3, 0)
+	case "6mo":
+		return now.AddDate(0, -6, 0)
+	case "1y":
+		return now.AddDate(-1, 0, 0)
+	case "2y":
+		return now.AddDate(-2, 0, 0)
+	case "5y":
+		return now.AddDate(-5, 0, 0)
+	case "10y":
+		return now.AddDate(-10, 0, 0)
+	case "max":
+		return time.Time{} // zero time = no filter
+	default:
+		return now.AddDate(0, -6, 0) // default 6 months
+	}
+}
+
+// filterOHLCVAfter returns only OHLCV bars after the cutoff time
+func filterOHLCVAfter(data []OHLCV, cutoff time.Time) []OHLCV {
+	if cutoff.IsZero() {
+		return data
+	}
+	cutoffUnix := cutoff.Unix()
+	for i, d := range data {
+		if d.Time >= cutoffUnix {
+			return data[i:]
+		}
+	}
+	return nil
 }
 
 // getPriceAtDate fetches the closing price for a symbol at a specific date
@@ -13203,8 +13429,8 @@ func generateSignalNotifications(preSignals map[string]string) {
 
 // processStockServer processes a single stock and saves performance data
 func processStockServer(symbol, name string, defensiveConfig, aggressiveConfig BXtrenderConfig, quantConfig BXtrenderQuantConfig, ditzConfig BXtrenderDitzConfig, traderConfig BXtrenderTraderConfig) error {
-	// Fetch historical data
-	data, err := fetchHistoricalDataServer(symbol)
+	// Fetch historical data (with persistent cache — 20h freshness for nightly scheduler)
+	data, err := getMonthlyOHLCVCached(symbol, 20*time.Hour)
 	if err != nil {
 		return fmt.Errorf("failed to fetch historical data: %v", err)
 	}
@@ -14803,6 +15029,585 @@ func (s *DiamondSignalsStrategy) Analyze(ohlcv []OHLCV) []StrategySignal {
 		}
 	}
 	return signals
+}
+
+// --- Strategy D: Smart Money Flow Cloud [BOSWaves] ---
+// Indicator: Volume-weighted flow → adaptive bands → regime detection
+// Strategy: Regime change → swing point → pullback retest → structure break entry
+
+type SmartMoneyFlowStrategy struct {
+	TrendLength   int     `json:"trend_length"`   // EMA baseline length (Pine: len=34)
+	BasisSmooth   int     `json:"basis_smooth"`   // Extra EMA smoothing on baseline (Pine: basisSmooth=3)
+	FlowWindow    int     `json:"flow_window"`    // Money flow lookback (Pine: mfLen=24)
+	FlowSmooth    int     `json:"flow_smooth"`    // EMA smoothing on flow (Pine: mfSmooth=5)
+	FlowBoost     float64 `json:"flow_boost"`     // Nonlinear flow power (Pine: mfPower=1.2)
+	ATRLength     int     `json:"atr_length"`     // ATR period for bands (Pine: atrLen=14)
+	BandTightness float64 `json:"band_tightness"` // Min band multiplier (Pine: minMult=0.9)
+	BandExpansion float64 `json:"band_expansion"` // Max band multiplier (Pine: maxMult=2.2)
+	DotCooldown   int     `json:"dot_cooldown"`   // Retest cooldown bars (Pine: dotCooldown=12)
+	RiskReward    float64 `json:"risk_reward"`
+}
+
+func (s *SmartMoneyFlowStrategy) defaults() {
+	if s.TrendLength <= 0 { s.TrendLength = 34 }
+	if s.BasisSmooth <= 0 { s.BasisSmooth = 3 }
+	if s.FlowWindow <= 0 { s.FlowWindow = 24 }
+	if s.FlowSmooth <= 0 { s.FlowSmooth = 5 }
+	if s.FlowBoost <= 0 { s.FlowBoost = 1.2 }
+	if s.ATRLength <= 0 { s.ATRLength = 14 }
+	if s.BandTightness <= 0 { s.BandTightness = 0.9 }
+	if s.BandExpansion <= 0 { s.BandExpansion = 2.2 }
+	if s.DotCooldown < 0 { s.DotCooldown = 12 }
+	if s.RiskReward <= 0 { s.RiskReward = 2.0 }
+}
+
+func (s *SmartMoneyFlowStrategy) Name() string     { return "smart_money_flow" }
+func (s *SmartMoneyFlowStrategy) RequiredBars() int { s.defaults(); return s.TrendLength + s.FlowWindow + 50 }
+
+type smfData struct {
+	basisOpen  []float64
+	basisClose []float64
+	upper      []float64
+	lower      []float64
+	regime     []int
+	strength   []float64
+	mfSm       []float64
+	atr        []float64
+}
+
+func smfEMA(data []float64, period int) []float64 {
+	n := len(data)
+	result := make([]float64, n)
+	if n == 0 || period <= 1 {
+		copy(result, data)
+		return result
+	}
+	k := 2.0 / float64(period+1)
+	result[0] = data[0]
+	for i := 1; i < n; i++ {
+		result[i] = data[i]*k + result[i-1]*(1-k)
+	}
+	return result
+}
+
+func (s *SmartMoneyFlowStrategy) compute(ohlcv []OHLCV) *smfData {
+	s.defaults()
+	n := len(ohlcv)
+
+	opens := make([]float64, n)
+	closes := make([]float64, n)
+	for i, bar := range ohlcv {
+		opens[i] = bar.Open
+		closes[i] = bar.Close
+	}
+
+	// Basis: EMA(EMA(x, trendLength), basisSmooth)
+	bO := smfEMA(smfEMA(opens, s.TrendLength), s.BasisSmooth)
+	bC := smfEMA(smfEMA(closes, s.TrendLength), s.BasisSmooth)
+
+	// CLV: ((close-low) - (high-close)) / (high-low)
+	clv := make([]float64, n)
+	for i, bar := range ohlcv {
+		if bar.High == bar.Low {
+			clv[i] = 0
+		} else {
+			clv[i] = ((bar.Close - bar.Low) - (bar.High - bar.Close)) / (bar.High - bar.Low)
+		}
+	}
+
+	// Money flow: rolling sum of clv*volume
+	raw := make([]float64, n)
+	for i := range ohlcv {
+		raw[i] = clv[i] * ohlcv[i].Volume
+	}
+	mfRatio := make([]float64, n)
+	for i := 0; i < n; i++ {
+		start := i - s.FlowWindow + 1
+		if start < 0 { start = 0 }
+		num, den := 0.0, 0.0
+		for j := start; j <= i; j++ {
+			num += raw[j]
+			den += math.Abs(raw[j])
+		}
+		if den == 0 {
+			mfRatio[i] = 0
+		} else {
+			mfRatio[i] = num / den
+		}
+	}
+
+	mfSm := smfEMA(mfRatio, s.FlowSmooth)
+
+	// strength = clamp(pow(|mfSm|, flowBoost), 0, 1)
+	strength := make([]float64, n)
+	mult := make([]float64, n)
+	for i := range mfSm {
+		str := math.Pow(math.Abs(mfSm[i]), s.FlowBoost)
+		if str > 1 { str = 1 }
+		strength[i] = str
+		mult[i] = s.BandTightness + (s.BandExpansion-s.BandTightness)*str
+	}
+
+	// ATR (Wilder's RMA: alpha = 1/period)
+	tr := make([]float64, n)
+	tr[0] = ohlcv[0].High - ohlcv[0].Low
+	for i := 1; i < n; i++ {
+		hl := ohlcv[i].High - ohlcv[i].Low
+		hc := math.Abs(ohlcv[i].High - ohlcv[i-1].Close)
+		lc := math.Abs(ohlcv[i].Low - ohlcv[i-1].Close)
+		tr[i] = math.Max(hl, math.Max(hc, lc))
+	}
+	al := 1.0 / float64(s.ATRLength)
+	atr := make([]float64, n)
+	atr[0] = tr[0]
+	for i := 1; i < n; i++ {
+		atr[i] = al*tr[i] + (1-al)*atr[i-1]
+	}
+
+	// Adaptive bands
+	upper := make([]float64, n)
+	lower := make([]float64, n)
+	for i := range ohlcv {
+		upper[i] = bC[i] + atr[i]*mult[i]
+		lower[i] = bC[i] - atr[i]*mult[i]
+	}
+
+	// Regime: crossover(close, upper) → bull, crossunder(close, lower) → bear
+	regime := make([]int, n)
+	if closes[0] >= bC[0] { regime[0] = 1 } else { regime[0] = -1 }
+	for i := 1; i < n; i++ {
+		if closes[i] > upper[i] && closes[i-1] <= upper[i-1] {
+			regime[i] = 1
+		} else if closes[i] < lower[i] && closes[i-1] >= lower[i-1] {
+			regime[i] = -1
+		} else {
+			regime[i] = regime[i-1]
+		}
+	}
+
+	return &smfData{basisOpen: bO, basisClose: bC, upper: upper, lower: lower, regime: regime, strength: strength, mfSm: mfSm, atr: atr}
+}
+
+func (s *SmartMoneyFlowStrategy) Analyze(ohlcv []OHLCV) []StrategySignal {
+	s.defaults()
+	n := len(ohlcv)
+	if n < s.RequiredBars() { return nil }
+
+	d := s.compute(ohlcv)
+	var signals []StrategySignal
+
+	// State machine phases
+	const (
+		phWait     = 0 // waiting for regime change
+		phTracking = 1 // tracking swing point, waiting for retest
+		phArmed    = 2 // retest happened, waiting for structure break
+	)
+	phase := phWait
+	dir := 0        // 1=bull, -1=bear
+	swingRef := 0.0 // swing high (bull) or swing low (bear)
+	pbExt := 0.0    // pullback low (bull SL) or pullback high (bear SL)
+
+	warmup := s.TrendLength + s.BasisSmooth + s.FlowWindow
+	if warmup >= n-1 { return nil }
+
+	for i := warmup; i < n-1; i++ {
+		// Regime change → start tracking in new direction
+		if i > 0 && d.regime[i] != d.regime[i-1] {
+			phase = phTracking
+			dir = d.regime[i]
+			if dir == 1 {
+				swingRef = ohlcv[i].High
+			} else {
+				swingRef = ohlcv[i].Low
+			}
+			pbExt = 0
+			continue
+		}
+
+		if phase == phWait { continue }
+
+		if dir == 1 { // BULL regime → Long setups
+			if phase == phTracking {
+				if ohlcv[i].High > swingRef { swingRef = ohlcv[i].High }
+				// Retest: price dips below baseline
+				if ohlcv[i].Low < d.basisClose[i] {
+					phase = phArmed
+					pbExt = ohlcv[i].Low
+				}
+			} else if phase == phArmed {
+				if ohlcv[i].Low < pbExt { pbExt = ohlcv[i].Low }
+				// Structure break: close above swing high
+				if ohlcv[i].Close > swingRef {
+					entry := ohlcv[i+1].Open
+					risk := entry - pbExt
+					if risk > 0 && risk/entry > 0.001 {
+						signals = append(signals, StrategySignal{
+							Index: i + 1, Direction: "LONG", EntryPrice: entry,
+							StopLoss: pbExt, TakeProfit: entry + s.RiskReward*risk,
+						})
+					}
+					phase = phTracking
+					swingRef = ohlcv[i].High
+					pbExt = 0
+				}
+			}
+		} else { // BEAR regime → Short setups
+			if phase == phTracking {
+				if ohlcv[i].Low < swingRef { swingRef = ohlcv[i].Low }
+				// Retest: price rises above baseline
+				if ohlcv[i].High > d.basisClose[i] {
+					phase = phArmed
+					pbExt = ohlcv[i].High
+				}
+			} else if phase == phArmed {
+				if ohlcv[i].High > pbExt { pbExt = ohlcv[i].High }
+				// Structure break: close below swing low
+				if ohlcv[i].Close < swingRef {
+					entry := ohlcv[i+1].Open
+					risk := pbExt - entry
+					if risk > 0 && risk/entry > 0.001 {
+						signals = append(signals, StrategySignal{
+							Index: i + 1, Direction: "SHORT", EntryPrice: entry,
+							StopLoss: pbExt, TakeProfit: entry - s.RiskReward*risk,
+						})
+					}
+					phase = phTracking
+					swingRef = ohlcv[i].Low
+					pbExt = 0
+				}
+			}
+		}
+	}
+	return signals
+}
+
+func (s *SmartMoneyFlowStrategy) ComputeOverlays(ohlcv []OHLCV) []OverlaySeries {
+	s.defaults()
+	d := s.compute(ohlcv)
+	n := len(ohlcv)
+
+	bOpenPts := make([]OverlayPoint, n)
+	bClosePts := make([]OverlayPoint, n)
+	upperPts := make([]OverlayPoint, n)
+	lowerPts := make([]OverlayPoint, n)
+	for i, bar := range ohlcv {
+		bOpenPts[i] = OverlayPoint{Time: bar.Time, Value: d.basisOpen[i]}
+		bClosePts[i] = OverlayPoint{Time: bar.Time, Value: d.basisClose[i]}
+		upperPts[i] = OverlayPoint{Time: bar.Time, Value: d.upper[i]}
+		lowerPts[i] = OverlayPoint{Time: bar.Time, Value: d.lower[i]}
+	}
+
+	return []OverlaySeries{
+		{Name: "Basis Open", Type: "line", Color: "rgba(100,180,255,0.5)", Data: bOpenPts, Style: 0},
+		{Name: "Basis Close", Type: "line", Color: "rgba(100,180,255,0.9)", Data: bClosePts, Style: 0, FillColor: "rgba(100,180,255,0.12)"},
+		{Name: "Upper Band", Type: "line", Color: "rgba(255,255,255,0.25)", Data: upperPts, Style: 2},
+		{Name: "Lower Band", Type: "line", Color: "rgba(255,255,255,0.25)", Data: lowerPts, Style: 2, InvertFill: true},
+	}
+}
+
+func (s *SmartMoneyFlowStrategy) ComputeIndicators(ohlcv []OHLCV) []IndicatorSeries {
+	s.defaults()
+	d := s.compute(ohlcv)
+	n := len(ohlcv)
+
+	pts := make([]IndicatorPoint, n)
+	for i, bar := range ohlcv {
+		val := d.mfSm[i] * 100
+		col := "#ef4444"
+		if val >= 0 { col = "#22c55e" }
+		pts[i] = IndicatorPoint{Time: bar.Time, Value: val, Color: col}
+	}
+
+	return []IndicatorSeries{
+		{Name: "Smart Money Flow", Type: "histogram", Color: "#22c55e", Data: pts},
+	}
+}
+
+// ========== Strategy: Hann Trend (DMH + Parabolic SAR) ==========
+
+type HannTrendStrategy struct {
+	DMHLength     int     `json:"dmh_length"`
+	SARStart      float64 `json:"sar_start"`
+	SARIncrement  float64 `json:"sar_increment"`
+	SARMax        float64 `json:"sar_max"`
+	SwingLookback int     `json:"swing_lookback"`
+	RiskReward    float64 `json:"risk_reward"`
+	SLBuffer      float64 `json:"sl_buffer"` // percent
+}
+
+func (s *HannTrendStrategy) defaults() {
+	if s.DMHLength <= 0 { s.DMHLength = 30 }
+	if s.SARStart <= 0 { s.SARStart = 0.02 }
+	if s.SARIncrement <= 0 { s.SARIncrement = 0.03 }
+	if s.SARMax <= 0 { s.SARMax = 0.3 }
+	if s.SwingLookback <= 0 { s.SwingLookback = 5 }
+	if s.RiskReward <= 0 { s.RiskReward = 2.0 }
+	if s.SLBuffer <= 0 { s.SLBuffer = 0.3 }
+}
+
+func (s *HannTrendStrategy) Name() string     { return "hann_trend" }
+func (s *HannTrendStrategy) RequiredBars() int { s.defaults(); return s.DMHLength*2 + 10 }
+
+// hannRMA computes Wilder's RMA (alpha = 1/period)
+func hannRMA(src []float64, period int) []float64 {
+	n := len(src)
+	result := make([]float64, n)
+	if n == 0 { return result }
+	alpha := 1.0 / float64(period)
+	result[0] = src[0]
+	for i := 1; i < n; i++ {
+		result[i] = alpha*src[i] + (1-alpha)*result[i-1]
+	}
+	return result
+}
+
+// hannFilter applies a Hann FIR filter (TASC 2021.12 Ehlers)
+func hannFilter(src []float64, period int) []float64 {
+	n := len(src)
+	result := make([]float64, n)
+	pix2 := 2.0 * math.Pi / float64(period+1)
+	for i := 0; i < n; i++ {
+		sumH, sumC := 0.0, 0.0
+		for count := 1; count <= period; count++ {
+			idx := i - (count - 1)
+			if idx < 0 { break }
+			coef := 1.0 - math.Cos(float64(count)*pix2)
+			sumH += coef * src[idx]
+			sumC += coef
+		}
+		if sumC != 0 {
+			result[i] = sumH / sumC
+		}
+	}
+	return result
+}
+
+// computeDMH computes the Directional Movement with Hann filter
+func computeDMH(ohlcv []OHLCV, period int) []float64 {
+	n := len(ohlcv)
+	netDM := make([]float64, n)
+	for i := 1; i < n; i++ {
+		upMove := ohlcv[i].High - ohlcv[i-1].High
+		dnMove := ohlcv[i-1].Low - ohlcv[i].Low
+		pDM, mDM := 0.0, 0.0
+		if upMove > dnMove && upMove > 0 { pDM = upMove }
+		if dnMove > upMove && dnMove > 0 { mDM = dnMove }
+		netDM[i] = pDM - mDM
+	}
+	return hannFilter(hannRMA(netDM, period), period)
+}
+
+type sarPoint struct {
+	Value float64
+	IsUp  bool // true = SAR below price (bullish)
+}
+
+// computeParabolicSAR computes Wilder's Parabolic SAR
+func computeParabolicSAR(ohlcv []OHLCV, start, increment, maximum float64) []sarPoint {
+	n := len(ohlcv)
+	if n == 0 { return nil }
+	sar := make([]sarPoint, n)
+
+	isUp := true
+	sarVal := ohlcv[0].Low
+	ep := ohlcv[0].High
+	af := start
+	sar[0] = sarPoint{Value: sarVal, IsUp: true}
+
+	for i := 1; i < n; i++ {
+		sarVal = sarVal + af*(ep-sarVal)
+
+		if isUp {
+			if sarVal > ohlcv[i-1].Low { sarVal = ohlcv[i-1].Low }
+			if i >= 2 && sarVal > ohlcv[i-2].Low { sarVal = ohlcv[i-2].Low }
+
+			if ohlcv[i].Low < sarVal {
+				isUp = false
+				sarVal = ep
+				ep = ohlcv[i].Low
+				af = start
+			} else {
+				if ohlcv[i].High > ep {
+					ep = ohlcv[i].High
+					af += increment
+					if af > maximum { af = maximum }
+				}
+			}
+		} else {
+			if sarVal < ohlcv[i-1].High { sarVal = ohlcv[i-1].High }
+			if i >= 2 && sarVal < ohlcv[i-2].High { sarVal = ohlcv[i-2].High }
+
+			if ohlcv[i].High > sarVal {
+				isUp = true
+				sarVal = ep
+				ep = ohlcv[i].High
+				af = start
+			} else {
+				if ohlcv[i].Low < ep {
+					ep = ohlcv[i].Low
+					af += increment
+					if af > maximum { af = maximum }
+				}
+			}
+		}
+		sar[i] = sarPoint{Value: sarVal, IsUp: isUp}
+	}
+	return sar
+}
+
+func (s *HannTrendStrategy) Analyze(ohlcv []OHLCV) []StrategySignal {
+	s.defaults()
+	n := len(ohlcv)
+	if n < s.RequiredBars() { return nil }
+
+	dmh := computeDMH(ohlcv, s.DMHLength)
+	sar := computeParabolicSAR(ohlcv, s.SARStart, s.SARIncrement, s.SARMax)
+
+	var signals []StrategySignal
+
+	const (
+		phWait         = 0
+		phWaitPullback = 1
+		phInPullback   = 2
+		phWaitConfirm  = 3
+	)
+
+	phase := phWait
+	bullish := false
+	pullbackAllowed := false
+	swingHigh := 0.0
+	swingLow := math.MaxFloat64
+	pullbackExtreme := 0.0
+
+	warmup := s.DMHLength + 1
+	if warmup >= n-1 { return nil }
+
+	for i := warmup; i < n-1; i++ {
+		// DMH zero-line cross detection
+		if dmh[i-1] <= 0 && dmh[i] > 0 {
+			bullish = true
+			pullbackAllowed = true
+			phase = phWaitPullback
+			swingHigh = ohlcv[i].High
+			swingLow = ohlcv[i].Low
+			pullbackExtreme = 0
+		} else if dmh[i-1] >= 0 && dmh[i] < 0 {
+			bullish = false
+			pullbackAllowed = true
+			phase = phWaitPullback
+			swingHigh = ohlcv[i].High
+			swingLow = ohlcv[i].Low
+			pullbackExtreme = 0
+		}
+
+		if !pullbackAllowed || phase == phWait { continue }
+
+		// Track running swing high/low
+		if ohlcv[i].High > swingHigh { swingHigh = ohlcv[i].High }
+		if ohlcv[i].Low < swingLow { swingLow = ohlcv[i].Low }
+
+		sarFlipped := sar[i].IsUp != sar[i-1].IsUp
+
+		if bullish {
+			switch phase {
+			case phWaitPullback:
+				if sarFlipped && !sar[i].IsUp {
+					phase = phInPullback
+					pullbackExtreme = ohlcv[i].Low
+					// Freeze swing high from lookback
+					for j := i - s.SwingLookback; j < i; j++ {
+						if j >= 0 && ohlcv[j].High > swingHigh { swingHigh = ohlcv[j].High }
+					}
+				}
+			case phInPullback:
+				if ohlcv[i].Low < pullbackExtreme { pullbackExtreme = ohlcv[i].Low }
+				if sarFlipped && sar[i].IsUp {
+					phase = phWaitConfirm
+				}
+			case phWaitConfirm:
+				if ohlcv[i].Close > swingHigh {
+					entry := ohlcv[i+1].Open
+					sl := pullbackExtreme * (1 - s.SLBuffer/100)
+					risk := entry - sl
+					if risk > 0 && risk/entry > 0.001 {
+						signals = append(signals, StrategySignal{
+							Index: i + 1, Direction: "LONG", EntryPrice: entry,
+							StopLoss: sl, TakeProfit: entry + risk*s.RiskReward,
+						})
+					}
+					pullbackAllowed = false
+					phase = phWait
+				}
+			}
+		} else {
+			switch phase {
+			case phWaitPullback:
+				if sarFlipped && sar[i].IsUp {
+					phase = phInPullback
+					pullbackExtreme = ohlcv[i].High
+					for j := i - s.SwingLookback; j < i; j++ {
+						if j >= 0 && ohlcv[j].Low < swingLow { swingLow = ohlcv[j].Low }
+					}
+				}
+			case phInPullback:
+				if ohlcv[i].High > pullbackExtreme { pullbackExtreme = ohlcv[i].High }
+				if sarFlipped && !sar[i].IsUp {
+					phase = phWaitConfirm
+				}
+			case phWaitConfirm:
+				if ohlcv[i].Close < swingLow {
+					entry := ohlcv[i+1].Open
+					sl := pullbackExtreme * (1 + s.SLBuffer/100)
+					risk := sl - entry
+					if risk > 0 && risk/entry > 0.001 {
+						signals = append(signals, StrategySignal{
+							Index: i + 1, Direction: "SHORT", EntryPrice: entry,
+							StopLoss: sl, TakeProfit: entry - risk*s.RiskReward,
+						})
+					}
+					pullbackAllowed = false
+					phase = phWait
+				}
+			}
+		}
+	}
+	return signals
+}
+
+func (s *HannTrendStrategy) ComputeIndicators(ohlcv []OHLCV) []IndicatorSeries {
+	s.defaults()
+	if len(ohlcv) < 2 {
+		return nil
+	}
+	dmh := computeDMH(ohlcv, s.DMHLength)
+	n := len(ohlcv)
+
+	pts := make([]IndicatorPoint, n)
+	for i, bar := range ohlcv {
+		col := "#0055FF"
+		if dmh[i] > 0 { col = "#FFCC00" }
+		pts[i] = IndicatorPoint{Time: bar.Time, Value: dmh[i], Color: col}
+	}
+	return []IndicatorSeries{
+		{Name: "DMH", Type: "histogram", Color: "#FFCC00", Data: pts},
+	}
+}
+
+func (s *HannTrendStrategy) ComputeOverlays(ohlcv []OHLCV) []OverlaySeries {
+	s.defaults()
+	if len(ohlcv) < 2 {
+		return nil
+	}
+	sar := computeParabolicSAR(ohlcv, s.SARStart, s.SARIncrement, s.SARMax)
+	n := len(ohlcv)
+
+	allPts := make([]OverlayPoint, n)
+	for i, bar := range ohlcv {
+		allPts[i] = OverlayPoint{Time: bar.Time, Value: sar[i].Value}
+	}
+	return []OverlaySeries{
+		{Name: "Parabolic SAR", Type: "line", Color: "rgba(255,255,255,0.5)", Data: allPts, Style: 2},
+	}
 }
 
 type OverlaySeries struct {
@@ -21357,45 +22162,179 @@ func importWatchlistToTrading(c *gin.Context) {
 	failed := 0
 	skipped := len(allStocks) - total // already existing
 
-	for i, cand := range candidates {
-		status := "checking"
-		msg := fmt.Sprintf(`{"current":%d,"total":%d,"symbol":"%s","status":"%s"}`, i+1, total, cand.Symbol, status)
-		fmt.Fprintf(c.Writer, "data: %s\n\n", msg)
-		c.Writer.Flush()
-
-		// Validate via Yahoo Finance OHLCV
-		_, err := fetchOHLCVFromYahoo(cand.Symbol, "5d", "5m")
-		if err != nil {
-			failed++
-			msg = fmt.Sprintf(`{"current":%d,"total":%d,"symbol":"%s","status":"failed"}`, i+1, total, cand.Symbol)
-			fmt.Fprintf(c.Writer, "data: %s\n\n", msg)
-			c.Writer.Flush()
-			continue
+	// Phase 1: Split into cached (instant) vs uncached (need Yahoo validation)
+	var cached, uncached []candidate
+	for _, cand := range candidates {
+		var cache OHLCVCache
+		if db.Where("symbol = ? AND interval IN ?", cand.Symbol, []string{"5m", "15m", "60m", "1d", "1wk"}).First(&cache).Error == nil {
+			cached = append(cached, cand)
+		} else {
+			uncached = append(uncached, cand)
 		}
+	}
 
-		// Add to trading watchlist
+	// Phase 2: Add all cached symbols instantly (no Yahoo call needed)
+	for i, cand := range cached {
 		name := cand.Name
 		if name == "" {
 			name = cand.Symbol
 		}
-		item := TradingWatchlistItem{
+		db.Create(&TradingWatchlistItem{
 			Symbol:  cand.Symbol,
 			Name:    name,
 			AddedBy: uid,
 			IsLive:  true,
-		}
-		db.Create(&item)
+		})
 		added++
-
-		msg = fmt.Sprintf(`{"current":%d,"total":%d,"symbol":"%s","status":"added"}`, i+1, total, cand.Symbol)
+		msg := fmt.Sprintf(`{"current":%d,"total":%d,"symbol":"%s","status":"added"}`, i+1, total, cand.Symbol)
 		fmt.Fprintf(c.Writer, "data: %s\n\n", msg)
 		c.Writer.Flush()
+	}
+
+	// Phase 3: Validate uncached symbols with parallel workers
+	if len(uncached) > 0 {
+		const maxWorkers = 10
+		type result struct {
+			Index  int
+			Cand   candidate
+			Valid  bool
+		}
+		resultCh := make(chan result, len(uncached))
+		sem := make(chan struct{}, maxWorkers)
+		for idx, cand := range uncached {
+			sem <- struct{}{}
+			go func(i int, c candidate) {
+				defer func() { <-sem }()
+				_, err := fetchOHLCVFromYahoo(c.Symbol, "5d", "5m")
+				valid := err == nil
+				if valid {
+					// Save to cache so future imports are instant
+					ohlcv, err2 := fetchOHLCVFromYahoo(c.Symbol, "60d", "5m")
+					if err2 == nil && len(ohlcv) > 0 {
+						saveOHLCVCache(c.Symbol, "5m", ohlcv)
+					}
+				}
+				resultCh <- result{Index: i, Cand: c, Valid: valid}
+			}(idx, cand)
+		}
+
+		// Collect results as they arrive
+		baseProgress := len(cached)
+		for j := 0; j < len(uncached); j++ {
+			r := <-resultCh
+			progress := baseProgress + j + 1
+			if r.Valid {
+				name := r.Cand.Name
+				if name == "" {
+					name = r.Cand.Symbol
+				}
+				db.Create(&TradingWatchlistItem{
+					Symbol:  r.Cand.Symbol,
+					Name:    name,
+					AddedBy: uid,
+					IsLive:  true,
+				})
+				added++
+				msg := fmt.Sprintf(`{"current":%d,"total":%d,"symbol":"%s","status":"added"}`, progress, total, r.Cand.Symbol)
+				fmt.Fprintf(c.Writer, "data: %s\n\n", msg)
+			} else {
+				failed++
+				msg := fmt.Sprintf(`{"current":%d,"total":%d,"symbol":"%s","status":"failed"}`, progress, total, r.Cand.Symbol)
+				fmt.Fprintf(c.Writer, "data: %s\n\n", msg)
+			}
+			c.Writer.Flush()
+		}
 	}
 
 	// Final event
 	msg := fmt.Sprintf(`{"done":true,"added":%d,"skipped":%d,"failed":%d}`, added, skipped, failed)
 	fmt.Fprintf(c.Writer, "data: %s\n\n", msg)
 	c.Writer.Flush()
+}
+
+var backtestPeriodMap = map[string]string{
+	"5m": "60d", "15m": "60d", "60m": "2y", "1h": "2y",
+	"2h": "2y", "4h": "2y", "1d": "2y", "1wk": "10y",
+}
+
+func instantiateStrategy(strategyName string, params map[string]interface{}) (TradingStrategy, error) {
+	pFloat := func(key string, def float64) float64 {
+		if v, ok := params[key]; ok {
+			switch val := v.(type) {
+			case float64:
+				return val
+			case int:
+				return float64(val)
+			}
+		}
+		return def
+	}
+	pInt := func(key string, def int) int {
+		if v, ok := params[key]; ok {
+			switch val := v.(type) {
+			case float64:
+				return int(val)
+			case int:
+				return val
+			}
+		}
+		return def
+	}
+	pBool := func(key string) bool {
+		if v, ok := params[key]; ok {
+			switch val := v.(type) {
+			case bool:
+				return val
+			case float64:
+				return val != 0
+			}
+		}
+		return false
+	}
+
+	switch strategyName {
+	case "regression_scalping":
+		return &RegressionScalpingStrategy{
+			Degree: pInt("degree", 0), Length: pInt("length", 0), Multiplier: pFloat("multiplier", 0),
+			RiskReward: pFloat("risk_reward", 0), SLLookback: pInt("sl_lookback", 0),
+			ConfirmationRequired: pInt("confirmation_required", 1),
+		}, nil
+	case "hybrid_ai_trend":
+		return &HybridAITrendStrategy{
+			BB1Period: pInt("bb1_period", 0), BB1Stdev: pFloat("bb1_stdev", 0),
+			BB2Period: pInt("bb2_period", 0), BB2Stdev: pFloat("bb2_stdev", 0),
+			BB3Period: pInt("bb3_period", 0), BB3Stdev: pFloat("bb3_stdev", 0),
+			BB4Period: pInt("bb4_period", 0), BB4Stdev: pFloat("bb4_stdev", 0),
+			NWBandwidth: pFloat("nw_bandwidth", 0), NWLookback: pInt("nw_lookback", 0),
+			SLBuffer: pFloat("sl_buffer", 0), RiskReward: pFloat("risk_reward", 0),
+			HybridFilter: pBool("hybrid_filter"),
+			HybridLongThresh: pFloat("hybrid_long_thresh", 0), HybridShortThresh: pFloat("hybrid_short_thresh", 0),
+			ConfirmCandle: pBool("confirm_candle"), MinBandDist: pFloat("min_band_dist", 0),
+		}, nil
+	case "diamond_signals":
+		return &DiamondSignalsStrategy{
+			PatternLength: pInt("pattern_length", 0), RSIPeriod: pInt("rsi_period", 0),
+			ConfluenceMin: pInt("confluence_min", 0), RSIOverbought: pFloat("rsi_overbought", 0),
+			RSIOversold: pFloat("rsi_oversold", 0), Cooldown: pInt("cooldown", 0), RiskReward: pFloat("risk_reward", 0),
+		}, nil
+	case "smart_money_flow":
+		return &SmartMoneyFlowStrategy{
+			TrendLength: pInt("trend_length", 0), BasisSmooth: pInt("basis_smooth", 0),
+			FlowWindow: pInt("flow_window", 0), FlowSmooth: pInt("flow_smooth", 0),
+			FlowBoost: pFloat("flow_boost", 0), ATRLength: pInt("atr_length", 0),
+			BandTightness: pFloat("band_tightness", 0), BandExpansion: pFloat("band_expansion", 0),
+			DotCooldown: pInt("dot_cooldown", 0), RiskReward: pFloat("risk_reward", 0),
+		}, nil
+	case "hann_trend":
+		return &HannTrendStrategy{
+			DMHLength: pInt("dmh_length", 0), SARStart: pFloat("sar_start", 0),
+			SARIncrement: pFloat("sar_increment", 0), SARMax: pFloat("sar_max", 0),
+			SwingLookback: pInt("swing_lookback", 0), RiskReward: pFloat("risk_reward", 0),
+			SLBuffer: pFloat("sl_buffer", 0),
+		}, nil
+	default:
+		return nil, fmt.Errorf("unbekannte Strategie: %s", strategyName)
+	}
 }
 
 func runBacktestHandler(c *gin.Context) {
@@ -21416,21 +22355,16 @@ func runBacktestHandler(c *gin.Context) {
 		return
 	}
 
-	periodMap := map[string]string{
-		"5m": "60d", "15m": "60d", "60m": "2y", "1h": "2y",
-		"2h": "2y", "4h": "2y", "1d": "2y", "1wk": "10y",
-	}
 	interval := req.Interval
 	if interval == "" {
 		interval = "4h"
 	}
-	period, ok := periodMap[interval]
-	if !ok {
+	if _, ok := backtestPeriodMap[interval]; !ok {
 		c.JSON(400, gin.H{"error": "Ungültiges Interval"})
 		return
 	}
 
-	ohlcv, err := fetchOHLCVFromYahoo(symbol, period, interval)
+	ohlcv, err := getOHLCVCached(symbol, interval, 24*time.Hour)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "Daten konnten nicht geladen werden: " + err.Error()})
 		return
@@ -21440,67 +22374,14 @@ func runBacktestHandler(c *gin.Context) {
 		return
 	}
 
-	// Helper to read params
-	pFloat := func(key string, def float64) float64 {
-		if v, ok := req.Params[key]; ok {
-			switch val := v.(type) {
-			case float64: return val
-			case int: return float64(val)
-			}
-		}
-		return def
-	}
-	pInt := func(key string, def int) int {
-		if v, ok := req.Params[key]; ok {
-			switch val := v.(type) {
-			case float64: return int(val)
-			case int: return val
-			}
-		}
-		return def
-	}
-	pBool := func(key string) bool {
-		if v, ok := req.Params[key]; ok {
-			switch val := v.(type) {
-			case bool: return val
-			case float64: return val != 0
-			}
-		}
-		return false
-	}
-
-	var strategy TradingStrategy
-	switch req.Strategy {
-	case "regression_scalping":
-		strategy = &RegressionScalpingStrategy{
-			Degree: pInt("degree", 0), Length: pInt("length", 0), Multiplier: pFloat("multiplier", 0),
-			RiskReward: pFloat("risk_reward", 0), SLLookback: pInt("sl_lookback", 0),
-			ConfirmationRequired: pInt("confirmation_required", 1),
-		}
-	case "hybrid_ai_trend":
-		strategy = &HybridAITrendStrategy{
-			BB1Period: pInt("bb1_period", 0), BB1Stdev: pFloat("bb1_stdev", 0),
-			BB2Period: pInt("bb2_period", 0), BB2Stdev: pFloat("bb2_stdev", 0),
-			BB3Period: pInt("bb3_period", 0), BB3Stdev: pFloat("bb3_stdev", 0),
-			BB4Period: pInt("bb4_period", 0), BB4Stdev: pFloat("bb4_stdev", 0),
-			NWBandwidth: pFloat("nw_bandwidth", 0), NWLookback: pInt("nw_lookback", 0),
-			SLBuffer: pFloat("sl_buffer", 0), RiskReward: pFloat("risk_reward", 0),
-			HybridFilter: pBool("hybrid_filter"),
-			HybridLongThresh: pFloat("hybrid_long_thresh", 0), HybridShortThresh: pFloat("hybrid_short_thresh", 0),
-			ConfirmCandle: pBool("confirm_candle"), MinBandDist: pFloat("min_band_dist", 0),
-		}
-	case "diamond_signals":
-		strategy = &DiamondSignalsStrategy{
-			PatternLength: pInt("pattern_length", 0), RSIPeriod: pInt("rsi_period", 0),
-			ConfluenceMin: pInt("confluence_min", 0), RSIOverbought: pFloat("rsi_overbought", 0),
-			RSIOversold: pFloat("rsi_oversold", 0), Cooldown: pInt("cooldown", 0), RiskReward: pFloat("risk_reward", 0),
-		}
-	default:
-		c.JSON(400, gin.H{"error": "Unbekannte Strategie"})
+	strategy, err := instantiateStrategy(req.Strategy, req.Params)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 
 	result := runArenaBacktest(ohlcv, strategy)
+	log.Printf("[Arena-Single] %s: bars=%d trades=%d winrate=%.1f%% interval=%s", symbol, len(ohlcv), len(result.Trades), result.Metrics.WinRate, interval)
 	result.ChartData = ohlcv
 
 	// Compute indicators if strategy supports it
@@ -21582,7 +22463,7 @@ func backtestBatchHandler(c *gin.Context) {
 	var stocks []Stock
 	db.Select("symbol").Find(&stocks)
 
-	strategies := []string{"regression_scalping", "hybrid_ai_trend", "diamond_signals"}
+	strategies := []string{"regression_scalping", "hybrid_ai_trend", "diamond_signals", "smart_money_flow", "hann_trend"}
 	count := len(stocks) * len(strategies)
 
 	go func() {
@@ -21593,10 +22474,9 @@ func backtestBatchHandler(c *gin.Context) {
 		}()
 
 		interval := "4h"
-		period := "60d"
 
 		for _, stock := range stocks {
-			ohlcv, err := fetchOHLCVFromYahoo(stock.Symbol, period, interval)
+			ohlcv, err := getOHLCVCached(stock.Symbol, interval, 24*time.Hour)
 			if err != nil || len(ohlcv) < 50 {
 				continue
 			}
@@ -21610,6 +22490,10 @@ func backtestBatchHandler(c *gin.Context) {
 					strategy = &HybridAITrendStrategy{}
 				case "diamond_signals":
 					strategy = &DiamondSignalsStrategy{}
+				case "smart_money_flow":
+					strategy = &SmartMoneyFlowStrategy{}
+				case "hann_trend":
+					strategy = &HannTrendStrategy{}
 				}
 
 				result := runArenaBacktest(ohlcv, strategy)
@@ -21641,7 +22525,6 @@ func backtestBatchHandler(c *gin.Context) {
 					})
 				}
 			}
-			time.Sleep(500 * time.Millisecond) // Rate limiting
 		}
 		log.Printf("[Arena] Batch backtest completed for %d stocks", len(stocks))
 	}()
@@ -21690,82 +22573,14 @@ func backtestWatchlistHandler(c *gin.Context) {
 	if interval == "" {
 		interval = "4h"
 	}
-	period, ok := periodMap[interval]
-	if !ok {
+	if _, ok := periodMap[interval]; !ok {
 		c.JSON(400, gin.H{"error": "Ungültiges Interval"})
 		return
 	}
 
-	// Param helpers (same as runBacktestHandler)
-	pFloat := func(key string, def float64) float64 {
-		if v, ok := req.Params[key]; ok {
-			switch val := v.(type) {
-			case float64:
-				return val
-			case int:
-				return float64(val)
-			}
-		}
-		return def
-	}
-	pInt := func(key string, def int) int {
-		if v, ok := req.Params[key]; ok {
-			switch val := v.(type) {
-			case float64:
-				return int(val)
-			case int:
-				return val
-			}
-		}
-		return def
-	}
-
-	pBool := func(key string) bool {
-		if v, ok := req.Params[key]; ok {
-			switch val := v.(type) {
-			case bool:
-				return val
-			case float64:
-				return val != 0
-			}
-		}
-		return false
-	}
-
-	// Build strategy factory
-	createStrategy := func() TradingStrategy {
-		switch req.Strategy {
-		case "regression_scalping":
-			return &RegressionScalpingStrategy{
-				Degree: pInt("degree", 0), Length: pInt("length", 0), Multiplier: pFloat("multiplier", 0),
-				RiskReward: pFloat("risk_reward", 0), SLLookback: pInt("sl_lookback", 0),
-				ConfirmationRequired: pInt("confirmation_required", 1),
-			}
-		case "hybrid_ai_trend":
-			return &HybridAITrendStrategy{
-				BB1Period: pInt("bb1_period", 0), BB1Stdev: pFloat("bb1_stdev", 0),
-				BB2Period: pInt("bb2_period", 0), BB2Stdev: pFloat("bb2_stdev", 0),
-				BB3Period: pInt("bb3_period", 0), BB3Stdev: pFloat("bb3_stdev", 0),
-				BB4Period: pInt("bb4_period", 0), BB4Stdev: pFloat("bb4_stdev", 0),
-				NWBandwidth: pFloat("nw_bandwidth", 0), NWLookback: pInt("nw_lookback", 0),
-				SLBuffer: pFloat("sl_buffer", 0), RiskReward: pFloat("risk_reward", 0),
-				HybridFilter: pBool("hybrid_filter"),
-				HybridLongThresh: pFloat("hybrid_long_thresh", 0), HybridShortThresh: pFloat("hybrid_short_thresh", 0),
-				ConfirmCandle: pBool("confirm_candle"), MinBandDist: pFloat("min_band_dist", 0),
-			}
-		case "diamond_signals":
-			return &DiamondSignalsStrategy{
-				PatternLength: pInt("pattern_length", 0), RSIPeriod: pInt("rsi_period", 0),
-				ConfluenceMin: pInt("confluence_min", 0), RSIOverbought: pFloat("rsi_overbought", 0),
-				RSIOversold: pFloat("rsi_oversold", 0), Cooldown: pInt("cooldown", 0), RiskReward: pFloat("risk_reward", 0),
-			}
-		default:
-			return nil
-		}
-	}
-
-	if createStrategy() == nil {
-		c.JSON(400, gin.H{"error": "Unbekannte Strategie"})
+	// Validate strategy
+	if _, err := instantiateStrategy(req.Strategy, req.Params); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -21778,8 +22593,9 @@ func backtestWatchlistHandler(c *gin.Context) {
 	}
 
 	type stockResult struct {
-		Symbol string
-		Trades []ArenaBacktestTrade
+		Symbol  string
+		Trades  []ArenaBacktestTrade
+		Metrics ArenaBacktestMetrics
 	}
 
 	// SSE streaming for progress
@@ -21793,7 +22609,7 @@ func backtestWatchlistHandler(c *gin.Context) {
 	var completed int64
 	results := make([]stockResult, total)
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 5) // max 5 concurrent
+	sem := make(chan struct{}, 15) // max 15 concurrent
 
 	// Progress channel
 	type progressMsg struct {
@@ -21807,15 +22623,21 @@ func backtestWatchlistHandler(c *gin.Context) {
 		wg.Add(1)
 		go func(i int, symbol string) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[Arena] Batch panic for %s: %v", symbol, r)
+					progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true}
+				}
+			}()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			ohlcv, err := fetchOHLCVFromYahoo(symbol, period, interval)
+			ohlcv, err := getOHLCVCached(symbol, interval, 24*time.Hour)
 			if err != nil || len(ohlcv) < 50 {
 				progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true}
 				return
 			}
-			strategy := createStrategy()
+			strategy, _ := instantiateStrategy(req.Strategy, req.Params)
 			result := runArenaBacktest(ohlcv, strategy)
 			closedTrades := make([]ArenaBacktestTrade, 0)
 			for _, t := range result.Trades {
@@ -21823,7 +22645,8 @@ func backtestWatchlistHandler(c *gin.Context) {
 					closedTrades = append(closedTrades, t)
 				}
 			}
-			results[i] = stockResult{Symbol: symbol, Trades: closedTrades}
+			log.Printf("[Arena-Batch] %s: bars=%d trades=%d closed=%d winrate=%.1f%% interval=%s", symbol, len(ohlcv), len(result.Trades), len(closedTrades), result.Metrics.WinRate, interval)
+			results[i] = stockResult{Symbol: symbol, Trades: closedTrades, Metrics: result.Metrics}
 			progressCh <- progressMsg{Index: i, Symbol: symbol}
 		}(idx, item.Symbol)
 	}
@@ -21868,7 +22691,8 @@ func backtestWatchlistHandler(c *gin.Context) {
 			})
 			allArena = append(allArena, t)
 		}
-		perStock[sr.Symbol] = calculateBacktestLabMetrics(sr.Trades)
+		// Use metrics directly from runArenaBacktest (identical to single backtest)
+		perStock[sr.Symbol] = sr.Metrics
 	}
 
 	aggregated := calculateBacktestLabMetrics(allArena)
@@ -21995,7 +22819,9 @@ func fetchOHLCVFromYahoo(symbol, period, interval string) ([]OHLCV, error) {
 	yahooURL := fmt.Sprintf("https://query2.finance.yahoo.com/v8/finance/chart/%s?range=%s&interval=%s&crumb=%s",
 		symbol, period, interval, crumb)
 
-	req, _ := http.NewRequest("GET", yahooURL, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", yahooURL, nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
 	resp, err := client.Do(req)
@@ -22055,6 +22881,515 @@ func fetchOHLCVFromYahoo(symbol, period, interval string) ([]OHLCV, error) {
 	}
 
 	return ohlcv, nil
+}
+
+// ==================== Alpaca Data API ====================
+
+type AlpacaBar struct {
+	T  string  `json:"t"`  // RFC3339 timestamp
+	O  float64 `json:"o"`
+	H  float64 `json:"h"`
+	L  float64 `json:"l"`
+	C  float64 `json:"c"`
+	V  float64 `json:"v"`
+	N  int     `json:"n"`
+	VW float64 `json:"vw"`
+}
+
+type AlpacaBarsResponse struct {
+	Bars          []AlpacaBar `json:"bars"`
+	NextPageToken string      `json:"next_page_token"`
+}
+
+var alpacaIntervalMap = map[string]string{
+	"5m": "5Min", "15m": "15Min", "1h": "1Hour", "60m": "1Hour",
+	"2h": "2Hour", "4h": "4Hour",
+	"1d": "1Day", "1D": "1Day", "1wk": "1Week", "1W": "1Week",
+}
+
+var alpacaLookbackMap = map[string]time.Duration{
+	"5Min": 60 * 24 * time.Hour, "15Min": 60 * 24 * time.Hour,
+	"1Hour": 2 * 365 * 24 * time.Hour, "2Hour": 2 * 365 * 24 * time.Hour, "4Hour": 2 * 365 * 24 * time.Hour,
+	"1Day": 5 * 365 * 24 * time.Hour, "1Week": 10 * 365 * 24 * time.Hour,
+}
+
+func fetchOHLCVFromAlpaca(symbol, interval string) ([]OHLCV, error) {
+	if alpacaDataKey == "" || alpacaDataSecret == "" {
+		return nil, fmt.Errorf("alpaca data keys not configured")
+	}
+
+	alpacaInterval, ok := alpacaIntervalMap[interval]
+	if !ok {
+		return nil, fmt.Errorf("unsupported alpaca interval: %s", interval)
+	}
+
+	lookback := alpacaLookbackMap[alpacaInterval]
+	if lookback == 0 {
+		lookback = 60 * 24 * time.Hour
+	}
+	start := time.Now().Add(-lookback).Format(time.RFC3339)
+
+	var allBars []OHLCV
+	pageToken := ""
+
+	for {
+		if alpacaRateTicker != nil {
+			<-alpacaRateTicker.C
+		}
+
+		reqURL := fmt.Sprintf("https://data.alpaca.markets/v2/stocks/%s/bars?timeframe=%s&start=%s&limit=10000&feed=iex&adjustment=split",
+			symbol, alpacaInterval, url.QueryEscape(start))
+		if pageToken != "" {
+			reqURL += "&page_token=" + url.QueryEscape(pageToken)
+		}
+
+		req, _ := http.NewRequest("GET", reqURL, nil)
+		req.Header.Set("APCA-API-KEY-ID", alpacaDataKey)
+		req.Header.Set("APCA-API-SECRET-KEY", alpacaDataSecret)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("alpaca request failed: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != 200 {
+			return nil, fmt.Errorf("alpaca returned status %d: %s", resp.StatusCode, string(body))
+		}
+
+		var barsResp AlpacaBarsResponse
+		if err := json.Unmarshal(body, &barsResp); err != nil {
+			return nil, fmt.Errorf("alpaca parse error: %v", err)
+		}
+
+		for _, bar := range barsResp.Bars {
+			t, err := time.Parse(time.RFC3339, bar.T)
+			if err != nil {
+				continue
+			}
+			allBars = append(allBars, OHLCV{
+				Time: t.Unix(), Open: bar.O, High: bar.H,
+				Low: bar.L, Close: bar.C, Volume: bar.V,
+			})
+		}
+
+		if barsResp.NextPageToken == "" {
+			break
+		}
+		pageToken = barsResp.NextPageToken
+	}
+
+	if len(allBars) == 0 {
+		return nil, fmt.Errorf("no alpaca data for %s/%s", symbol, interval)
+	}
+
+	return allBars, nil
+}
+
+func isNonUSStock(symbol string) bool {
+	return strings.Contains(symbol, ".")
+}
+
+// ==================== Alpaca WebSocket Client ====================
+
+type AlpacaWSBar struct {
+	T  string  `json:"t"`
+	S  string  `json:"S"`
+	O  float64 `json:"o"`
+	H  float64 `json:"h"`
+	L  float64 `json:"l"`
+	C  float64 `json:"c"`
+	V  float64 `json:"v"`
+}
+
+type AlpacaWSClient struct {
+	conn          *websocket.Conn
+	mu            sync.Mutex
+	apiKey        string
+	secretKey     string
+	subscriptions map[string]bool
+	barHandlers   map[string][]func(AlpacaWSBar)
+	handlerMu     sync.RWMutex
+	stopChan      chan struct{}
+	isConnected   bool
+	reconnectWait time.Duration
+}
+
+func newAlpacaWSClient(key, secret string) (*AlpacaWSClient, error) {
+	client := &AlpacaWSClient{
+		apiKey:        key,
+		secretKey:     secret,
+		subscriptions: make(map[string]bool),
+		barHandlers:   make(map[string][]func(AlpacaWSBar)),
+		stopChan:      make(chan struct{}),
+		reconnectWait: 1 * time.Second,
+	}
+	if err := client.connect(); err != nil {
+		return nil, err
+	}
+	go client.readPump()
+	return client, nil
+}
+
+func (c *AlpacaWSClient) connect() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	conn, _, err := dialer.Dial("wss://stream.data.alpaca.markets/v2/iex", nil)
+	if err != nil {
+		return fmt.Errorf("alpaca ws dial failed: %v", err)
+	}
+	c.conn = conn
+
+	// Read welcome
+	_, _, err = conn.ReadMessage()
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("alpaca ws welcome read failed: %v", err)
+	}
+
+	// Auth
+	authMsg := map[string]string{"action": "auth", "key": c.apiKey, "secret": c.secretKey}
+	if err := conn.WriteJSON(authMsg); err != nil {
+		conn.Close()
+		return fmt.Errorf("alpaca ws auth write failed: %v", err)
+	}
+
+	_, authResp, err := conn.ReadMessage()
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("alpaca ws auth read failed: %v", err)
+	}
+
+	var authMsgs []map[string]interface{}
+	if json.Unmarshal(authResp, &authMsgs) == nil && len(authMsgs) > 0 {
+		if msg, ok := authMsgs[0]["msg"]; ok && msg == "authenticated" {
+			c.isConnected = true
+			c.reconnectWait = 1 * time.Second
+			log.Println("[AlpacaWS] Authenticated successfully")
+			return nil
+		}
+	}
+
+	conn.Close()
+	return fmt.Errorf("alpaca ws auth failed: %s", string(authResp))
+}
+
+func (c *AlpacaWSClient) Subscribe(symbols []string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.conn == nil || !c.isConnected {
+		return fmt.Errorf("not connected")
+	}
+
+	var newSymbols []string
+	for _, s := range symbols {
+		if !c.subscriptions[s] {
+			newSymbols = append(newSymbols, s)
+			c.subscriptions[s] = true
+		}
+	}
+	if len(newSymbols) == 0 {
+		return nil
+	}
+
+	msg := map[string]interface{}{"action": "subscribe", "bars": newSymbols}
+	if err := c.conn.WriteJSON(msg); err != nil {
+		return err
+	}
+	log.Printf("[AlpacaWS] Subscribed to %d symbols (total: %d)", len(newSymbols), len(c.subscriptions))
+	return nil
+}
+
+func (c *AlpacaWSClient) Unsubscribe(symbols []string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == nil {
+		return nil
+	}
+	for _, s := range symbols {
+		delete(c.subscriptions, s)
+	}
+	return c.conn.WriteJSON(map[string]interface{}{"action": "unsubscribe", "bars": symbols})
+}
+
+func (c *AlpacaWSClient) OnBar(symbol string, handler func(AlpacaWSBar)) {
+	c.handlerMu.Lock()
+	defer c.handlerMu.Unlock()
+	c.barHandlers[symbol] = append(c.barHandlers[symbol], handler)
+}
+
+func (c *AlpacaWSClient) IsConnected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.isConnected
+}
+
+func (c *AlpacaWSClient) Close() {
+	select {
+	case <-c.stopChan:
+		return
+	default:
+		close(c.stopChan)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn != nil {
+		c.conn.Close()
+		c.isConnected = false
+	}
+}
+
+// ==================== Shared WebSocket Manager ====================
+
+type SharedWSManager struct {
+	mu              sync.Mutex
+	client          *AlpacaWSClient
+	refCount        map[string]int                        // symbol → number of sessions needing it
+	sessionHandlers map[uint]map[string]func(AlpacaWSBar) // sessionID → symbol → handler
+}
+
+var sharedWS *SharedWSManager
+
+func initSharedWS() {
+	if alpacaDataKey == "" || alpacaDataSecret == "" {
+		return
+	}
+	if os.Getenv("ALPACA_WS_DISABLED") == "true" {
+		log.Println("[SharedWS] WebSocket deaktiviert (ALPACA_WS_DISABLED=true) — nur REST-API für Kursdaten")
+		return
+	}
+	client, err := newAlpacaWSClient(alpacaDataKey, alpacaDataSecret)
+	if err != nil {
+		log.Printf("[SharedWS] Verbindung fehlgeschlagen: %v — Sessions nutzen eigene Clients", err)
+		return
+	}
+	sharedWS = &SharedWSManager{
+		client:          client,
+		refCount:        make(map[string]int),
+		sessionHandlers: make(map[uint]map[string]func(AlpacaWSBar)),
+	}
+	log.Println("[SharedWS] Globaler WebSocket connected")
+}
+
+func (m *SharedWSManager) IsConnected() bool {
+	if m == nil || m.client == nil {
+		return false
+	}
+	return m.client.IsConnected()
+}
+
+func (m *SharedWSManager) AddSession(sessionID uint, symbols []string, handler func(string, AlpacaWSBar)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.sessionHandlers[sessionID] != nil {
+		return // already registered
+	}
+
+	handlers := make(map[string]func(AlpacaWSBar), len(symbols))
+	var newSymbols []string
+
+	for _, sym := range symbols {
+		symbol := sym
+		handlers[symbol] = func(bar AlpacaWSBar) {
+			handler(symbol, bar)
+		}
+		prev := m.refCount[symbol]
+		m.refCount[symbol] = prev + 1
+		if prev == 0 {
+			newSymbols = append(newSymbols, symbol)
+			// Register dispatch handler for this symbol on the WSClient
+			m.client.OnBar(symbol, func(bar AlpacaWSBar) {
+				m.dispatch(symbol, bar)
+			})
+		}
+	}
+
+	m.sessionHandlers[sessionID] = handlers
+
+	if len(newSymbols) > 0 {
+		if err := m.client.Subscribe(newSymbols); err != nil {
+			log.Printf("[SharedWS] Subscribe fehlgeschlagen für %d Symbole: %v", len(newSymbols), err)
+		}
+	}
+
+	log.Printf("[SharedWS] AddSession #%d: subscribed %d new symbols (total: %d)", sessionID, len(newSymbols), len(m.refCount))
+}
+
+func (m *SharedWSManager) RemoveSession(sessionID uint) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	handlers, ok := m.sessionHandlers[sessionID]
+	if !ok {
+		return
+	}
+	delete(m.sessionHandlers, sessionID)
+
+	var unsubSymbols []string
+	for symbol := range handlers {
+		m.refCount[symbol]--
+		if m.refCount[symbol] <= 0 {
+			delete(m.refCount, symbol)
+			unsubSymbols = append(unsubSymbols, symbol)
+		}
+	}
+
+	if len(unsubSymbols) > 0 {
+		if err := m.client.Unsubscribe(unsubSymbols); err != nil {
+			log.Printf("[SharedWS] Unsubscribe fehlgeschlagen für %d Symbole: %v", len(unsubSymbols), err)
+		}
+		// Clean up bar handlers for symbols no longer needed
+		m.client.handlerMu.Lock()
+		for _, sym := range unsubSymbols {
+			delete(m.client.barHandlers, sym)
+		}
+		m.client.handlerMu.Unlock()
+	}
+
+	log.Printf("[SharedWS] RemoveSession #%d: unsubscribed %d symbols (total: %d)", sessionID, len(unsubSymbols), len(m.refCount))
+}
+
+func (m *SharedWSManager) dispatch(symbol string, bar AlpacaWSBar) {
+	m.mu.Lock()
+	handlers := make([]func(AlpacaWSBar), 0)
+	for _, symHandlers := range m.sessionHandlers {
+		if h, ok := symHandlers[symbol]; ok {
+			handlers = append(handlers, h)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, h := range handlers {
+		h(bar)
+	}
+}
+
+func (c *AlpacaWSClient) readPump() {
+	for {
+		select {
+		case <-c.stopChan:
+			return
+		default:
+		}
+
+		c.mu.Lock()
+		conn := c.conn
+		c.mu.Unlock()
+
+		if conn == nil {
+			c.reconnect()
+			continue
+		}
+
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			log.Printf("[AlpacaWS] Read error: %v — reconnecting", err)
+			c.mu.Lock()
+			c.isConnected = false
+			c.mu.Unlock()
+			c.reconnect()
+			continue
+		}
+
+		var msgs []map[string]interface{}
+		if json.Unmarshal(message, &msgs) != nil {
+			continue
+		}
+
+		for _, msg := range msgs {
+			t, _ := msg["T"].(string)
+			if t != "b" {
+				continue
+			}
+			barJSON, _ := json.Marshal(msg)
+			var bar AlpacaWSBar
+			if json.Unmarshal(barJSON, &bar) != nil {
+				continue
+			}
+			c.handlerMu.RLock()
+			handlers := c.barHandlers[bar.S]
+			c.handlerMu.RUnlock()
+			for _, h := range handlers {
+				h(bar)
+			}
+		}
+	}
+}
+
+func (c *AlpacaWSClient) reconnect() {
+	select {
+	case <-c.stopChan:
+		return
+	default:
+	}
+	time.Sleep(c.reconnectWait)
+	if c.reconnectWait < 60*time.Second {
+		c.reconnectWait *= 2
+	}
+	log.Printf("[AlpacaWS] Reconnecting (backoff: %v)...", c.reconnectWait)
+	if err := c.connect(); err != nil {
+		log.Printf("[AlpacaWS] Reconnect failed: %v", err)
+		return
+	}
+	// Re-subscribe
+	c.mu.Lock()
+	symbols := make([]string, 0, len(c.subscriptions))
+	for s := range c.subscriptions {
+		symbols = append(symbols, s)
+	}
+	if len(symbols) > 0 && c.conn != nil {
+		c.conn.WriteJSON(map[string]interface{}{"action": "subscribe", "bars": symbols})
+	}
+	c.mu.Unlock()
+	log.Printf("[AlpacaWS] Reconnected, re-subscribed to %d symbols", len(symbols))
+}
+
+// ==================== Bar Aggregator ====================
+
+type BarAggregator struct {
+	interval      time.Duration
+	currentCandle *OHLCV
+	candleStart   int64
+	mu            sync.Mutex
+	onComplete    func(OHLCV)
+}
+
+func newBarAggregator(interval time.Duration, onComplete func(OHLCV)) *BarAggregator {
+	return &BarAggregator{interval: interval, onComplete: onComplete}
+}
+
+func (a *BarAggregator) AddBar(bar OHLCV) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	intervalSec := int64(a.interval.Seconds())
+	bucketStart := (bar.Time / intervalSec) * intervalSec
+
+	if a.currentCandle == nil || bucketStart != a.candleStart {
+		if a.currentCandle != nil && a.onComplete != nil {
+			a.onComplete(*a.currentCandle)
+		}
+		a.candleStart = bucketStart
+		a.currentCandle = &OHLCV{
+			Time: bucketStart, Open: bar.Open, High: bar.High,
+			Low: bar.Low, Close: bar.Close, Volume: bar.Volume,
+		}
+		return
+	}
+
+	if bar.High > a.currentCandle.High {
+		a.currentCandle.High = bar.High
+	}
+	if bar.Low < a.currentCandle.Low {
+		a.currentCandle.Low = bar.Low
+	}
+	a.currentCandle.Close = bar.Close
+	a.currentCandle.Volume += bar.Volume
 }
 
 func getTradingPositions(c *gin.Context) {
@@ -22130,7 +23465,7 @@ func runTradingScan() {
 	}
 
 	for _, item := range items {
-		ohlcv, err := fetchOHLCVFromYahoo(item.Symbol, "5d", "5m")
+		ohlcv, err := getOHLCVCached(item.Symbol, "5m", 10*time.Minute)
 		if err != nil {
 			fmt.Printf("[TradingScheduler] Error fetching %s: %v\n", item.Symbol, err)
 			continue
@@ -22225,11 +23560,16 @@ type liveSessionState struct {
 	ScanTotal         int
 	ScanProgress      int
 	CurrentSymbol     string
-	OHLCVCache        map[string][]OHLCV // symbol -> cached bars
-	CacheMu           sync.RWMutex
 	AlpacaActive      bool
 	AlpacaLastChecked time.Time
 	AlpacaError       string
+	// WebSocket fields
+	WSClient        *AlpacaWSClient
+	UsesSharedWS    bool
+	Aggregators     map[string]*BarAggregator
+	WSConnected     bool
+	LastBarReceived time.Time
+	Mode            string // "polling" or "websocket"
 }
 
 var (
@@ -22243,27 +23583,7 @@ func getLiveSessionState(sessionID uint) *liveSessionState {
 	return liveSchedulers[sessionID]
 }
 
-// Delta period: how much data to fetch during polls (just recent bars)
-func getPollFetchPeriod(interval string) string {
-	switch interval {
-	case "5m":
-		return "2d"
-	case "15m":
-		return "5d"
-	case "60m", "1h":
-		return "7d"
-	case "2h":
-		return "14d"
-	case "4h":
-		return "1mo"
-	case "1d":
-		return "3mo"
-	case "1wk":
-		return "6mo"
-	default:
-		return "7d"
-	}
-}
+
 
 func mergeOHLCV(cached, fresh []OHLCV) []OHLCV {
 	if len(cached) == 0 {
@@ -22283,32 +23603,53 @@ func mergeOHLCV(cached, fresh []OHLCV) []OHLCV {
 	return append(cached[:cutIdx], fresh...)
 }
 
-// Prefetch full OHLCV for all symbols on session start/resume
-func prefetchLiveOHLCV(state *liveSessionState, symbols []string, period, yahooInterval string, sessionID uint) {
-	const maxWorkers = 10
-	sem := make(chan struct{}, maxWorkers)
-	var wg sync.WaitGroup
+// triggerPriorityRefresh fills the persistent OHLCV cache for symbols missing data.
+// Uses 5 parallel workers with 500ms delay (~7 min for 2000 symbols).
+func triggerPriorityRefresh(symbols []string, yahooInterval string, sessionID uint) {
+	period := backtestPeriodMap[yahooInterval]
+	if period == "" {
+		period = "60d"
+	}
 
-	logLiveEvent(sessionID, "INFO", "-", fmt.Sprintf("Prefetch gestartet — lade %d Aktien (%s %s)", len(symbols), period, yahooInterval))
+	// Find symbols without cache data
+	var missing []string
+	for _, sym := range symbols {
+		var cache OHLCVCache
+		if db.Where("symbol = ? AND interval = ?", sym, yahooInterval).First(&cache).Error != nil {
+			missing = append(missing, sym)
+		}
+	}
+
+	if len(missing) == 0 {
+		logLiveEvent(sessionID, "INFO", "-", fmt.Sprintf("Cache OK — alle %d Symbole vorhanden (%s)", len(symbols), yahooInterval))
+		return
+	}
+
+	logLiveEvent(sessionID, "INFO", "-", fmt.Sprintf("Priority-Prefetch: %d/%d Symbole fehlen im Cache (%s)", len(missing), len(symbols), yahooInterval))
 	start := time.Now()
 
-	for _, sym := range symbols {
+	const maxWorkers = 5
+	sem := make(chan struct{}, maxWorkers)
+	var wg sync.WaitGroup
+	var fetched int64
+
+	for _, sym := range missing {
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(symbol string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			ohlcv, err := fetchOHLCVFromYahoo(symbol, period, yahooInterval)
-			if err != nil || len(ohlcv) == 0 {
+			time.Sleep(500 * time.Millisecond) // Rate limit
+			// Use getOHLCVCached for consistent Alpaca→Yahoo priority (same as backtest)
+			_, err := getOHLCVCached(symbol, yahooInterval, 1*time.Millisecond)
+			if err != nil {
 				return
 			}
-			state.CacheMu.Lock()
-			state.OHLCVCache[symbol] = ohlcv
-			state.CacheMu.Unlock()
+			atomic.AddInt64(&fetched, 1)
 		}(sym)
 	}
 	wg.Wait()
-	logLiveEvent(sessionID, "INFO", "-", fmt.Sprintf("Prefetch abgeschlossen — %d Aktien in %.1fs", len(symbols), time.Since(start).Seconds()))
+	logLiveEvent(sessionID, "INFO", "-", fmt.Sprintf("Priority-Prefetch abgeschlossen — %d Symbole in %.1fs", fetched, time.Since(start).Seconds()))
 }
 
 func logLiveEvent(sessionID uint, level, symbol, message string) {
@@ -22411,6 +23752,21 @@ func createStrategyFromJSON(strategyName, paramsJSON string) TradingStrategy {
 			ConfluenceMin: pInt("confluence_min", 3), RSIOverbought: pFloat("rsi_overbought", 65),
 			RSIOversold: pFloat("rsi_oversold", 35), Cooldown: pInt("cooldown", 5), RiskReward: pFloat("risk_reward", 2.0),
 		}
+	case "smart_money_flow":
+		return &SmartMoneyFlowStrategy{
+			TrendLength: pInt("trend_length", 34), BasisSmooth: pInt("basis_smooth", 3),
+			FlowWindow: pInt("flow_window", 24), FlowSmooth: pInt("flow_smooth", 5),
+			FlowBoost: pFloat("flow_boost", 1.2), ATRLength: pInt("atr_length", 14),
+			BandTightness: pFloat("band_tightness", 0.9), BandExpansion: pFloat("band_expansion", 2.2),
+			DotCooldown: pInt("dot_cooldown", 12), RiskReward: pFloat("risk_reward", 2.0),
+		}
+	case "hann_trend":
+		return &HannTrendStrategy{
+			DMHLength: pInt("dmh_length", 30), SARStart: pFloat("sar_start", 0.02),
+			SARIncrement: pFloat("sar_increment", 0.03), SARMax: pFloat("sar_max", 0.3),
+			SwingLookback: pInt("swing_lookback", 5), RiskReward: pFloat("risk_reward", 2.0),
+			SLBuffer: pFloat("sl_buffer", 0.3),
+		}
 	default:
 		return nil
 	}
@@ -22450,7 +23806,14 @@ func saveLiveTradingConfig(c *gin.Context) {
 	}
 
 	var config LiveTradingConfig
-	db.Where("user_id = ?", uid).FirstOrCreate(&config, LiveTradingConfig{UserID: uid})
+	if configIDStr := c.Query("config_id"); configIDStr != "" {
+		if db.First(&config, configIDStr).Error != nil || config.UserID != uid {
+			c.JSON(400, gin.H{"error": "Config nicht gefunden"})
+			return
+		}
+	} else {
+		db.Where("user_id = ?", uid).FirstOrCreate(&config, LiveTradingConfig{UserID: uid})
+	}
 	config.Strategy = req.Strategy
 	config.Interval = req.Interval
 	config.ParamsJSON = string(paramsBytes)
@@ -22555,11 +23918,12 @@ func alpacaTestOrder(c *gin.Context) {
 	uid := userID.(uint)
 
 	var req struct {
-		Symbol     string  `json:"symbol"`
-		Qty        int     `json:"qty"`
-		Side       string  `json:"side"`
-		StopLoss   float64 `json:"stop_loss"`
+		Symbol    string  `json:"symbol"`
+		Qty       int     `json:"qty"`
+		Side      string  `json:"side"`
+		StopLoss  float64 `json:"stop_loss"`
 		TakeProfit float64 `json:"take_profit"`
+		SessionID  uint   `json:"session_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "Ungültige Anfrage"})
@@ -22575,7 +23939,17 @@ func alpacaTestOrder(c *gin.Context) {
 	}
 
 	var config LiveTradingConfig
-	if db.Where("user_id = ?", uid).First(&config).Error != nil || config.AlpacaApiKey == "" {
+	if req.SessionID > 0 {
+		var session LiveTradingSession
+		if db.Where("id = ? AND user_id = ?", req.SessionID, uid).First(&session).Error != nil {
+			c.JSON(400, gin.H{"error": "Session nicht gefunden"})
+			return
+		}
+		if db.First(&config, session.ConfigID).Error != nil || config.AlpacaApiKey == "" {
+			c.JSON(400, gin.H{"error": "Alpaca nicht konfiguriert"})
+			return
+		}
+	} else if db.Where("user_id = ?", uid).First(&config).Error != nil || config.AlpacaApiKey == "" {
 		c.JSON(400, gin.H{"error": "Alpaca nicht konfiguriert"})
 		return
 	}
@@ -22585,7 +23959,7 @@ func alpacaTestOrder(c *gin.Context) {
 	}
 
 	// Auto-calculate qty from TradeAmount if not provided
-	qty := req.Qty
+	qty := float64(req.Qty)
 	currentPrice := 0.0
 	if qty <= 0 && req.Side == "buy" {
 		price, err := alpacaGetLatestPrice(req.Symbol, config)
@@ -22595,7 +23969,7 @@ func alpacaTestOrder(c *gin.Context) {
 		}
 		currentPrice = price
 		tradeAmountUSD := convertToUSD(config.TradeAmount, config.Currency)
-		qty = int(math.Floor(tradeAmountUSD / price))
+		qty = math.Round(tradeAmountUSD/price*1000000) / 1000000
 		if qty <= 0 {
 			qty = 1
 		}
@@ -22629,7 +24003,7 @@ func alpacaTestOrder(c *gin.Context) {
 	if estimatedPrice == 0 && currentPrice > 0 {
 		estimatedPrice = currentPrice
 	} else if estimatedPrice == 0 {
-		estimatedPrice = config.TradeAmount / float64(qty)
+		estimatedPrice = config.TradeAmount / qty
 	}
 
 	if hasSession && req.Side == "buy" {
@@ -22644,7 +24018,7 @@ func alpacaTestOrder(c *gin.Context) {
 			Quantity:       qty,
 			StopLoss:       req.StopLoss,
 			TakeProfit:     req.TakeProfit,
-			InvestedAmount: convertFromUSD(estimatedPrice*float64(qty), config.Currency),
+			InvestedAmount: convertFromUSD(estimatedPrice*qty, config.Currency),
 			NativeCurrency: "USD",
 			AlpacaOrderID:  orderResult.OrderID,
 			CreatedAt:      time.Now(),
@@ -22654,14 +24028,14 @@ func alpacaTestOrder(c *gin.Context) {
 		if orderResult.OrderClass == "bracket" {
 			bracketInfo = fmt.Sprintf(" [BRACKET SL:%.2f TP:%.2f]", req.StopLoss, req.TakeProfit)
 		}
-		logLiveEvent(session.ID, "TRADE", req.Symbol, fmt.Sprintf("TEST-BUY %d x %s @ $%.2f (Einsatz: %.0f %s)%s → Alpaca OrderID: %s, Status: %s", qty, req.Symbol, estimatedPrice, config.TradeAmount, config.Currency, bracketInfo, orderResult.OrderID, orderResult.Status))
+		logLiveEvent(session.ID, "TRADE", req.Symbol, fmt.Sprintf("TEST-BUY %g x %s @ $%.2f (Einsatz: %.0f %s)%s → Alpaca OrderID: %s, Status: %s", qty, req.Symbol, estimatedPrice, config.TradeAmount, config.Currency, bracketInfo, orderResult.OrderID, orderResult.Status))
 	} else if hasSession && req.Side == "sell" {
 		var openPos LiveTradingPosition
 		if db.Where("session_id = ? AND symbol = ? AND is_closed = ?", session.ID, req.Symbol, false).First(&openPos).Error == nil {
 			closeLivePosition(&openPos, openPos.CurrentPrice, "MANUAL", openPos.NativeCurrency, config)
 			logLiveEvent(session.ID, "TRADE", req.Symbol, fmt.Sprintf("TEST-SELL %s geschlossen @ %.4f (%.2f%%) → Alpaca OrderID: %s", req.Symbol, openPos.ClosePrice, openPos.ProfitLossPct, orderResult.OrderID))
 		} else {
-			logLiveEvent(session.ID, "TRADE", req.Symbol, fmt.Sprintf("TEST-SELL %d x %s → Alpaca OrderID: %s, Status: %s (keine offene Position)", qty, req.Symbol, orderResult.OrderID, orderResult.Status))
+			logLiveEvent(session.ID, "TRADE", req.Symbol, fmt.Sprintf("TEST-SELL %g x %s → Alpaca OrderID: %s, Status: %s (keine offene Position)", qty, req.Symbol, orderResult.OrderID, orderResult.Status))
 		}
 	}
 
@@ -22687,8 +24061,7 @@ func alpacaTestOrder(c *gin.Context) {
 }
 
 func renameLiveSession(c *gin.Context) {
-	userID, _ := c.Get("userID")
-	uid := userID.(uint)
+	uid := liveOwnerUID(c)
 	id := c.Param("id")
 
 	var req struct {
@@ -22710,8 +24083,7 @@ func renameLiveSession(c *gin.Context) {
 }
 
 func deleteLiveSession(c *gin.Context) {
-	userID, _ := c.Get("userID")
-	uid := userID.(uint)
+	uid := liveOwnerUID(c)
 	id := c.Param("id")
 
 	var session LiveTradingSession
@@ -22721,8 +24093,21 @@ func deleteLiveSession(c *gin.Context) {
 	}
 
 	if session.IsActive {
-		c.JSON(400, gin.H{"error": "Aktive Session kann nicht gelöscht werden — erst stoppen"})
-		return
+		// Check if scheduler is actually running
+		liveSchedulerMu.Lock()
+		state, hasScheduler := liveSchedulers[session.ID]
+		if hasScheduler {
+			close(state.StopChan)
+			delete(liveSchedulers, session.ID)
+		}
+		liveSchedulerMu.Unlock()
+
+		// Deactivate the session so it can be deleted
+		now := time.Now()
+		db.Model(&session).Updates(map[string]interface{}{"is_active": false, "stopped_at": &now})
+		if hasScheduler {
+			logLiveEvent(session.ID, "INFO", "-", "Session gestoppt (vor Löschung)")
+		}
 	}
 
 	// Delete positions, logs, then session
@@ -22738,7 +24123,17 @@ func getAlpacaPortfolio(c *gin.Context) {
 	uid := liveOwnerUID(c)
 
 	var config LiveTradingConfig
-	if db.Where("user_id = ?", uid).First(&config).Error != nil || !config.AlpacaEnabled || config.AlpacaApiKey == "" {
+	if sessionIDStr := c.Query("session_id"); sessionIDStr != "" {
+		var session LiveTradingSession
+		if db.Where("id = ? AND user_id = ?", sessionIDStr, uid).First(&session).Error != nil {
+			c.JSON(400, gin.H{"error": "Session nicht gefunden"})
+			return
+		}
+		if db.First(&config, session.ConfigID).Error != nil || !config.AlpacaEnabled || config.AlpacaApiKey == "" {
+			c.JSON(400, gin.H{"error": "Alpaca nicht konfiguriert"})
+			return
+		}
+	} else if db.Where("user_id = ?", uid).First(&config).Error != nil || !config.AlpacaEnabled || config.AlpacaApiKey == "" {
 		c.JSON(400, gin.H{"error": "Alpaca nicht konfiguriert"})
 		return
 	}
@@ -22768,33 +24163,129 @@ func getAlpacaPortfolio(c *gin.Context) {
 		unrealizedPL, _ := strconv.ParseFloat(fmt.Sprintf("%v", p["unrealized_pl"]), 64)
 		unrealizedPLPct, _ := strconv.ParseFloat(fmt.Sprintf("%v", p["unrealized_plpc"]), 64)
 		qty, _ := strconv.ParseFloat(fmt.Sprintf("%v", p["qty"]), 64)
+		costBasis, _ := strconv.ParseFloat(fmt.Sprintf("%v", p["cost_basis"]), 64)
+
+		symbol := fmt.Sprintf("%v", p["symbol"])
+		stockName := symbol
+		var stock Stock
+		if db.Where("symbol = ?", symbol).First(&stock).Error == nil && stock.Name != "" {
+			stockName = stock.Name
+		}
 
 		cleanPositions = append(cleanPositions, gin.H{
-			"symbol":            p["symbol"],
+			"symbol":            symbol,
+			"name":              stockName,
 			"qty":               qty,
 			"side":              p["side"],
 			"avg_entry_price":   avgEntry,
 			"current_price":     currentPrice,
 			"market_value":      marketValue,
+			"cost_basis":        costBasis,
 			"unrealized_pl":     unrealizedPL,
 			"unrealized_pl_pct": unrealizedPLPct * 100,
 		})
 	}
 
-	// Build clean order list (last 20)
+	// Build clean order list (all orders) and calculate realized P&L
 	cleanOrders := []gin.H{}
-	limit := 20
-	if len(orders) < limit {
-		limit = len(orders)
+	// Track BUY fills per symbol to match with SELLs for realized P&L
+	type fillInfo struct {
+		qty   float64
+		price float64
 	}
-	for _, o := range orders[:limit] {
+	buyFills := map[string][]fillInfo{}  // symbol -> []fillInfo (chronological)
+	realizedPL := 0.0
+	realizedCount := 0
+	realizedInvested := 0.0
+
+	// First pass: collect all filled BUYs (chronological = ascending)
+	for i := len(orders) - 1; i >= 0; i-- {
+		o := orders[i]
+		status, _ := o["status"].(string)
+		side, _ := o["side"].(string)
+		if status != "filled" || side != "buy" {
+			continue
+		}
+		symbol, _ := o["symbol"].(string)
+		fp := 0.0
+		if fpStr, ok := o["filled_avg_price"].(string); ok && fpStr != "" {
+			fp, _ = strconv.ParseFloat(fpStr, 64)
+		}
+		fq := 0.0
+		if fqStr, ok := o["filled_qty"].(string); ok && fqStr != "" {
+			fq, _ = strconv.ParseFloat(fqStr, 64)
+		}
+		if fp > 0 && fq > 0 {
+			buyFills[symbol] = append(buyFills[symbol], fillInfo{qty: fq, price: fp})
+		}
+	}
+
+	// Second pass: match SELLs to BUYs for realized P&L
+	sellMatches := map[string][]fillInfo{} // symbol -> matched buy prices for sells
+	for i := len(orders) - 1; i >= 0; i-- {
+		o := orders[i]
+		status, _ := o["status"].(string)
+		side, _ := o["side"].(string)
+		if status != "filled" || side != "sell" {
+			continue
+		}
+		symbol, _ := o["symbol"].(string)
+		sp := 0.0
+		if spStr, ok := o["filled_avg_price"].(string); ok && spStr != "" {
+			sp, _ = strconv.ParseFloat(spStr, 64)
+		}
+		sq := 0.0
+		if sqStr, ok := o["filled_qty"].(string); ok && sqStr != "" {
+			sq, _ = strconv.ParseFloat(sqStr, 64)
+		}
+		if sp > 0 && sq > 0 {
+			if fills, ok := buyFills[symbol]; ok && len(fills) > 0 {
+				buyPrice := fills[0].price
+				buyQty := fills[0].qty
+				matchQty := sq
+				if matchQty > buyQty {
+					matchQty = buyQty
+				}
+				pnl := (sp - buyPrice) * matchQty
+				realizedPL += pnl
+				realizedInvested += buyPrice * matchQty
+				realizedCount++
+				sellMatches[symbol] = append(sellMatches[symbol], fillInfo{qty: matchQty, price: buyPrice})
+				// Remove matched buy
+				if sq >= buyQty {
+					buyFills[symbol] = fills[1:]
+				} else {
+					buyFills[symbol][0] = fillInfo{qty: buyQty - sq, price: buyPrice}
+				}
+			}
+		}
+	}
+
+	// Build position lookup for unrealized P&L on open BUYs
+	posLookup := map[string]float64{} // symbol -> current_price
+	for _, p := range positions {
+		sym, _ := p["symbol"].(string)
+		cp := 0.0
+		if cpStr, ok := p["current_price"].(string); ok && cpStr != "" {
+			cp, _ = strconv.ParseFloat(cpStr, 64)
+		}
+		posLookup[sym] = cp
+	}
+
+	// Third pass: build clean order list with trade P&L
+	sellMatchIdx := map[string]int{} // track which sell match we're on per symbol
+	for _, o := range orders {
 		filledPrice := 0.0
 		if fp, ok := o["filled_avg_price"].(string); ok && fp != "" {
 			filledPrice, _ = strconv.ParseFloat(fp, 64)
 		}
-		filledQty := ""
-		if fq, ok := o["filled_qty"].(string); ok {
-			filledQty = fq
+		filledQty := 0.0
+		if fq, ok := o["filled_qty"].(string); ok && fq != "" {
+			filledQty, _ = strconv.ParseFloat(fq, 64)
+		}
+		rawQty := ""
+		if q, ok := o["qty"].(string); ok {
+			rawQty = q
 		}
 		stopPrice := 0.0
 		if sp, ok := o["stop_price"].(string); ok && sp != "" {
@@ -22806,8 +24297,18 @@ func getAlpacaPortfolio(c *gin.Context) {
 		}
 		orderClass, _ := o["order_class"].(string)
 		orderType, _ := o["type"].(string)
+		status, _ := o["status"].(string)
+		side, _ := o["side"].(string)
+		symbol, _ := o["symbol"].(string)
 
-		// Parse legs (child orders of bracket)
+		// Stock name lookup
+		stockName := symbol
+		var stock Stock
+		if db.Where("symbol = ?", symbol).First(&stock).Error == nil && stock.Name != "" {
+			stockName = stock.Name
+		}
+
+		// Parse legs
 		var legs []gin.H
 		if rawLegs, ok := o["legs"].([]interface{}); ok {
 			for _, rl := range rawLegs {
@@ -22824,31 +24325,42 @@ func getAlpacaPortfolio(c *gin.Context) {
 					legType, _ := leg["type"].(string)
 					legSide, _ := leg["side"].(string)
 					legs = append(legs, gin.H{
-						"type":        legType,
-						"side":        legSide,
-						"stop_price":  legSP,
-						"limit_price": legLP,
-						"status":      legStatus,
+						"type": legType, "side": legSide,
+						"stop_price": legSP, "limit_price": legLP, "status": legStatus,
 					})
 				}
 			}
 		}
 
+		// Calculate trade P&L
+		tradePL := 0.0
+		tradePLPct := 0.0
+		invested := 0.0
+		if filledPrice > 0 && filledQty > 0 {
+			invested = filledPrice * filledQty
+		}
+		if status == "filled" && side == "sell" && filledPrice > 0 {
+			// Realized: match with buy
+			idx := sellMatchIdx[symbol]
+			if matches, ok := sellMatches[symbol]; ok && idx < len(matches) {
+				buyPrice := matches[idx].price
+				tradePL = (filledPrice - buyPrice) * filledQty
+				if buyPrice > 0 {
+					tradePLPct = (filledPrice - buyPrice) / buyPrice * 100
+				}
+				invested = buyPrice * filledQty
+				sellMatchIdx[symbol] = idx + 1
+			}
+		}
+
 		cleanOrders = append(cleanOrders, gin.H{
-			"id":               o["id"],
-			"symbol":           o["symbol"],
-			"side":             o["side"],
-			"qty":              o["qty"],
-			"filled_qty":       filledQty,
-			"filled_avg_price": filledPrice,
-			"status":           o["status"],
-			"order_class":      orderClass,
-			"order_type":       orderType,
-			"stop_price":       stopPrice,
-			"limit_price":      limitPrice,
-			"legs":             legs,
-			"created_at":       o["created_at"],
-			"filled_at":        o["filled_at"],
+			"id": o["id"], "symbol": symbol, "name": stockName,
+			"side": side, "qty": rawQty, "filled_qty": filledQty,
+			"filled_avg_price": filledPrice, "status": status,
+			"order_class": orderClass, "order_type": orderType,
+			"stop_price": stopPrice, "limit_price": limitPrice,
+			"legs": legs, "created_at": o["created_at"], "filled_at": o["filled_at"],
+			"invested": invested, "trade_pl": tradePL, "trade_pl_pct": tradePLPct,
 		})
 	}
 
@@ -22865,15 +24377,18 @@ func getAlpacaPortfolio(c *gin.Context) {
 
 	c.JSON(200, gin.H{
 		"account": gin.H{
-			"equity":          equity,
-			"buying_power":    buyingPower,
-			"cash":            cash,
-			"portfolio_value": portfolioValue,
-			"last_equity":     lastEquity,
-			"day_change":      dayChange,
-			"day_change_pct":  dayChangePct,
-			"status":          account["status"],
-			"paper":           config.AlpacaPaper,
+			"equity":            equity,
+			"buying_power":      buyingPower,
+			"cash":              cash,
+			"portfolio_value":   portfolioValue,
+			"last_equity":       lastEquity,
+			"day_change":        dayChange,
+			"day_change_pct":    dayChangePct,
+			"realized_pl":       realizedPL,
+			"realized_count":    realizedCount,
+			"realized_invested": realizedInvested,
+			"status":            account["status"],
+			"paper":             config.AlpacaPaper,
 		},
 		"positions": cleanPositions,
 		"orders":    cleanOrders,
@@ -22886,7 +24401,17 @@ func getLiveTradingConfig(c *gin.Context) {
 	isAdminBool, _ := isAdmin.(bool)
 
 	var config LiveTradingConfig
-	if db.Where("user_id = ?", uid).First(&config).Error != nil {
+	if sessionIDStr := c.Query("session_id"); sessionIDStr != "" {
+		var session LiveTradingSession
+		if db.Where("id = ? AND user_id = ?", sessionIDStr, uid).First(&session).Error != nil {
+			c.JSON(200, gin.H{"config": nil})
+			return
+		}
+		if db.First(&config, session.ConfigID).Error != nil {
+			c.JSON(200, gin.H{"config": nil})
+			return
+		}
+	} else if db.Where("user_id = ?", uid).First(&config).Error != nil {
 		c.JSON(200, gin.H{"config": nil})
 		return
 	}
@@ -22924,74 +24449,77 @@ func getLiveTradingConfig(c *gin.Context) {
 }
 
 func startLiveTrading(c *gin.Context) {
-	userID, _ := c.Get("userID")
-	uid := userID.(uint)
+	uid := liveOwnerUID(c)
 
-	// Non-admin: only 1 active session
-	isAdmin, _ := c.Get("isAdmin")
-	isAdminBool, _ := isAdmin.(bool)
-	if !isAdminBool {
-		var existing LiveTradingSession
-		if db.Where("user_id = ? AND is_active = ?", uid, true).First(&existing).Error == nil {
-			c.JSON(400, gin.H{"error": "Es läuft bereits eine aktive Session"})
-			return
-		}
+	// Accept optional name
+	var req struct {
+		Name string `json:"name"`
 	}
+	c.ShouldBindJSON(&req)
 
-	// Load config
-	var config LiveTradingConfig
-	if db.Where("user_id = ?", uid).First(&config).Error != nil {
-		c.JSON(400, gin.H{"error": "Keine Konfiguration gefunden. Bitte zuerst in der Trading Arena 'Start Live Trading' drücken."})
+	// Load template config
+	var templateConfig LiveTradingConfig
+	if db.Where("user_id = ?", uid).Order("updated_at DESC").First(&templateConfig).Error != nil {
+		c.JSON(400, gin.H{"error": "Keine Konfiguration gefunden. Bitte zuerst in der Trading Arena 'Neue Session starten' drücken."})
 		return
 	}
 
-	// Count existing sessions for auto-naming
-	var sessionCount int64
-	db.Model(&LiveTradingSession{}).Where("user_id = ?", uid).Count(&sessionCount)
+	// Create NEW config for this session (copy strategy/symbols, blank Alpaca)
+	newConfig := LiveTradingConfig{
+		UserID:        uid,
+		Strategy:      templateConfig.Strategy,
+		Interval:      templateConfig.Interval,
+		ParamsJSON:    templateConfig.ParamsJSON,
+		Symbols:       templateConfig.Symbols,
+		LongOnly:      templateConfig.LongOnly,
+		TradeAmount:   templateConfig.TradeAmount,
+		FiltersJSON:   templateConfig.FiltersJSON,
+		FiltersActive: templateConfig.FiltersActive,
+		Currency:      templateConfig.Currency,
+		AlpacaPaper:   true,
+		UpdatedAt:     time.Now(),
+	}
+	db.Create(&newConfig)
 
-	stratLabel := config.Strategy
-	labels := map[string]string{"regression_scalping": "Regression", "hybrid_ai_trend": "NW Bollinger", "diamond_signals": "Diamond"}
-	if l, ok := labels[config.Strategy]; ok {
-		stratLabel = l
+	// Session name: use provided or auto-generate
+	sessionName := strings.TrimSpace(req.Name)
+	if sessionName == "" {
+		var sessionCount int64
+		db.Model(&LiveTradingSession{}).Where("user_id = ?", uid).Count(&sessionCount)
+		stratLabel := newConfig.Strategy
+		labels := map[string]string{"regression_scalping": "Regression", "hybrid_ai_trend": "NW Bollinger", "diamond_signals": "Diamond"}
+		if l, ok := labels[newConfig.Strategy]; ok {
+			stratLabel = l
+		}
+		sessionName = fmt.Sprintf("#%d %s (%s)", sessionCount+1, stratLabel, newConfig.Interval)
 	}
 
 	now := time.Now()
 	session := LiveTradingSession{
 		UserID:      uid,
-		ConfigID:    config.ID,
-		Name:        fmt.Sprintf("%s %s #%d", stratLabel, config.Interval, sessionCount+1),
-		Strategy:    config.Strategy,
-		Interval:    config.Interval,
-		ParamsJSON:  config.ParamsJSON,
-		Symbols:     config.Symbols,
-		LongOnly:    config.LongOnly,
-		TradeAmount: config.TradeAmount,
-		Currency:    config.Currency,
-		IsActive:    true,
-		StartedAt:   now,
+		ConfigID:    newConfig.ID,
+		Name:        sessionName,
+		Strategy:    newConfig.Strategy,
+		Interval:    newConfig.Interval,
+		ParamsJSON:  newConfig.ParamsJSON,
+		Symbols:     newConfig.Symbols,
+		LongOnly:    newConfig.LongOnly,
+		TradeAmount: newConfig.TradeAmount,
+		Currency:    newConfig.Currency,
+		IsActive:    false,
 		CreatedAt:   now,
 	}
 	db.Create(&session)
+	// Explicit update: GORM ignores false bool on Create (zero value)
+	db.Model(&session).Update("is_active", false)
 
-	// Start scheduler
-	state := &liveSessionState{
-		StopChan:   make(chan struct{}),
-		OHLCVCache: make(map[string][]OHLCV),
-	}
-	liveSchedulerMu.Lock()
-	liveSchedulers[session.ID] = state
-	liveSchedulerMu.Unlock()
+	logLiveEvent(session.ID, "INFO", "-", fmt.Sprintf("Session '%s' erstellt (inaktiv) — Strategie: %s, Intervall: %s", session.Name, session.Strategy, session.Interval))
 
-	go runLiveScheduler(state, session.ID)
-
-	logLiveEvent(session.ID, "INFO", "-", fmt.Sprintf("Session '%s' gestartet — Strategie: %s, Intervall: %s", session.Name, session.Strategy, session.Interval))
-
-	c.JSON(200, gin.H{"session": session, "status": "started"})
+	c.JSON(200, gin.H{"session": session, "status": "created"})
 }
 
 func stopLiveTrading(c *gin.Context) {
-	userID, _ := c.Get("userID")
-	uid := userID.(uint)
+	uid := liveOwnerUID(c)
 
 	// Support optional session_id param, otherwise stop first active
 	sessionIDParam := c.Query("session_id")
@@ -23011,6 +24539,11 @@ func stopLiveTrading(c *gin.Context) {
 	// Stop scheduler for this session
 	liveSchedulerMu.Lock()
 	if state, ok := liveSchedulers[session.ID]; ok {
+		if state.UsesSharedWS && sharedWS != nil {
+			sharedWS.RemoveSession(session.ID)
+		} else if state.WSClient != nil {
+			state.WSClient.Close()
+		}
 		close(state.StopChan)
 		delete(liveSchedulers, session.ID)
 	}
@@ -23040,9 +24573,9 @@ func stopLiveTrading(c *gin.Context) {
 		logLiveEvent(session.ID, "CLOSE", pos.Symbol, fmt.Sprintf("MANUAL geschlossen %s @ %.4f (%.2f%%, %.2f EUR)", pos.Direction, pos.ClosePrice, pos.ProfitLossPct, pos.ProfitLossAmt))
 	}
 
+	db.Model(&session).Updates(map[string]interface{}{"is_active": false, "stopped_at": &now})
 	session.IsActive = false
 	session.StoppedAt = &now
-	db.Save(&session)
 
 	logLiveEvent(session.ID, "INFO", "-", "Session gestoppt")
 	c.JSON(200, gin.H{"session": session, "status": "stopped"})
@@ -23100,6 +24633,14 @@ func getLiveTradingStatus(c *gin.Context) {
 			if state.AlpacaError != "" {
 				sStatus["alpaca_error"] = state.AlpacaError
 			}
+			// WebSocket mode info
+			if state.Mode != "" {
+				sStatus["mode"] = state.Mode
+			}
+			sStatus["ws_connected"] = state.WSConnected
+			if !state.LastBarReceived.IsZero() {
+				sStatus["last_bar_received"] = state.LastBarReceived
+			}
 		}
 		liveSchedulerMu.Unlock()
 
@@ -23131,7 +24672,7 @@ func getLiveTradingStatus(c *gin.Context) {
 		if db.Where("user_id = ? AND is_active = ?", uid, false).Order("stopped_at DESC").First(&lastSession).Error == nil {
 			var config LiveTradingConfig
 			canResume := true // Sessions can always be resumed now
-			if db.Where("user_id = ?", uid).First(&config).Error != nil {
+			if db.First(&config, lastSession.ConfigID).Error != nil {
 				canResume = false
 			}
 
@@ -23163,11 +24704,9 @@ func getLiveTradingSessions(c *gin.Context) {
 	uid := liveOwnerUID(c)
 
 	var sessions []LiveTradingSession
-	db.Where("user_id = ?", uid).Order("started_at DESC").Find(&sessions)
+	db.Where("user_id = ?", uid).Order("id DESC").Find(&sessions)
 
-	// Load current config for resume check
-	var config LiveTradingConfig
-	hasConfig := db.Where("user_id = ?", uid).First(&config).Error == nil
+	// Resume check is now per-session (each session has its own config)
 
 	results := []gin.H{}
 	for _, s := range sessions {
@@ -23186,8 +24725,9 @@ func getLiveTradingSessions(c *gin.Context) {
 			winRate = float64(wins) / float64(totalTrades) * 100
 		}
 
-		// Stopped sessions can be resumed (admin feature)
-		canResume := !s.IsActive && hasConfig
+		// Stopped sessions can be resumed if they have a config
+		var sessionConfig LiveTradingConfig
+		canResume := !s.IsActive && db.First(&sessionConfig, s.ConfigID).Error == nil
 
 		results = append(results, gin.H{
 			"id":            s.ID,
@@ -23244,8 +24784,7 @@ func getLiveTradingSession(c *gin.Context) {
 }
 
 func resumeLiveTrading(c *gin.Context) {
-	userID, _ := c.Get("userID")
-	uid := userID.(uint)
+	uid := liveOwnerUID(c)
 	id := c.Param("id")
 
 	// Load session
@@ -23261,24 +24800,187 @@ func resumeLiveTrading(c *gin.Context) {
 	}
 
 	// Reactivate session
-	db.Model(&session).Updates(map[string]interface{}{
+	updates := map[string]interface{}{
 		"is_active":  true,
 		"stopped_at": nil,
-	})
+	}
+	if session.StartedAt.IsZero() {
+		updates["started_at"] = time.Now()
+	}
+	db.Model(&session).Updates(updates)
+
+	// Load config to check for Alpaca WS capability
+	var config LiveTradingConfig
+	if session.ConfigID > 0 {
+		db.First(&config, session.ConfigID)
+	} else {
+		db.Where("user_id = ?", session.UserID).Order("updated_at DESC").First(&config)
+	}
 
 	// Start scheduler
 	state := &liveSessionState{
-		StopChan:   make(chan struct{}),
-		OHLCVCache: make(map[string][]OHLCV),
+		StopChan: make(chan struct{}),
 	}
 	liveSchedulerMu.Lock()
 	liveSchedulers[session.ID] = state
 	liveSchedulerMu.Unlock()
 
-	go runLiveScheduler(state, session.ID)
+	if config.AlpacaEnabled && config.AlpacaApiKey != "" {
+		state.Mode = "websocket"
+		go runLiveWebSocket(state, session.ID, config)
+	} else {
+		state.Mode = "polling"
+		go runLiveScheduler(state, session.ID)
+	}
 
-	logLiveEvent(session.ID, "INFO", "-", fmt.Sprintf("Session '%s' fortgesetzt", session.Name))
+	logLiveEvent(session.ID, "INFO", "-", fmt.Sprintf("Session '%s' fortgesetzt (mode: %s)", session.Name, state.Mode))
 	c.JSON(200, gin.H{"session": session, "status": "resumed"})
+}
+
+// runLiveWebSocket runs a live trading session using Alpaca WebSocket for real-time bars.
+func runLiveWebSocket(state *liveSessionState, sessionID uint, config LiveTradingConfig) {
+	var session LiveTradingSession
+	if db.First(&session, sessionID).Error != nil {
+		return
+	}
+
+	var symbols []string
+	json.Unmarshal([]byte(session.Symbols), &symbols)
+	dur := intervalToDuration(session.Interval)
+
+	logLiveEvent(sessionID, "INFO", "-", fmt.Sprintf("WebSocket-Modus: %d Symbole, Interval %s", len(symbols), session.Interval))
+
+	// 1. Prefetch historical bars for strategy warmup
+	cacheInterval := session.Interval
+	ivMap := map[string]string{"1h": "60m", "1D": "1d", "1W": "1wk"}
+	if mapped, ok := ivMap[cacheInterval]; ok {
+		cacheInterval = mapped
+	}
+	triggerPriorityRefresh(symbols, cacheInterval, sessionID)
+
+	// Run initial scan from cache
+	runLiveScan(sessionID)
+
+	// 2. Create aggregators per symbol
+	strategy := createStrategyFromJSON(session.Strategy, session.ParamsJSON)
+	state.Aggregators = make(map[string]*BarAggregator)
+
+	for _, sym := range symbols {
+		symbol := sym
+		agg := newBarAggregator(dur, func(candle OHLCV) {
+			// onCandleComplete: append to cache + run strategy
+			state.LastBarReceived = time.Now()
+
+			// Append candle to cached data
+			var cache OHLCVCache
+			if db.Where("symbol = ? AND interval = ?", symbol, cacheInterval).First(&cache).Error == nil {
+				var cached []OHLCV
+				if json.Unmarshal([]byte(cache.DataJSON), &cached) == nil {
+					cached = append(cached, candle)
+					saveOHLCVCache(symbol, cacheInterval, cached)
+
+					// Process with strategy
+					if strategy != nil {
+						var sess LiveTradingSession
+						db.First(&sess, sessionID)
+						processLiveSymbolWithData(sess, symbol, strategy, cached, config)
+					}
+				}
+			}
+		})
+		state.Aggregators[symbol] = agg
+	}
+
+	// 3. Connect: shared WS or per-session fallback
+	if sharedWS != nil {
+		// Use shared WebSocket (single global connection)
+		state.UsesSharedWS = true
+		state.WSConnected = sharedWS.IsConnected()
+
+		sharedWS.AddSession(sessionID, symbols, func(symbol string, bar AlpacaWSBar) {
+			t, err := time.Parse(time.RFC3339, bar.T)
+			if err != nil {
+				return
+			}
+			state.LastBarReceived = time.Now()
+			state.WSConnected = sharedWS.IsConnected()
+			if agg, ok := state.Aggregators[symbol]; ok {
+				agg.AddBar(OHLCV{
+					Time: t.Unix(), Open: bar.O, High: bar.H,
+					Low: bar.L, Close: bar.C, Volume: bar.V,
+				})
+			}
+		})
+
+		logLiveEvent(sessionID, "INFO", "-", fmt.Sprintf("[SharedWS] Session registriert — %d Symbole", len(symbols)))
+	} else {
+		// Fallback: eigener WSClient mit per-session keys
+		wsClient, err := newAlpacaWSClient(config.AlpacaApiKey, config.AlpacaSecretKey)
+		if err != nil {
+			logLiveEvent(sessionID, "ERROR", "-", fmt.Sprintf("WebSocket-Verbindung fehlgeschlagen: %v — Fallback auf Polling", err))
+			state.Mode = "polling"
+			runLiveScheduler(state, sessionID)
+			return
+		}
+		state.WSClient = wsClient
+		state.WSConnected = true
+
+		for _, sym := range symbols {
+			symbol := sym
+			agg := state.Aggregators[symbol]
+			wsClient.OnBar(symbol, func(bar AlpacaWSBar) {
+				t, err := time.Parse(time.RFC3339, bar.T)
+				if err != nil {
+					return
+				}
+				state.LastBarReceived = time.Now()
+				state.WSConnected = wsClient.IsConnected()
+				agg.AddBar(OHLCV{
+					Time: t.Unix(), Open: bar.O, High: bar.H,
+					Low: bar.L, Close: bar.C, Volume: bar.V,
+				})
+			})
+		}
+
+		if err := wsClient.Subscribe(symbols); err != nil {
+			logLiveEvent(sessionID, "ERROR", "-", fmt.Sprintf("WebSocket subscribe fehlgeschlagen: %v", err))
+		}
+
+		logLiveEvent(sessionID, "INFO", "-", fmt.Sprintf("WebSocket connected (eigener Client) — subscribed to %d symbols", len(symbols)))
+	}
+
+	// 4. Wait for stop signal, periodically update state
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-state.StopChan:
+			if state.UsesSharedWS {
+				sharedWS.RemoveSession(sessionID)
+			} else if state.WSClient != nil {
+				state.WSClient.Close()
+			}
+			return
+		case <-ticker.C:
+			if state.UsesSharedWS {
+				state.WSConnected = sharedWS.IsConnected()
+			} else if state.WSClient != nil {
+				state.WSConnected = state.WSClient.IsConnected()
+			}
+			// Alpaca broker health check every 60s
+			if time.Since(state.AlpacaLastChecked) > 60*time.Second {
+				_, err := alpacaGetAccount(config)
+				state.AlpacaLastChecked = time.Now()
+				if err != nil {
+					state.AlpacaActive = false
+					state.AlpacaError = err.Error()
+				} else {
+					state.AlpacaActive = true
+					state.AlpacaError = ""
+				}
+			}
+		}
+	}
 }
 
 // Live Scheduler
@@ -23291,27 +24993,19 @@ func runLiveScheduler(state *liveSessionState, sessionID uint) {
 	dur := intervalToDuration(session.Interval)
 	const buffer = 1500 * time.Millisecond // wait 1.5s after candle close for Yahoo to finalize
 
-	// Prefetch full OHLCV data into cache
+	// Ensure persistent cache has data for all symbols
 	var symbols []string
 	json.Unmarshal([]byte(session.Symbols), &symbols)
 
-	periodMap := map[string]string{
-		"5m": "60d", "15m": "60d", "60m": "2y", "1h": "2y",
-		"2h": "2y", "4h": "2y", "1d": "2y", "1wk": "10y",
-	}
 	yahooInterval := session.Interval
 	intervalMap := map[string]string{"1h": "60m", "1D": "1d", "1W": "1wk"}
 	if mapped, ok := intervalMap[yahooInterval]; ok {
 		yahooInterval = mapped
 	}
-	period := periodMap[yahooInterval]
-	if period == "" {
-		period = "60d"
-	}
 
-	prefetchLiveOHLCV(state, symbols, period, yahooInterval, sessionID)
+	triggerPriorityRefresh(symbols, yahooInterval, sessionID)
 
-	// First scan immediately (uses cached data + delta fetch)
+	// First scan immediately (reads from persistent cache)
 	runLiveScan(sessionID)
 
 	for {
@@ -23334,6 +25028,66 @@ func runLiveScheduler(state *liveSessionState, sessionID uint) {
 	}
 }
 
+// refreshLiveSymbols fetches fresh OHLCV data for all session symbols right after candle close.
+// Uses 20 parallel workers with 200ms stagger to complete quickly (~8-15s for 760 symbols).
+// This replaces the background worker's responsibility for these symbols during active sessions.
+func refreshLiveSymbols(symbols []string, interval string, sessionID uint) {
+	yahooInterval := interval
+	intervalMap := map[string]string{"1h": "60m", "1D": "1d", "1W": "1wk"}
+	if mapped, ok := intervalMap[yahooInterval]; ok {
+		yahooInterval = mapped
+	}
+
+	deltaPeriod := getOHLCVDeltaPeriod(yahooInterval)
+	start := time.Now()
+	logLiveEvent(sessionID, "REFRESH", "-", fmt.Sprintf("Cache-Refresh gestartet — %d Symbole (%s)", len(symbols), yahooInterval))
+
+	const maxWorkers = 20
+	sem := make(chan struct{}, maxWorkers)
+	var wg sync.WaitGroup
+	var refreshed int64
+	var failed int64
+
+	for _, sym := range symbols {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(symbol string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			time.Sleep(200 * time.Millisecond)
+
+			// Try Alpaca first for US stocks, then Yahoo fallback (consistent with backtest)
+			var freshBars []OHLCV
+			var err error
+			useAlpaca := alpacaDataKey != "" && !isNonUSStock(symbol)
+			if useAlpaca {
+				freshBars, err = fetchOHLCVFromAlpaca(symbol, interval)
+			}
+			if !useAlpaca || err != nil || len(freshBars) == 0 {
+				freshBars, err = fetchOHLCVFromYahoo(symbol, deltaPeriod, yahooInterval)
+			}
+			if err != nil || len(freshBars) == 0 {
+				atomic.AddInt64(&failed, 1)
+				return
+			}
+
+			var cache OHLCVCache
+			if db.Where("symbol = ? AND interval = ?", symbol, yahooInterval).First(&cache).Error == nil && cache.DataJSON != "" {
+				var cached []OHLCV
+				if json.Unmarshal([]byte(cache.DataJSON), &cached) == nil && len(cached) > 0 {
+					freshBars = mergeOHLCV(cached, freshBars)
+				}
+			}
+
+			saveOHLCVCache(symbol, yahooInterval, freshBars)
+			atomic.AddInt64(&refreshed, 1)
+		}(sym)
+	}
+	wg.Wait()
+
+	logLiveEvent(sessionID, "REFRESH", "-", fmt.Sprintf("Cache-Refresh abgeschlossen — %d/%d in %.1fs (fehlgeschlagen: %d)", refreshed, len(symbols), time.Since(start).Seconds(), failed))
+}
+
 func runLiveScan(sessionID uint) {
 	state := getLiveSessionState(sessionID)
 	if state == nil {
@@ -23348,12 +25102,28 @@ func runLiveScan(sessionID uint) {
 		return
 	}
 
+	// Guard: session must have a valid StartedAt to prevent retroactive trading
+	if session.StartedAt.IsZero() || session.StartedAt.Year() < 2000 {
+		logLiveEvent(sessionID, "WARN", "-", "Scan übersprungen: Session hat kein gültiges StartedAt")
+		return
+	}
+
 	var symbols []string
 	json.Unmarshal([]byte(session.Symbols), &symbols)
 
-	// Load config for Alpaca integration
+	// Targeted refresh: only in polling mode (WS mode gets bars via WebSocket)
+	if state.WSClient == nil && !state.UsesSharedWS {
+		refreshLiveSymbols(symbols, session.Interval, sessionID)
+	}
+
+	// Load config for Alpaca integration (per-session config)
 	var liveConfig LiveTradingConfig
-	db.Where("user_id = ?", session.UserID).First(&liveConfig)
+	if session.ConfigID == 0 {
+		// Legacy fallback: old sessions without per-session config
+		db.Where("user_id = ?", session.UserID).First(&liveConfig)
+	} else {
+		db.First(&liveConfig, session.ConfigID)
+	}
 
 	// Alpaca connection check before each poll
 	if liveConfig.AlpacaEnabled && liveConfig.AlpacaApiKey != "" {
@@ -23375,79 +25145,52 @@ func runLiveScan(sessionID uint) {
 		return
 	}
 
-	yahooInterval := session.Interval
-	intervalMap := map[string]string{"1h": "60m", "1D": "1d", "1W": "1wk"}
-	if mapped, ok := intervalMap[yahooInterval]; ok {
-		yahooInterval = mapped
-	}
-
-	// Delta period: only fetch recent bars, merge with cache
-	deltaPeriod := getPollFetchPeriod(yahooInterval)
-
 	state.ScanTotal = len(symbols)
 	state.ScanProgress = 0
 	state.CurrentSymbol = ""
 
 	scanStart := time.Now()
-	logLiveEvent(sessionID, "SCAN", "-", fmt.Sprintf("Poll gestartet — %d Aktien (delta: %s)", len(symbols), deltaPeriod))
+	logLiveEvent(sessionID, "SCAN", "-", fmt.Sprintf("Poll gestartet — %d Aktien (aus Cache)", len(symbols)))
 
-	// Parallel processing with worker pool
-	const maxWorkers = 10
-	sem := make(chan struct{}, maxWorkers)
-	var wg sync.WaitGroup
 	var priceMapMu sync.Mutex
 	var progressDone int
 	var progressMu sync.Mutex
 	priceMap := map[string]float64{}
+	skipped := 0
 
-	for _, symbol := range symbols {
-		wg.Add(1)
-		sem <- struct{}{} // acquire worker slot
-		go func(sym string) {
-			defer wg.Done()
-			defer func() { <-sem }() // release worker slot
+	for i, sym := range symbols {
+		// Read from persistent OHLCV cache (no Yahoo calls)
+		ohlcv, err := getOHLCVCached(sym, session.Interval, 0)
+		if err != nil || len(ohlcv) == 0 {
+			skipped++
+			continue
+		}
 
-			// Delta fetch: get recent bars and merge with cache
-			freshBars, err := fetchOHLCVFromYahoo(sym, deltaPeriod, yahooInterval)
-			if err == nil && len(freshBars) > 0 {
-				state.CacheMu.Lock()
-				cached := state.OHLCVCache[sym]
-				merged := mergeOHLCV(cached, freshBars)
-				state.OHLCVCache[sym] = merged
-				state.CacheMu.Unlock()
+		minBars := strategy.RequiredBars()
+		if len(ohlcv) >= minBars {
+			if price, ok := processLiveSymbolWithData(session, sym, strategy, ohlcv, liveConfig); ok {
+				priceMapMu.Lock()
+				priceMap[sym] = price
+				priceMapMu.Unlock()
 			}
+		}
 
-			// Get full data from cache for strategy analysis
-			state.CacheMu.RLock()
-			ohlcv := state.OHLCVCache[sym]
-			state.CacheMu.RUnlock()
+		progressMu.Lock()
+		progressDone = i + 1
+		progressMu.Unlock()
 
-			minBars := strategy.RequiredBars()
-			if len(ohlcv) >= minBars {
-				if price, ok := processLiveSymbolWithData(session, sym, strategy, ohlcv, liveConfig); ok {
-					priceMapMu.Lock()
-					priceMap[sym] = price
-					priceMapMu.Unlock()
-				}
-			} else {
-				logLiveEvent(sessionID, "SKIP", sym, fmt.Sprintf("Nicht genug Daten (%d/%d Bars)", len(ohlcv), minBars))
-			}
-
-			progressMu.Lock()
-			progressDone++
-			current := progressDone
-			progressMu.Unlock()
-
-			state.ScanProgress = current
-			state.CurrentSymbol = sym
-		}(symbol)
+		state.ScanProgress = progressDone
+		state.CurrentSymbol = sym
 	}
-	wg.Wait()
 
 	state.CurrentSymbol = ""
 
 	scanDuration := time.Since(scanStart)
-	logLiveEvent(sessionID, "SCAN", "-", fmt.Sprintf("Poll abgeschlossen — %d Aktien in %.1fs", len(symbols), scanDuration.Seconds()))
+	logMsg := fmt.Sprintf("Poll abgeschlossen — %d Aktien in %.1fs", len(symbols), scanDuration.Seconds())
+	if skipped > 0 {
+		logMsg += fmt.Sprintf(" (%d ohne Cache übersprungen)", skipped)
+	}
+	logLiveEvent(sessionID, "SCAN", "-", logMsg)
 
 	// Update session poll stats + symbol prices
 	now := time.Now()
@@ -23462,16 +25205,6 @@ func runLiveScan(sessionID uint) {
 		"total_polls":        gorm.Expr("total_polls + 1"),
 		"symbol_prices_json": string(pricesJSON),
 	})
-}
-
-// Legacy wrapper for test orders etc. that don't use cache
-func processLiveSymbol(session LiveTradingSession, symbol string, strategy TradingStrategy, period, yahooInterval string, config LiveTradingConfig) (float64, bool) {
-	ohlcv, err := fetchOHLCVFromYahoo(symbol, period, yahooInterval)
-	if err != nil || len(ohlcv) < 50 {
-		logLiveEvent(session.ID, "SKIP", symbol, "OHLCV nicht verfügbar")
-		return 0, false
-	}
-	return processLiveSymbolWithData(session, symbol, strategy, ohlcv, config)
 }
 
 func processLiveSymbolWithData(session LiveTradingSession, symbol string, strategy TradingStrategy, ohlcv []OHLCV, config LiveTradingConfig) (float64, bool) {
@@ -23495,6 +25228,12 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 	}
 
 	signals := strategy.Analyze(ohlcv)
+
+	// Guard: if session has no StartedAt, skip ALL signal processing
+	// (prevents retroactive trading on sessions that haven't been started yet)
+	if session.StartedAt.IsZero() || session.StartedAt.Year() < 2000 {
+		return lastPrice, false
+	}
 	sessionStartUnix := session.StartedAt.Unix()
 
 	// Get existing open position for this symbol in this session
@@ -23531,9 +25270,9 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 			}
 
 			tradeAmountUSD := convertToUSD(session.TradeAmount, session.Currency)
-			posQty := 0
+			posQty := 0.0
 			if entryPriceUSD > 0 {
-				posQty = int(math.Floor(tradeAmountUSD / entryPriceUSD))
+				posQty = math.Round(tradeAmountUSD/entryPriceUSD*1000000) / 1000000
 			}
 			if posQty <= 0 {
 				posQty = 1
@@ -23563,7 +25302,7 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 				if orderResult.OrderClass == "bracket" {
 					bracketInfo = fmt.Sprintf(" [BRACKET SL:%.2f TP:%.2f]", sig.StopLoss, sig.TakeProfit)
 				}
-				logLiveEvent(session.ID, "ALPACA", symbol, fmt.Sprintf("Order platziert: %s %dx %s%s (ID: %s, Status: %s)", side, posQty, symbol, bracketInfo, orderResult.OrderID, orderResult.Status))
+				logLiveEvent(session.ID, "ALPACA", symbol, fmt.Sprintf("Order platziert: %s %gx %s%s (ID: %s, Status: %s)", side, posQty, symbol, bracketInfo, orderResult.OrderID, orderResult.Status))
 			}
 
 			// DB: Create position only after successful Alpaca order (or if Alpaca disabled)
@@ -23578,7 +25317,7 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 				TakeProfit:     sig.TakeProfit,
 				CurrentPrice:   entryPriceNative,
 				NativeCurrency: nativeCurrency,
-				InvestedAmount: convertFromUSD(float64(posQty)*entryPriceUSD, session.Currency),
+				InvestedAmount: convertFromUSD(posQty*entryPriceUSD, session.Currency),
 				Quantity:       posQty,
 				SignalIndex:    sig.Index,
 				AlpacaOrderID:  alpacaOrderID,
@@ -23698,6 +25437,221 @@ func closeLivePosition(pos *LiveTradingPosition, closePriceNative float64, reaso
 	}
 }
 
+// ==================== Live Symbol Analysis ====================
+
+type ComparisonDetail struct {
+	Type          string  `json:"type"`
+	Message       string  `json:"message"`
+	BacktestEntry float64 `json:"backtest_entry,omitempty"`
+	LiveEntry     float64 `json:"live_entry,omitempty"`
+	DiffPct       float64 `json:"diff_pct,omitempty"`
+	Time          string  `json:"time,omitempty"`
+}
+
+type ComparisonResult struct {
+	Matches    int                `json:"matches"`
+	Mismatches int                `json:"mismatches"`
+	Details    []ComparisonDetail `json:"details"`
+}
+
+func compareTradesWithPositions(backtestTrades []ArenaBacktestTrade, livePositions []LiveTradingPosition, sessionID uint, symbol string, sessionStart time.Time, longOnly bool, intervalSec float64) ComparisonResult {
+	result := ComparisonResult{Details: []ComparisonDetail{}}
+
+	// Filter backtest trades to only those after session start
+	var relevantTrades []ArenaBacktestTrade
+	for _, bt := range backtestTrades {
+		if bt.EntryTime >= sessionStart.Unix() {
+			if longOnly && bt.Direction == "SHORT" {
+				continue
+			}
+			relevantTrades = append(relevantTrades, bt)
+		}
+	}
+
+	matched := make(map[int]bool)
+	maxTimeDiff := intervalSec * 2
+
+	for _, bt := range relevantTrades {
+		btTime := time.Unix(bt.EntryTime, 0)
+		found := false
+
+		for i, lp := range livePositions {
+			if matched[i] {
+				continue
+			}
+
+			timeDiff := math.Abs(float64(btTime.Unix() - lp.EntryTime.Unix()))
+			if bt.Direction == lp.Direction && timeDiff <= maxTimeDiff {
+				matched[i] = true
+				found = true
+
+				// Compare entry prices (use USD for consistency)
+				refPrice := lp.EntryPriceUSD
+				if refPrice == 0 {
+					refPrice = lp.EntryPrice
+				}
+				if refPrice > 0 {
+					priceDiff := math.Abs(bt.EntryPrice-refPrice) / refPrice * 100
+					if priceDiff > 0.5 {
+						detail := ComparisonDetail{
+							Type:          "ENTRY_PRICE_DIFF",
+							Message:       fmt.Sprintf("Entry-Preis Abweichung: Backtest %.4f vs Live %.4f (%.2f%%)", bt.EntryPrice, refPrice, priceDiff),
+							BacktestEntry: bt.EntryPrice,
+							LiveEntry:     refPrice,
+							DiffPct:       priceDiff,
+							Time:          btTime.Format(time.RFC3339),
+						}
+						result.Details = append(result.Details, detail)
+						result.Mismatches++
+						logLiveEvent(sessionID, "DATA_MISMATCH", symbol, fmt.Sprintf("⚠ %s", detail.Message))
+					} else {
+						result.Matches++
+					}
+				} else {
+					result.Matches++
+				}
+				break
+			}
+		}
+
+		if !found {
+			msg := fmt.Sprintf("Backtest zeigt %s Signal bei %s (%.4f), aber keine passende Live-Position", bt.Direction, btTime.Format("02.01.2006 15:04"), bt.EntryPrice)
+			result.Details = append(result.Details, ComparisonDetail{Type: "MISSING_POSITION", Message: msg, Time: btTime.Format(time.RFC3339)})
+			result.Mismatches++
+			logLiveEvent(sessionID, "DATA_MISMATCH", symbol, fmt.Sprintf("⚠ %s", msg))
+		}
+	}
+
+	for i, lp := range livePositions {
+		if !matched[i] {
+			refPrice := lp.EntryPriceUSD
+			if refPrice == 0 {
+				refPrice = lp.EntryPrice
+			}
+			msg := fmt.Sprintf("Live-Position %s bei %s (%.4f) hat kein Backtest-Signal", lp.Direction, lp.EntryTime.Format("02.01.2006 15:04"), refPrice)
+			result.Details = append(result.Details, ComparisonDetail{Type: "EXTRA_POSITION", Message: msg, Time: lp.EntryTime.Format(time.RFC3339)})
+			result.Mismatches++
+			logLiveEvent(sessionID, "DATA_MISMATCH", symbol, fmt.Sprintf("⚠ %s", msg))
+		}
+	}
+
+	return result
+}
+
+func intervalToSeconds(interval string) float64 {
+	switch interval {
+	case "5m":
+		return 300
+	case "15m":
+		return 900
+	case "60m", "1h":
+		return 3600
+	case "2h":
+		return 7200
+	case "4h":
+		return 14400
+	case "1d":
+		return 86400
+	case "1wk":
+		return 604800
+	default:
+		return 14400
+	}
+}
+
+func analyzeLiveSymbolHandler(c *gin.Context) {
+	var req struct {
+		SessionID uint   `json:"session_id"`
+		Symbol    string `json:"symbol"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "Ungültige Anfrage"})
+		return
+	}
+
+	symbol := strings.ToUpper(strings.TrimSpace(req.Symbol))
+	if symbol == "" || req.SessionID == 0 {
+		c.JSON(400, gin.H{"error": "session_id und symbol erforderlich"})
+		return
+	}
+
+	uid := liveOwnerUID(c)
+
+	var session LiveTradingSession
+	if err := db.Where("id = ? AND user_id = ?", req.SessionID, uid).First(&session).Error; err != nil {
+		c.JSON(404, gin.H{"error": "Session nicht gefunden"})
+		return
+	}
+
+	// Parse strategy params from session
+	var params map[string]interface{}
+	if session.ParamsJSON != "" {
+		json.Unmarshal([]byte(session.ParamsJSON), &params)
+	}
+	if params == nil {
+		params = map[string]interface{}{}
+	}
+
+	strategy, err := instantiateStrategy(session.Strategy, params)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	interval := session.Interval
+	if _, ok := backtestPeriodMap[interval]; !ok {
+		c.JSON(400, gin.H{"error": "Ungültiges Interval: " + interval})
+		return
+	}
+
+	// Fetch OHLCV from cache (fresh within 24h)
+	ohlcv, err := getOHLCVCached(symbol, interval, 24*time.Hour)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Daten konnten nicht geladen werden: " + err.Error()})
+		return
+	}
+	if len(ohlcv) < 50 {
+		c.JSON(400, gin.H{"error": "Nicht genug Daten für Analyse"})
+		return
+	}
+
+	// Run fresh backtest
+	result := runArenaBacktest(ohlcv, strategy)
+	result.ChartData = ohlcv
+
+	if provider, ok := strategy.(IndicatorProvider); ok {
+		result.Indicators = provider.ComputeIndicators(ohlcv)
+	}
+	if provider, ok := strategy.(OverlayProvider); ok {
+		result.Overlays = provider.ComputeOverlays(ohlcv)
+	}
+
+	// Load live positions for comparison
+	var livePositions []LiveTradingPosition
+	db.Where("session_id = ? AND symbol = ?", session.ID, symbol).Order("entry_time ASC").Find(&livePositions)
+
+	// Compare fresh backtest with live positions
+	comparison := compareTradesWithPositions(
+		result.Trades,
+		livePositions,
+		session.ID,
+		symbol,
+		session.StartedAt,
+		session.LongOnly,
+		intervalToSeconds(session.Interval),
+	)
+
+	c.JSON(200, gin.H{
+		"metrics":    result.Metrics,
+		"trades":     result.Trades,
+		"markers":    result.Markers,
+		"indicators": result.Indicators,
+		"overlays":   result.Overlays,
+		"chart_data": result.ChartData,
+		"comparison": comparison,
+	})
+}
+
 func getLiveTradingLogs(c *gin.Context) {
 	sessionID := c.Param("sessionId")
 
@@ -23782,8 +25736,8 @@ func runBacktestLabHandler(c *gin.Context) {
 		return
 	}
 
-	// Fetch weekly OHLCV
-	weeklyOHLCV, err := fetchOHLCVFromYahoo(symbol, "10y", "1wk")
+	// Fetch weekly OHLCV from cache
+	weeklyOHLCV, err := getOHLCVCached(symbol, "1wk", 24*time.Hour)
 	if err != nil || len(weeklyOHLCV) < 50 {
 		c.JSON(500, gin.H{"error": "Weekly-Daten konnten nicht geladen werden"})
 		return
@@ -23919,32 +25873,29 @@ func convertServerTradesToArena(serverTrades []ServerTrade) ([]ArenaBacktestTrad
 func calculateBacktestLabMetrics(trades []ArenaBacktestTrade) ArenaBacktestMetrics {
 	wins, losses := 0, 0
 	totalReturn := 0.0
-	totalWinReturn := 0.0
-	totalLossReturn := 0.0
-	maxDrawdown := 0.0
-	cumReturn := 0.0
-	peak := 0.0
+	var winReturns, lossReturns []float64
+	equity := 100.0
+	peak := equity
+	maxDD := 0.0
 
 	for _, t := range trades {
-		if t.IsOpen {
-			continue
-		}
-		cumReturn += t.ReturnPct
-		if cumReturn > peak {
-			peak = cumReturn
-		}
-		dd := peak - cumReturn
-		if dd > maxDrawdown {
-			maxDrawdown = dd
-		}
-		if t.ReturnPct > 0 {
+		// Include open trades (same as runArenaBacktest)
+		totalReturn += t.ReturnPct
+		if t.ReturnPct >= 0 {
 			wins++
-			totalWinReturn += t.ReturnPct
+			winReturns = append(winReturns, t.ReturnPct)
 		} else {
 			losses++
-			totalLossReturn += math.Abs(t.ReturnPct)
+			lossReturns = append(lossReturns, t.ReturnPct)
 		}
-		totalReturn += t.ReturnPct
+		equity *= (1 + t.ReturnPct/100)
+		if equity > peak {
+			peak = equity
+		}
+		dd := (peak - equity) / peak * 100
+		if dd > maxDD {
+			maxDD = dd
+		}
 	}
 
 	totalTrades := wins + losses
@@ -23953,20 +25904,27 @@ func calculateBacktestLabMetrics(trades []ArenaBacktestTrade) ArenaBacktestMetri
 		winRate = float64(wins) / float64(totalTrades) * 100
 	}
 	riskReward := 0.0
-	if losses > 0 && totalLossReturn > 0 {
-		avgWin := totalWinReturn / math.Max(float64(wins), 1)
-		avgLoss := totalLossReturn / float64(losses)
+	if len(winReturns) > 0 && len(lossReturns) > 0 {
+		avgWin := 0.0
+		for _, w := range winReturns {
+			avgWin += w
+		}
+		avgWin /= float64(len(winReturns))
+		avgLoss := 0.0
+		for _, l := range lossReturns {
+			avgLoss += math.Abs(l)
+		}
+		avgLoss /= float64(len(lossReturns))
 		riskReward = avgWin / avgLoss
 	}
 	avgReturn := 0.0
 	if totalTrades > 0 {
 		avgReturn = totalReturn / float64(totalTrades)
 	}
-	netProfit := totalReturn // on 100 units
 
 	return ArenaBacktestMetrics{
 		WinRate: winRate, RiskReward: riskReward, TotalReturn: totalReturn,
-		AvgReturn: avgReturn, MaxDrawdown: maxDrawdown, NetProfit: netProfit,
+		AvgReturn: avgReturn, MaxDrawdown: maxDD, NetProfit: equity - 100,
 		TotalTrades: totalTrades, Wins: wins, Losses: losses,
 	}
 }
@@ -24367,45 +26325,455 @@ func evaluateBacktestLabRules(
 
 // ==================== Backtest Lab Batch ====================
 
-// getWeeklyOHLCVCached returns weekly OHLCV data from DB cache if fresh (<24h), otherwise fetches from Yahoo and caches
-func getWeeklyOHLCVCached(symbol string) ([]OHLCV, string, error) {
-	var cache WeeklyOHLCVCache
-	result := db.Where("symbol = ?", symbol).First(&cache)
+// getOHLCVCached returns OHLCV data from persistent DB cache.
+// freshness=0: always from cache (no Yahoo call). freshness>0: fetch from Yahoo if cache older than freshness.
+// For 2h/4h: reads 60m cache and aggregates via aggregateOHLCV.
+func getOHLCVCached(symbol, interval string, freshness time.Duration) ([]OHLCV, error) {
+	// With Alpaca: 2h/4h are fetched natively (no aggregation needed)
+	// Without Alpaca: aggregate from 60m cache
+	if (interval == "2h" || interval == "4h") && (alpacaDataKey == "" || isNonUSStock(symbol)) {
+		factor := 2
+		if interval == "4h" {
+			factor = 4
+		}
+		hourly, err := getOHLCVCached(symbol, "60m", freshness)
+		if err != nil {
+			return nil, err
+		}
+		return aggregateOHLCV(hourly, factor), nil
+	}
 
-	if result.Error == nil && time.Since(cache.UpdatedAt).Hours() < 24 {
-		// Cache hit and fresh
-		var ohlcv []OHLCV
-		if err := json.Unmarshal([]byte(cache.DataJSON), &ohlcv); err == nil && len(ohlcv) >= 50 {
-			return ohlcv, "cache", nil
+	// Map display intervals to cache key intervals
+	cacheInterval := interval
+	switch interval {
+	case "1h":
+		cacheInterval = "60m"
+	case "1D":
+		cacheInterval = "1d"
+	case "1W":
+		cacheInterval = "1wk"
+	}
+
+	var cache OHLCVCache
+	result := db.Where("symbol = ? AND interval = ?", symbol, cacheInterval).First(&cache)
+
+	// Cache hit
+	if result.Error == nil {
+		age := time.Since(cache.UpdatedAt)
+		if freshness == 0 || age < freshness {
+			var ohlcv []OHLCV
+			if err := json.Unmarshal([]byte(cache.DataJSON), &ohlcv); err == nil && len(ohlcv) > 0 {
+				return ohlcv, nil
+			}
 		}
 	}
 
-	// Fetch from Yahoo (no fallback)
-	ohlcv, err := fetchOHLCVFromYahoo(symbol, "10y", "1wk")
-	if err != nil {
-		return nil, "yahoo", err
-	}
-	if len(ohlcv) < 50 {
-		return nil, "yahoo", fmt.Errorf("nur %d Weekly-Bars (min. 50 benötigt)", len(ohlcv))
+	// freshness=0 means "cache only, no fetch calls"
+	if freshness == 0 {
+		if result.Error == nil {
+			var ohlcv []OHLCV
+			if err := json.Unmarshal([]byte(cache.DataJSON), &ohlcv); err == nil && len(ohlcv) > 0 {
+				return ohlcv, nil
+			}
+		}
+		return nil, fmt.Errorf("no cache for %s/%s", symbol, interval)
 	}
 
-	// Save to cache
+	// Cache miss or stale — try Alpaca first (US stocks only), then Yahoo fallback
+	useAlpaca := alpacaDataKey != "" && !isNonUSStock(symbol)
+
+	if useAlpaca {
+		ohlcv, err := fetchOHLCVFromAlpaca(symbol, interval)
+		if err == nil && len(ohlcv) > 0 {
+			saveOHLCVCache(symbol, cacheInterval, ohlcv)
+			return ohlcv, nil
+		}
+		log.Printf("[OHLCVCache] Alpaca failed for %s/%s: %v — trying Yahoo", symbol, interval, err)
+	}
+
+	// Yahoo fallback
+	yahooInterval := cacheInterval
+	period := backtestPeriodMap[yahooInterval]
+	if period == "" {
+		period = "60d"
+	}
+
+	// If we have cached data, try delta-fetch first
+	if result.Error == nil && cache.DataJSON != "" {
+		var cached []OHLCV
+		if json.Unmarshal([]byte(cache.DataJSON), &cached) == nil && len(cached) > 0 {
+			deltaPeriod := getOHLCVDeltaPeriod(yahooInterval)
+			freshBars, err := fetchOHLCVFromYahoo(symbol, deltaPeriod, yahooInterval)
+			if err == nil && len(freshBars) > 0 {
+				merged := mergeOHLCV(cached, freshBars)
+				saveOHLCVCache(symbol, yahooInterval, merged)
+				return merged, nil
+			}
+			return cached, nil
+		}
+	}
+
+	// Full Yahoo fetch
+	ohlcv, err := fetchOHLCVFromYahoo(symbol, period, yahooInterval)
+	if err != nil {
+		return nil, err
+	}
+	if len(ohlcv) == 0 {
+		return nil, fmt.Errorf("no data for %s/%s", symbol, interval)
+	}
+
+	saveOHLCVCache(symbol, yahooInterval, ohlcv)
+	return ohlcv, nil
+}
+
+// saveOHLCVCache upserts OHLCV data into the persistent cache
+func saveOHLCVCache(symbol, interval string, ohlcv []OHLCV) {
 	dataBytes, _ := json.Marshal(ohlcv)
-	if result.Error == nil {
-		// Update existing
-		db.Model(&cache).Updates(map[string]interface{}{
+	var existing OHLCVCache
+	if db.Where("symbol = ? AND interval = ?", symbol, interval).First(&existing).Error == nil {
+		db.Model(&existing).Updates(map[string]interface{}{
 			"data_json":  string(dataBytes),
+			"bar_count":  len(ohlcv),
 			"updated_at": time.Now(),
 		})
 	} else {
-		// Create new
-		db.Create(&WeeklyOHLCVCache{
+		db.Create(&OHLCVCache{
 			Symbol:   symbol,
+			Interval: interval,
 			DataJSON: string(dataBytes),
+			BarCount: len(ohlcv),
 		})
 	}
+}
 
-	return ohlcv, "yahoo", nil
+// getMonthlyOHLCVCached returns monthly OHLCV data with persistent caching.
+// Uses fetchHistoricalDataServer (Yahoo→TwelveData→Aggregate fallback) on cache miss.
+func getMonthlyOHLCVCached(symbol string, freshness time.Duration) ([]OHLCV, error) {
+	// 1. Check persistent cache
+	if freshness > 0 {
+		var cache OHLCVCache
+		if db.Where("symbol = ? AND interval = ?", symbol, "1mo").First(&cache).Error == nil {
+			if time.Since(cache.UpdatedAt) < freshness {
+				var data []OHLCV
+				if json.Unmarshal([]byte(cache.DataJSON), &data) == nil && len(data) > 0 {
+					return data, nil
+				}
+			}
+		}
+	}
+
+	// 2. Cache miss/stale → full fallback chain (UNCHANGED)
+	data, err := fetchHistoricalDataServer(symbol)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. Cache the result
+	if len(data) > 0 {
+		saveOHLCVCache(symbol, "1mo", data)
+	}
+
+	return data, nil
+}
+
+// getOHLCVDeltaPeriod returns how far back to fetch for a delta update
+func getOHLCVDeltaPeriod(interval string) string {
+	switch interval {
+	case "5m":
+		return "1d"
+	case "15m":
+		return "5d"
+	case "60m":
+		return "5d"
+	case "1d":
+		return "3mo"
+	case "1wk":
+		return "6mo"
+	case "1mo":
+		return "2y"
+	default:
+		return "5d"
+	}
+}
+
+// isUSMarketOpen returns true during US market hours (9:30-16:00 ET, weekdays)
+func isUSMarketOpen() bool {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return true // assume open if timezone fails
+	}
+	now := time.Now().In(loc)
+	weekday := now.Weekday()
+	if weekday == time.Saturday || weekday == time.Sunday {
+		return false
+	}
+	hour, min := now.Hour(), now.Minute()
+	minutes := hour*60 + min
+	return minutes >= 9*60+30 && minutes <= 16*60
+}
+
+// arenaPrefetchHandler prefetches OHLCV data for all trading watchlist symbols via SSE progress.
+func arenaPrefetchHandler(c *gin.Context) {
+	var req struct {
+		Interval string `json:"interval"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Interval == "" {
+		req.Interval = "4h"
+	}
+
+	// SSE headers
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	var watchlist []TradingWatchlistItem
+	db.Find(&watchlist)
+
+	symbols := make([]string, len(watchlist))
+	for i, w := range watchlist {
+		symbols[i] = w.Symbol
+	}
+	total := len(symbols)
+
+	// Determine cache interval key
+	cacheInterval := req.Interval
+	switch req.Interval {
+	case "1h":
+		cacheInterval = "60m"
+	case "1D":
+		cacheInterval = "1d"
+	case "1W":
+		cacheInterval = "1wk"
+	}
+
+	// Check which symbols need fetching
+	type workItem struct {
+		symbol string
+		cached bool
+	}
+	var work []workItem
+	for _, sym := range symbols {
+		var cache OHLCVCache
+		if db.Where("symbol = ? AND interval = ?", sym, cacheInterval).First(&cache).Error == nil {
+			if time.Since(cache.UpdatedAt) < 2*time.Hour {
+				work = append(work, workItem{sym, true})
+				continue
+			}
+		}
+		work = append(work, workItem{sym, false})
+	}
+
+	var fetched, cached, failed int64
+	sem := make(chan struct{}, 10) // 10 parallel workers
+	var wg sync.WaitGroup
+
+	// Serialize SSE writes through a channel (concurrent c.Writer access = race condition)
+	type prefetchProgress struct {
+		Current int64
+		Total   int
+		Symbol  string
+		Done    bool
+		Fetched int64
+		Cached  int64
+		Failed  int64
+	}
+	progressCh := make(chan prefetchProgress, total+1)
+
+	for _, w := range work {
+		wg.Add(1)
+		if w.cached {
+			go func() {
+				defer wg.Done()
+				atomic.AddInt64(&cached, 1)
+				progressCh <- prefetchProgress{Symbol: ""}
+			}()
+			continue
+		}
+
+		go func(sym string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			useAlpaca := alpacaDataKey != "" && !isNonUSStock(sym)
+			var ohlcv []OHLCV
+			var err error
+
+			if useAlpaca {
+				ohlcv, err = fetchOHLCVFromAlpaca(sym, req.Interval)
+			}
+			if !useAlpaca || err != nil || len(ohlcv) == 0 {
+				yahooIv := cacheInterval
+				period := backtestPeriodMap[yahooIv]
+				if period == "" {
+					period = "60d"
+				}
+				ohlcv, err = fetchOHLCVFromYahoo(sym, period, yahooIv)
+			}
+
+			if err == nil && len(ohlcv) > 0 {
+				saveOHLCVCache(sym, cacheInterval, ohlcv)
+				atomic.AddInt64(&fetched, 1)
+			} else {
+				atomic.AddInt64(&failed, 1)
+			}
+
+			progressCh <- prefetchProgress{Symbol: sym}
+		}(w.symbol)
+	}
+
+	// Close channel when all workers done
+	go func() {
+		wg.Wait()
+		close(progressCh)
+	}()
+
+	// Single goroutine writes SSE (no race) — use manual format like backtestWatchlistHandler
+	var current int64
+	for msg := range progressCh {
+		current++
+		progressJSON, _ := json.Marshal(gin.H{
+			"type":    "progress",
+			"current": current,
+			"total":   total,
+			"symbol":  msg.Symbol,
+		})
+		fmt.Fprintf(c.Writer, "data: %s\n\n", progressJSON)
+		c.Writer.Flush()
+	}
+
+	completeJSON, _ := json.Marshal(gin.H{
+		"type":    "complete",
+		"fetched": atomic.LoadInt64(&fetched),
+		"cached":  atomic.LoadInt64(&cached),
+		"failed":  atomic.LoadInt64(&failed),
+	})
+	fmt.Fprintf(c.Writer, "data: %s\n\n", completeJSON)
+	c.Writer.Flush()
+}
+
+// startOHLCVCacheWorker runs a background goroutine that keeps the OHLCV cache fresh.
+// Rate-limited to 1 request / 2 seconds (~1800/h, under Yahoo's ~2000/h limit).
+func startOHLCVCacheWorker() {
+	log.Println("[OHLCVCache] Background worker started")
+	for {
+		// Collect all symbols that need updating
+		var stocks []Stock
+		db.Select("symbol").Find(&stocks)
+		if len(stocks) == 0 {
+			time.Sleep(5 * time.Minute)
+			continue
+		}
+
+		// Determine which intervals to refresh
+		// Intraday (5m, 15m, 60m) only during market hours
+		// Daily/weekly always
+		marketOpen := isUSMarketOpen()
+		intervals := []string{"1d", "1wk"}
+		if marketOpen {
+			intervals = append([]string{"5m", "15m", "60m"}, intervals...)
+		}
+
+		// Collect live session symbols + their intervals (refreshed by runLiveScan, skip here)
+		liveSymbolIntervals := map[string]map[string]bool{} // symbol -> set of yahoo intervals
+		liveSchedulerMu.Lock()
+		for sid := range liveSchedulers {
+			var session LiveTradingSession
+			if db.First(&session, sid).Error == nil && session.IsActive {
+				var syms []string
+				json.Unmarshal([]byte(session.Symbols), &syms)
+				yahooIv := session.Interval
+				ivMap := map[string]string{"1h": "60m", "1D": "1d", "1W": "1wk"}
+				if mapped, ok := ivMap[yahooIv]; ok {
+					yahooIv = mapped
+				}
+				for _, s := range syms {
+					if liveSymbolIntervals[s] == nil {
+						liveSymbolIntervals[s] = map[string]bool{}
+					}
+					liveSymbolIntervals[s][yahooIv] = true
+				}
+			}
+		}
+		liveSchedulerMu.Unlock()
+
+		// Build symbol list (no priority ordering needed — live symbols are skipped per-interval)
+		symbolOrder := make([]string, 0, len(stocks))
+		seen := map[string]bool{}
+		for _, s := range stocks {
+			if !seen[s.Symbol] {
+				symbolOrder = append(symbolOrder, s.Symbol)
+				seen[s.Symbol] = true
+			}
+		}
+
+		updated := 0
+		for _, iv := range intervals {
+			maxAge := getOHLCVCacheMaxAge(iv)
+			for _, symbol := range symbolOrder {
+				// Skip symbols whose interval is handled by live session refresh
+				if ivSet, ok := liveSymbolIntervals[symbol]; ok && ivSet[iv] {
+					continue
+				}
+
+				// Check if cache is still fresh
+				var cache OHLCVCache
+				if db.Where("symbol = ? AND interval = ?", symbol, iv).First(&cache).Error == nil {
+					if time.Since(cache.UpdatedAt) < maxAge {
+						continue // still fresh
+					}
+				}
+
+				// Rate limit: 1 request / 2 seconds
+				time.Sleep(2 * time.Second)
+
+				// Delta fetch
+				deltaPeriod := getOHLCVDeltaPeriod(iv)
+				freshBars, err := fetchOHLCVFromYahoo(symbol, deltaPeriod, iv)
+				if err != nil {
+					continue
+				}
+
+				if cache.DataJSON != "" {
+					var cached []OHLCV
+					if json.Unmarshal([]byte(cache.DataJSON), &cached) == nil && len(cached) > 0 {
+						freshBars = mergeOHLCV(cached, freshBars)
+					}
+				}
+
+				if len(freshBars) > 0 {
+					saveOHLCVCache(symbol, iv, freshBars)
+					updated++
+				}
+			}
+		}
+
+		if updated > 0 {
+			log.Printf("[OHLCVCache] Cycle done: %d symbols updated", updated)
+		}
+
+		// Wait 5 minutes before next cycle
+		time.Sleep(5 * time.Minute)
+	}
+}
+
+// getOHLCVCacheMaxAge returns how long data for a given interval stays "fresh" before the worker refreshes it
+func getOHLCVCacheMaxAge(interval string) time.Duration {
+	switch interval {
+	case "5m":
+		return 10 * time.Minute
+	case "15m":
+		return 30 * time.Minute
+	case "60m":
+		return 2 * time.Hour
+	case "1d":
+		return 12 * time.Hour
+	case "1wk":
+		return 24 * time.Hour
+	default:
+		return 24 * time.Hour
+	}
 }
 
 func runBacktestLabBatchHandler(c *gin.Context) {
@@ -24538,10 +26906,10 @@ func runBacktestLabBatchHandler(c *gin.Context) {
 			continue
 		}
 
-		// Fetch weekly OHLCV — Yahoo ONLY, with DB cache (24h TTL)
-		weeklyOHLCV, source, err := getWeeklyOHLCVCached(symbol)
+		// Fetch weekly OHLCV from persistent cache
+		weeklyOHLCV, err := getOHLCVCached(symbol, "1wk", 24*time.Hour)
 		if err != nil {
-			reason := "Yahoo Weekly-Daten nicht verfügbar: " + err.Error()
+			reason := "Weekly-Daten nicht verfügbar: " + err.Error()
 			skippedStocks = append(skippedStocks, BacktestLabSkippedStock{
 				Symbol: symbol, Name: name, Reason: reason,
 			})
@@ -24620,10 +26988,6 @@ func runBacktestLabBatchHandler(c *gin.Context) {
 			Trades:  trades,
 		})
 
-		// Rate limit Yahoo requests only (not cached)
-		if source == "yahoo" {
-			time.Sleep(500 * time.Millisecond)
-		}
 	}
 
 	// Calculate total aggregated metrics

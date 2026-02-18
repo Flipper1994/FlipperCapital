@@ -19,6 +19,8 @@ services:
       - DB_PATH=/data/watchlist.db
       - TZ=Europe/Berlin
       - TWELVE_DATA_API_KEY=${TWELVE_DATA_API_KEY}
+      - ALPACA_DATA_KEY=${ALPACA_DATA_KEY}
+      - ALPACA_DATA_SECRET=${ALPACA_DATA_SECRET}
     volumes:
       - ./watchlist.db:/data/watchlist.db
     networks:

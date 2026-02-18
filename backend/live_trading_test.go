@@ -183,27 +183,41 @@ func TestStartLiveSession(t *testing.T) {
 		"symbols": []string{"AAPL"}, "trade_amount": 500, "currency": "EUR",
 	})
 
-	// Start session
+	// Start session (creates inactive)
 	w := postJSON(r, "/api/trading/live/start", token, nil)
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Verify via response (not direct DB query to avoid connection contention)
 	var resp map[string]interface{}
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	sessionData := resp["session"].(map[string]interface{})
-	if sessionData["is_active"] != true {
+	sessionID := uint(sessionData["id"].(float64))
+
+	// Simulate resume: activate + register scheduler
+	db.Model(&LiveTradingSession{}).Where("id = ?", sessionID).Updates(map[string]interface{}{
+		"is_active":  true,
+		"started_at": time.Now(),
+	})
+	state := &liveSessionState{StopChan: make(chan struct{})}
+	liveSchedulerMu.Lock()
+	liveSchedulers[sessionID] = state
+	liveSchedulerMu.Unlock()
+
+	// Verify session is active
+	var session LiveTradingSession
+	db.First(&session, sessionID)
+	if !session.IsActive {
 		t.Fatal("expected active session")
 	}
-	if sessionData["strategy"] != "hybrid_ai_trend" {
-		t.Fatalf("expected hybrid_ai_trend, got %v", sessionData["strategy"])
+	if session.Strategy != "hybrid_ai_trend" {
+		t.Fatalf("expected hybrid_ai_trend, got %v", session.Strategy)
 	}
 
-	// Stop the scheduler so goroutine doesn't leak
+	// Cleanup
 	liveSchedulerMu.Lock()
-	for id, state := range liveSchedulers {
-		close(state.StopChan)
+	for id, s := range liveSchedulers {
+		close(s.StopChan)
 		delete(liveSchedulers, id)
 	}
 	liveSchedulerMu.Unlock()
@@ -247,7 +261,20 @@ func TestStopLiveSession(t *testing.T) {
 		"strategy": "hybrid_ai_trend", "interval": "5m",
 		"symbols": []string{"AAPL"}, "trade_amount": 500, "currency": "EUR",
 	})
-	postJSON(r, "/api/trading/live/start", token, nil)
+	w0 := postJSON(r, "/api/trading/live/start", token, nil)
+	var startResp map[string]interface{}
+	json.Unmarshal(w0.Body.Bytes(), &startResp)
+	sData := startResp["session"].(map[string]interface{})
+	sid := uint(sData["id"].(float64))
+
+	// Simulate resume
+	db.Model(&LiveTradingSession{}).Where("id = ?", sid).Updates(map[string]interface{}{
+		"is_active": true, "started_at": time.Now(),
+	})
+	st := &liveSessionState{StopChan: make(chan struct{})}
+	liveSchedulerMu.Lock()
+	liveSchedulers[sid] = st
+	liveSchedulerMu.Unlock()
 
 	// Stop
 	w := postJSON(r, "/api/trading/live/stop", token, nil)
@@ -256,7 +283,7 @@ func TestStopLiveSession(t *testing.T) {
 	}
 
 	var session LiveTradingSession
-	db.First(&session)
+	db.First(&session, sid)
 	if session.IsActive {
 		t.Fatal("expected session to be inactive")
 	}
@@ -273,10 +300,23 @@ func TestStopClosesOpenPositions(t *testing.T) {
 		"strategy": "hybrid_ai_trend", "interval": "5m",
 		"symbols": []string{"AAPL"}, "trade_amount": 500, "currency": "EUR",
 	})
-	postJSON(r, "/api/trading/live/start", token, nil)
+	w0 := postJSON(r, "/api/trading/live/start", token, nil)
+	var startResp map[string]interface{}
+	json.Unmarshal(w0.Body.Bytes(), &startResp)
+	sData := startResp["session"].(map[string]interface{})
+	sid := uint(sData["id"].(float64))
+
+	// Simulate resume
+	db.Model(&LiveTradingSession{}).Where("id = ?", sid).Updates(map[string]interface{}{
+		"is_active": true, "started_at": time.Now(),
+	})
+	st := &liveSessionState{StopChan: make(chan struct{})}
+	liveSchedulerMu.Lock()
+	liveSchedulers[sid] = st
+	liveSchedulerMu.Unlock()
 
 	var session LiveTradingSession
-	db.Where("is_active = ?", true).First(&session)
+	db.First(&session, sid)
 
 	// Create an open position
 	pos := LiveTradingPosition{
@@ -434,12 +474,26 @@ func TestGetLiveStatus(t *testing.T) {
 		t.Fatal("expected is_running=false")
 	}
 
-	// Start session
+	// Create session (starts inactive)
 	postJSON(r, "/api/trading/live/config", token, map[string]interface{}{
 		"strategy": "hybrid_ai_trend", "interval": "15m",
 		"symbols": []string{"AAPL", "MSFT", "GOOG"}, "trade_amount": 500, "currency": "EUR",
 	})
-	postJSON(r, "/api/trading/live/start", token, nil)
+	w = postJSON(r, "/api/trading/live/start", token, nil)
+	var startResp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &startResp)
+	sessionData := startResp["session"].(map[string]interface{})
+	sessionID := uint(sessionData["id"].(float64))
+
+	// Simulate resume: activate session + register scheduler state (without actual Yahoo calls)
+	db.Model(&LiveTradingSession{}).Where("id = ?", sessionID).Updates(map[string]interface{}{
+		"is_active":  true,
+		"started_at": time.Now(),
+	})
+	state := &liveSessionState{StopChan: make(chan struct{})}
+	liveSchedulerMu.Lock()
+	liveSchedulers[sessionID] = state
+	liveSchedulerMu.Unlock()
 
 	w = getJSON(r, "/api/trading/live/status", token)
 	json.Unmarshal(w.Body.Bytes(), &resp)
@@ -455,8 +509,8 @@ func TestGetLiveStatus(t *testing.T) {
 
 	// Cleanup
 	liveSchedulerMu.Lock()
-	for id, state := range liveSchedulers {
-		close(state.StopChan)
+	for id, s := range liveSchedulers {
+		close(s.StopChan)
 		delete(liveSchedulers, id)
 	}
 	liveSchedulerMu.Unlock()

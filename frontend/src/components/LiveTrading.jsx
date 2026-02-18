@@ -1,5 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
 import { useCurrency } from '../context/CurrencyContext'
+import ArenaChart from './ArenaChart'
+import ArenaIndicatorChart from './ArenaIndicatorChart'
+import ArenaBacktestPanel from './ArenaBacktestPanel'
 
 const STRATEGY_LABELS = {
   regression_scalping: 'Regression Scalping',
@@ -97,6 +101,8 @@ function TestOrderPanel({ headers, onOrderPlaced, tradeAmount, currency }) {
 }
 
 function LiveTrading({ isAdmin, token }) {
+  const { sessionId: urlSessionId } = useParams()
+  const navigate = useNavigate()
   const [config, setConfig] = useState(null)
   const [status, setStatus] = useState(null)
   const [positions, setPositions] = useState([])
@@ -122,8 +128,14 @@ function LiveTrading({ isAdmin, token }) {
   const [alpacaPortfolio, setAlpacaPortfolio] = useState(null)
   const [alpacaPortfolioLoading, setAlpacaPortfolioLoading] = useState(false)
   const [showAlpacaOrders, setShowAlpacaOrders] = useState(false)
+  const [ordersPage, setOrdersPage] = useState(1)
+  const [ordersSearch, setOrdersSearch] = useState('')
   const [showBrokerInfo, setShowBrokerInfo] = useState(false)
   const [showSessionStats, setShowSessionStats] = useState(false)
+  const [analysisSymbol, setAnalysisSymbol] = useState(null)
+  const [analysisData, setAnalysisData] = useState(null)
+  const [analysisLoading, setAnalysisLoading] = useState(false)
+  const [symbolsVisible, setSymbolsVisible] = useState(60)
   const { formatPrice, currency } = useCurrency()
   const pollRef = useRef(null)
   const posPollRef = useRef(null)
@@ -133,9 +145,43 @@ function LiveTrading({ isAdmin, token }) {
 
   const headers = token ? { 'Authorization': `Bearer ${token}` } : {}
 
-  const fetchConfig = useCallback(async () => {
+  const openAnalysis = useCallback(async (symbol) => {
+    if (!urlSessionId) return
+    setAnalysisSymbol(symbol)
+    setAnalysisLoading(true)
+    setAnalysisData(null)
     try {
-      const res = await fetch('/api/trading/live/config', { headers })
+      const res = await fetch('/api/trading/live/analyze', {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: Number(urlSessionId), symbol }),
+      })
+      if (res.ok) {
+        setAnalysisData(await res.json())
+      }
+    } catch (err) {
+      console.error('[LiveTrading] Analysis error:', err)
+    }
+    setAnalysisLoading(false)
+  }, [token, urlSessionId])
+
+  const closeAnalysis = useCallback(() => {
+    setAnalysisSymbol(null)
+    setAnalysisData(null)
+  }, [])
+
+  // ESC to close overlay
+  useEffect(() => {
+    if (!analysisSymbol) return
+    const onKey = (e) => { if (e.key === 'Escape') closeAnalysis() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [analysisSymbol, closeAnalysis])
+
+  const fetchConfig = useCallback(async (sid) => {
+    if (!sid) return
+    try {
+      const res = await fetch(`/api/trading/live/config?session_id=${sid}`, { headers })
       if (res.ok) {
         const data = await res.json()
         if (data.symbols) setConfig(data)
@@ -176,14 +222,18 @@ function LiveTrading({ isAdmin, token }) {
       const res = await fetch('/api/trading/live/sessions', { headers })
       if (res.ok) {
         const data = await res.json()
-        setSessions(data.sessions || [])
+        const list = data.sessions || []
+        setSessions(list)
+        return list
       }
     } catch { /* ignore */ }
+    return []
   }, [token])
 
-  const fetchAlpacaPortfolio = useCallback(async () => {
+  const fetchAlpacaPortfolio = useCallback(async (sid) => {
+    if (!sid) return
     try {
-      const res = await fetch('/api/trading/live/alpaca/portfolio', { headers })
+      const res = await fetch(`/api/trading/live/alpaca/portfolio?session_id=${sid}`, { headers })
       if (res.ok) {
         const data = await res.json()
         setAlpacaPortfolio(data)
@@ -191,46 +241,59 @@ function LiveTrading({ isAdmin, token }) {
     } catch { /* ignore */ }
   }, [token])
 
-  // Load on mount
+  // Load on mount / when URL session changes
   useEffect(() => {
-    fetchConfig()
     fetchStatus()
-    fetchSessions()
-  }, [])
+    fetchSessions().then(list => {
+      // If no sessionId in URL, redirect to first active or newest session
+      if (!urlSessionId && list && list.length > 0) {
+        const active = list.find(s => s.is_active)
+        const target = active || list[0]
+        navigate(`/live-trading/${target.id}`, { replace: true })
+      }
+    })
+    if (urlSessionId) {
+      fetchConfig(urlSessionId)
+      fetchPositions(urlSessionId)
+    }
+  }, [urlSessionId])
 
-  // Fetch Alpaca portfolio when enabled
+  // Fetch Alpaca portfolio when enabled + session known + keys saved
   const alpacaPollRef = useRef(null)
   useEffect(() => {
-    if (!alpacaEnabled) {
+    if (!alpacaEnabled || !urlSessionId || !alpacaKey) {
       if (alpacaPollRef.current) clearInterval(alpacaPollRef.current)
-      setAlpacaPortfolio(null)
+      if (!alpacaEnabled) setAlpacaPortfolio(null)
       return
     }
-    fetchAlpacaPortfolio()
-    alpacaPollRef.current = setInterval(fetchAlpacaPortfolio, 30000)
+    fetchAlpacaPortfolio(urlSessionId)
+    alpacaPollRef.current = setInterval(() => fetchAlpacaPortfolio(urlSessionId), 30000)
     return () => clearInterval(alpacaPollRef.current)
-  }, [alpacaEnabled])
+  }, [alpacaEnabled, urlSessionId, alpacaKey])
 
-  // Poll status when session is active
+  // Poll status + sessions when session is active
   useEffect(() => {
     if (!status?.is_running) {
       if (pollRef.current) clearInterval(pollRef.current)
       return
     }
-    pollRef.current = setInterval(fetchStatus, 5000)
+    pollRef.current = setInterval(() => {
+      fetchStatus()
+      fetchSessions()
+    }, 5000)
     return () => clearInterval(pollRef.current)
   }, [status?.is_running])
 
   // Poll positions when session is active
   useEffect(() => {
-    if (!status?.is_running || !status?.session_id) {
+    if (!status?.is_running || !urlSessionId) {
       if (posPollRef.current) clearInterval(posPollRef.current)
       return
     }
-    fetchPositions(status.session_id)
-    posPollRef.current = setInterval(() => fetchPositions(status.session_id), 10000)
+    fetchPositions(urlSessionId)
+    posPollRef.current = setInterval(() => fetchPositions(urlSessionId), 10000)
     return () => clearInterval(posPollRef.current)
-  }, [status?.is_running, status?.session_id])
+  }, [status?.is_running, urlSessionId])
 
   // Countdown timer
   useEffect(() => {
@@ -250,10 +313,10 @@ function LiveTrading({ isAdmin, token }) {
   // Debug log polling
   useEffect(() => {
     if (debugPollRef.current) clearInterval(debugPollRef.current)
-    if (!showDebug || !status?.session_id) return
+    if (!showDebug || !urlSessionId) return
     const fetchLogs = async () => {
       try {
-        const url = `/api/trading/live/logs/${status.session_id}${lastLogId ? `?after_id=${lastLogId}` : ''}`
+        const url = `/api/trading/live/logs/${urlSessionId}${lastLogId ? `?after_id=${lastLogId}` : ''}`
         const res = await fetch(url, { headers })
         if (res.ok) {
           const data = await res.json()
@@ -273,7 +336,7 @@ function LiveTrading({ isAdmin, token }) {
     fetchLogs()
     debugPollRef.current = setInterval(fetchLogs, 5000)
     return () => clearInterval(debugPollRef.current)
-  }, [showDebug, status?.session_id])
+  }, [showDebug, urlSessionId])
 
   // Trade event notification polling (independent of debug panel)
   const playNotificationSound = useCallback((isWin) => {
@@ -315,12 +378,12 @@ function LiveTrading({ isAdmin, token }) {
 
   useEffect(() => {
     if (notifyPollRef.current) clearInterval(notifyPollRef.current)
-    if (!notificationsEnabled || !status?.is_running || !status?.session_id) return
+    if (!notificationsEnabled || !status?.is_running || !urlSessionId) return
     const TRADE_LEVELS = new Set(['OPEN', 'CLOSE', 'SL', 'TP'])
     const checkTradeEvents = async () => {
       try {
         const afterId = lastNotifyLogId.current
-        const url = `/api/trading/live/logs/${status.session_id}${afterId ? `?after_id=${afterId}` : ''}`
+        const url = `/api/trading/live/logs/${urlSessionId}${afterId ? `?after_id=${afterId}` : ''}`
         const res = await fetch(url, { headers })
         if (!res.ok) return
         const data = await res.json()
@@ -352,11 +415,12 @@ function LiveTrading({ isAdmin, token }) {
     checkTradeEvents()
     notifyPollRef.current = setInterval(checkTradeEvents, 5000)
     return () => clearInterval(notifyPollRef.current)
-  }, [notificationsEnabled, status?.is_running, status?.session_id])
+  }, [notificationsEnabled, status?.is_running, urlSessionId])
 
   const goLive = async () => {
+    if (!urlSessionId) return
     try {
-      const res = await fetch('/api/trading/live/start', { method: 'POST', headers })
+      const res = await fetch(`/api/trading/live/session/${urlSessionId}/resume`, { method: 'POST', headers })
       if (res.ok) {
         setPositions([])
         fetchStatus()
@@ -368,13 +432,15 @@ function LiveTrading({ isAdmin, token }) {
     } catch { alert('Verbindungsfehler') }
   }
 
-  const stopLive = async () => {
+  const stopLive = async (sessionId) => {
+    const sid = sessionId || urlSessionId
+    if (!sid) return
     try {
-      const res = await fetch('/api/trading/live/stop', { method: 'POST', headers })
+      const res = await fetch(`/api/trading/live/stop?session_id=${sid}`, { method: 'POST', headers })
       if (res.ok) {
         fetchStatus()
         fetchSessions()
-        setPositions([])
+        if (String(sid) === String(urlSessionId)) setPositions([])
       } else {
         const data = await res.json()
         alert(data.error || 'Fehler beim Stoppen')
@@ -387,8 +453,11 @@ function LiveTrading({ isAdmin, token }) {
       const res = await fetch(`/api/trading/live/session/${id}/resume`, { method: 'POST', headers })
       if (res.ok) {
         setPositions([])
-        fetchStatus()
-        fetchSessions()
+        fetchConfig(id)
+        fetchPositions(id)
+        await fetchSessions()
+        await fetchStatus()
+        navigate(`/live-trading/${id}`)
       } else {
         const data = await res.json()
         alert(data.error || 'Fehler beim Fortsetzen')
@@ -424,7 +493,9 @@ function LiveTrading({ isAdmin, token }) {
 
   const formatTime = (ts) => {
     if (!ts) return '-'
-    return new Date(ts).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    const d = new Date(ts)
+    if (d.getFullYear() < 2000) return '-' // Guard against Go zero time
+    return d.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
   }
 
   const symbols = config?.symbols || []
@@ -497,6 +568,21 @@ function LiveTrading({ isAdmin, token }) {
     return actions
   }).sort((a, b) => new Date(b.time) - new Date(a.time))
 
+  // No session selected and no sessions exist — show empty state
+  if (!urlSessionId && sessions.length === 0) {
+    return (
+      <div className="min-h-screen bg-dark-900 p-4 md:p-6 max-w-7xl mx-auto flex items-center justify-center">
+        <div className="text-center">
+          <h2 className="text-lg text-gray-400 mb-2">Keine Sessions vorhanden</h2>
+          <p className="text-sm text-gray-500 mb-4">Erstelle eine neue Session in der Trading Arena.</p>
+          <a href="/trading-arena" className="px-4 py-2 bg-accent-600 hover:bg-accent-500 text-white rounded text-sm font-medium transition-colors inline-block">
+            Zur Trading Arena
+          </a>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-dark-900 p-4 md:p-6 max-w-7xl mx-auto">
       {/* Header */}
@@ -528,7 +614,7 @@ function LiveTrading({ isAdmin, token }) {
           )}
         </div>
         {!config && (
-          <div className="text-gray-500 text-sm">Keine Konfiguration. Bitte in der Trading Arena "Start Live Trading" drücken.</div>
+          <div className="text-gray-500 text-sm">Keine Konfiguration. Bitte in der Trading Arena "Neue Session starten" drücken.</div>
         )}
       </div>
 
@@ -581,64 +667,110 @@ function LiveTrading({ isAdmin, token }) {
         )}
       </div>
 
-      {/* Status Bar + Go Live Button */}
-      <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-3">
-            <span className={`w-3 h-3 rounded-full ${status?.is_running ? 'bg-green-400 animate-pulse' : 'bg-gray-600'}`} />
-            <span className={`text-sm font-medium ${status?.is_running ? 'text-green-400' : 'text-gray-400'}`}>
-              {status?.is_running ? 'Live Trading Aktiv' : 'Inaktiv'}
-            </span>
-            {status?.is_polling && (
-              <span className="text-xs text-accent-400 animate-pulse">Aktualisiere...</span>
-            )}
-            {status?.is_running && (
-              <button
-                onClick={() => notificationsEnabled ? setNotificationsEnabled(false) : enableNotifications()}
-                className={`ml-2 px-2 py-1 text-xs rounded transition-colors ${
-                  notificationsEnabled
-                    ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
-                    : 'bg-dark-600 text-gray-500 hover:text-gray-300 border border-dark-500'
-                }`}
-                title={notificationsEnabled ? 'Benachrichtigungen aktiv' : 'Benachrichtigungen aktivieren'}
-              >
-                {notificationsEnabled ? 'Alerts AN' : 'Alerts AUS'}
-              </button>
-            )}
-          </div>
-          {isAdmin ? (
-            <button
-              onClick={status?.is_running ? stopLive : goLive}
-              disabled={!config}
-              className={`px-5 py-2 rounded-lg text-sm font-medium transition-all ${
-                status?.is_running
-                  ? 'bg-red-600 hover:bg-red-500 text-white'
-                  : config
-                    ? 'bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white'
-                    : 'bg-dark-700 text-gray-500 cursor-not-allowed'
-              }`}
-            >
-              {status?.is_running ? 'Stop Live' : 'Go Live'}
-            </button>
-          ) : (
-            <span className="flex items-center gap-2 px-4 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-gray-500 cursor-not-allowed">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-              </svg>
-              Pro Abo
-            </span>
-          )}
-        </div>
+      {/* Session Header + Switcher */}
+      {(() => {
+        const currentSession = sessions.find(s => String(s.id) === String(urlSessionId))
+        const isSessionActive = currentSession?.is_active || status?.active_sessions?.some(s => String(s.session_id) === String(urlSessionId))
+        return (
+          <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
+            {/* Session Name + Switcher */}
+            <div className="flex items-center justify-between mb-3 pb-3 border-b border-dark-700">
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-gray-500">Session:</span>
+                <span className="text-sm font-medium text-white">{currentSession?.name || `#${urlSessionId}`}</span>
+                {isSessionActive && <span className="text-[10px] px-1.5 py-0.5 bg-green-500/20 text-green-400 border border-green-500/30 rounded">AKTIV</span>}
+                {currentSession && !isSessionActive && <span className="text-[10px] px-1.5 py-0.5 bg-gray-500/20 text-gray-400 border border-gray-500/30 rounded">INAKTIV</span>}
+              </div>
+              {sessions.length > 1 && (
+                <select
+                  value={urlSessionId || ''}
+                  onChange={(e) => navigate(`/live-trading/${e.target.value}`)}
+                  className="bg-dark-700 border border-dark-500 rounded px-2 py-1 text-xs text-white focus:border-accent-500 focus:outline-none"
+                >
+                  {sessions.map(s => (
+                    <option key={s.id} value={s.id}>{s.name} {s.is_active ? '(Aktiv)' : ''}</option>
+                  ))}
+                </select>
+              )}
+            </div>
 
-        {status?.is_running && (
-          <>
+            {/* Status + Go Live / Stop */}
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-3">
+                <span className={`w-3 h-3 rounded-full ${isSessionActive ? 'bg-green-400 animate-pulse' : 'bg-gray-600'}`} />
+                <span className={`text-sm font-medium ${isSessionActive ? 'text-green-400' : 'text-gray-400'}`}>
+                  {isSessionActive ? 'Live Trading Aktiv' : 'Inaktiv'}
+                </span>
+                {status?.is_polling && isSessionActive && (
+                  <span className="text-xs text-accent-400 animate-pulse">Aktualisiere...</span>
+                )}
+                {isSessionActive && (
+                  <button
+                    onClick={() => notificationsEnabled ? setNotificationsEnabled(false) : enableNotifications()}
+                    className={`ml-2 px-2 py-1 text-xs rounded transition-colors ${
+                      notificationsEnabled
+                        ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+                        : 'bg-dark-600 text-gray-500 hover:text-gray-300 border border-dark-500'
+                    }`}
+                    title={notificationsEnabled ? 'Benachrichtigungen aktiv' : 'Benachrichtigungen aktivieren'}
+                  >
+                    {notificationsEnabled ? 'Alerts AN' : 'Alerts AUS'}
+                  </button>
+                )}
+              </div>
+              {isAdmin ? (
+                <button
+                  onClick={() => isSessionActive ? stopLive(urlSessionId) : goLive()}
+                  className={`px-5 py-2 rounded-lg text-sm font-medium transition-all ${
+                    isSessionActive
+                      ? 'bg-red-600 hover:bg-red-500 text-white'
+                      : 'bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white'
+                  }`}
+                >
+                  {isSessionActive ? 'Stop Live' : 'Go Live'}
+                </button>
+              ) : (
+                <span className="flex items-center gap-2 px-4 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-gray-500 cursor-not-allowed">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                  Pro Abo
+                </span>
+              )}
+            </div>
+
+        {isSessionActive && status && (() => {
+          const sess = status.active_sessions?.find(s => String(s.session_id) === String(urlSessionId)) || status
+          const isWS = sess.mode === 'websocket'
+          return <>
+            {/* WebSocket / Polling mode badge */}
+            {isWS && (
+              <div className="flex items-center gap-2 mb-2">
+                <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium ${
+                  sess.ws_connected
+                    ? 'bg-green-500/15 text-green-400 border border-green-500/30'
+                    : 'bg-yellow-500/15 text-yellow-400 border border-yellow-500/30'
+                }`}>
+                  <span className={`w-2 h-2 rounded-full ${sess.ws_connected ? 'bg-green-400' : 'bg-yellow-400 animate-pulse'}`} />
+                  {sess.ws_connected ? 'WebSocket (IEX) aktiv' : 'Reconnecting...'}
+                </span>
+                {sess.last_bar_received && (
+                  <span className="text-xs text-gray-500">
+                    Letzte Bar: {formatTime(sess.last_bar_received)}
+                  </span>
+                )}
+              </div>
+            )}
             <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
               {[
-                { label: 'Interval', value: status.interval },
-                { label: 'Letzter Poll', value: formatTime(status.last_poll_at) },
-                { label: 'Nächster Poll', value: countdown != null ? (countdown === 0 ? 'Jetzt...' : `${Math.floor(countdown / 60)}:${String(countdown % 60).padStart(2, '0')}`) : formatTime(status.next_poll_at) },
-                { label: 'Session Start', value: formatTime(status.started_at) },
-                { label: 'Polls', value: status.total_polls },
+                { label: 'Interval', value: sess.interval },
+                { label: isWS ? 'Modus' : 'Letzter Poll', value: isWS ? 'WebSocket' : formatTime(sess.last_poll_at) },
+                { label: isWS ? 'Letzte Bar' : 'Nächster Poll', value: isWS
+                  ? (sess.last_bar_received ? formatTime(sess.last_bar_received) : '-')
+                  : (countdown != null ? (countdown === 0 ? 'Jetzt...' : `${Math.floor(countdown / 60)}:${String(countdown % 60).padStart(2, '0')}`) : formatTime(sess.next_poll_at))
+                },
+                { label: 'Session Start', value: formatTime(sess.started_at) },
+                { label: isWS ? 'Verbindung' : 'Polls', value: isWS ? (sess.ws_connected ? 'Verbunden' : 'Getrennt') : sess.total_polls },
               ].map((item, i) => (
                 <div key={i} className="bg-dark-700 rounded p-2">
                   <div className="text-gray-500">{item.label}</div>
@@ -646,24 +778,26 @@ function LiveTrading({ isAdmin, token }) {
                 </div>
               ))}
             </div>
-            {status.is_polling && (
+            {!isWS && sess.is_polling && (
               <div className="mt-2">
                 <div className="flex items-center justify-between text-xs mb-1">
                   <span className="text-accent-400 animate-pulse">
-                    Prüfe: {status.current_symbol || '...'} ({status.scan_progress_current || 0}/{status.scan_progress_total || 0})
+                    Prüfe: {sess.current_symbol || '...'} ({sess.scan_progress_current || 0}/{sess.scan_progress_total || 0})
                   </span>
                 </div>
                 <div className="h-1.5 bg-dark-600 rounded-full overflow-hidden">
                   <div
                     className="h-full bg-accent-500 rounded-full transition-all duration-500"
-                    style={{ width: status.scan_progress_total > 0 ? `${(status.scan_progress_current / status.scan_progress_total) * 100}%` : '0%' }}
+                    style={{ width: sess.scan_progress_total > 0 ? `${(sess.scan_progress_current / sess.scan_progress_total) * 100}%` : '0%' }}
                   />
                 </div>
               </div>
             )}
           </>
-        )}
-      </div>
+        })()}
+          </div>
+        )
+      })()}
 
       {/* Alpaca Broker Section — Admin only */}
       {isAdmin && (
@@ -777,7 +911,9 @@ function LiveTrading({ isAdmin, token }) {
                 <button
                   onClick={async () => {
                     try {
-                      await fetch('/api/trading/live/config', {
+                      const configId = config?.id
+                      const saveUrl = configId ? `/api/trading/live/config?config_id=${configId}` : '/api/trading/live/config'
+                      await fetch(saveUrl, {
                         method: 'POST',
                         headers: { ...headers, 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -790,6 +926,11 @@ function LiveTrading({ isAdmin, token }) {
                         })
                       })
                       setShowAlpaca(false)
+                      // Re-fetch config + portfolio after save (short delay for DB consistency)
+                      if (urlSessionId) {
+                        fetchConfig(urlSessionId)
+                        setTimeout(() => fetchAlpacaPortfolio(urlSessionId), 500)
+                      }
                     } catch { alert('Speichern fehlgeschlagen') }
                   }}
                   className="px-4 py-1.5 text-xs bg-dark-600 hover:bg-dark-500 text-white rounded transition-colors"
@@ -799,8 +940,8 @@ function LiveTrading({ isAdmin, token }) {
               </div>
               {alpacaEnabled && alpacaPaper && (
                 <TestOrderPanel headers={headers} tradeAmount={tradeAmount} currency={config?.currency || 'EUR'} onOrderPlaced={() => {
-                  fetchAlpacaPortfolio()
-                  if (status?.session_id) fetchPositions(status.session_id)
+                  if (urlSessionId) fetchAlpacaPortfolio(urlSessionId)
+                  if (urlSessionId) fetchPositions(urlSessionId)
                 }} />
               )}
             </div>
@@ -851,29 +992,44 @@ function LiveTrading({ isAdmin, token }) {
           </div>
 
           {/* Account Overview */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-4">
-            {[
-              { label: 'Gesamtwert', value: `$${alpacaPortfolio.account.equity.toLocaleString('de-DE', { minimumFractionDigits: 2 })}`, color: 'text-white' },
-              { label: 'Kaufkraft', value: `$${alpacaPortfolio.account.buying_power.toLocaleString('de-DE', { minimumFractionDigits: 2 })}`, color: 'text-accent-400' },
-              { label: 'Bargeld', value: `$${alpacaPortfolio.account.cash.toLocaleString('de-DE', { minimumFractionDigits: 2 })}`, color: 'text-gray-300' },
-              { label: 'Tagesänderung', value: `${alpacaPortfolio.account.day_change >= 0 ? '+' : ''}$${alpacaPortfolio.account.day_change.toLocaleString('de-DE', { minimumFractionDigits: 2 })}`, color: alpacaPortfolio.account.day_change >= 0 ? 'text-green-400' : 'text-red-400' },
-              { label: 'Tages %', value: `${alpacaPortfolio.account.day_change_pct >= 0 ? '+' : ''}${alpacaPortfolio.account.day_change_pct.toFixed(2)}%`, color: alpacaPortfolio.account.day_change_pct >= 0 ? 'text-green-400' : 'text-red-400' },
-            ].map((item, i) => (
-              <div key={i} className="bg-dark-700 rounded-lg p-3">
-                <div className="text-[10px] text-gray-500 uppercase tracking-wider">{item.label}</div>
-                <div className={`text-sm font-bold mt-1 ${item.color}`}>{item.value}</div>
+          {(() => {
+            const ap = alpacaPortfolio.positions || []
+            const totalInvested = ap.reduce((s, p) => s + (p.cost_basis || p.qty * p.avg_entry_price), 0)
+            const dayChange = alpacaPortfolio.account.day_change
+            const dayChangePct = alpacaPortfolio.account.day_change_pct
+            const dayColor = dayChange >= 0 ? 'text-green-400' : 'text-red-400'
+            return (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
+                {[
+                  { label: 'Gesamtwert', value: `$${alpacaPortfolio.account.equity.toLocaleString('de-DE', { minimumFractionDigits: 2 })}`, color: 'text-white' },
+                  { label: 'Investiert', value: `$${totalInvested.toLocaleString('de-DE', { minimumFractionDigits: 2 })}`, color: 'text-accent-400' },
+                  { label: 'Verfügbares Cash', value: `$${alpacaPortfolio.account.cash.toLocaleString('de-DE', { minimumFractionDigits: 2 })}`, color: 'text-gray-300' },
+                  { label: 'Tagesänderung', value: `${dayChange >= 0 ? '+' : ''}$${dayChange.toLocaleString('de-DE', { minimumFractionDigits: 2 })} (${dayChangePct >= 0 ? '+' : ''}${dayChangePct.toFixed(2)}%)`, color: dayColor },
+                ].map((item, i) => (
+                  <div key={i} className="bg-dark-700 rounded-lg p-3">
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">{item.label}</div>
+                    <div className={`text-sm font-bold mt-1 ${item.color}`}>{item.value}</div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            )
+          })()}
 
           {/* Alpaca Performance */}
-          {alpacaPortfolio.positions.length > 0 && (() => {
-            const ap = alpacaPortfolio.positions
+          {(() => {
+            const ap = alpacaPortfolio.positions || []
             const apTotalInvested = ap.reduce((s, p) => s + (p.cost_basis || p.qty * p.avg_entry_price), 0)
             const apTotalPnl = ap.reduce((s, p) => s + p.unrealized_pl, 0)
-            const apRenditePct = apTotalInvested > 0 ? (apTotalPnl / apTotalInvested) * 100 : 0
+            const realizedPL = alpacaPortfolio.account.realized_pl || 0
+            const realizedInvested = alpacaPortfolio.account.realized_invested || 0
+            const realizedCount = alpacaPortfolio.account.realized_count || 0
+            const totalPnl = apTotalPnl + realizedPL
+            const totalInvested = apTotalInvested + realizedInvested
+            const gesamtRenditePct = totalInvested > 0 ? (totalPnl / totalInvested) * 100 : 0
+            const portfolioPct = apTotalInvested > 0 ? (apTotalPnl / apTotalInvested) * 100 : 0
             const apWins = ap.filter(p => p.unrealized_pl > 0).length
             const apLosses = ap.filter(p => p.unrealized_pl <= 0).length
+            const totalTrades = ap.length + realizedCount
             const apWinRate = ap.length > 0 ? (apWins / ap.length) * 100 : 0
             const apAvgReturn = ap.length > 0 ? ap.reduce((s, p) => s + p.unrealized_pl_pct, 0) / ap.length : 0
             const apWinPos = ap.filter(p => p.unrealized_pl_pct > 0)
@@ -884,14 +1040,14 @@ function LiveTrading({ isAdmin, token }) {
             return (
               <div className="grid grid-cols-3 md:grid-cols-8 gap-2 mb-4">
                 {[
-                  { label: 'Rendite', value: `${apRenditePct >= 0 ? '+' : ''}${apRenditePct.toFixed(2)}%`, sub: `(${apTotalPnl >= 0 ? '+' : ''}$${apTotalPnl.toFixed(2)})`, color: apTotalPnl >= 0 ? 'text-green-400' : 'text-red-400' },
-                  { label: 'Trades', value: `${ap.length}`, color: 'text-white' },
+                  { label: 'Gesamt-Rendite', value: `${gesamtRenditePct >= 0 ? '+' : ''}${gesamtRenditePct.toFixed(2)}%`, sub: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`, color: totalPnl >= 0 ? 'text-green-400' : 'text-red-400' },
+                  { label: 'Portfolio', value: `${portfolioPct >= 0 ? '+' : ''}${portfolioPct.toFixed(2)}%`, sub: `${apTotalPnl >= 0 ? '+' : ''}$${apTotalPnl.toFixed(2)} unreal.`, color: apTotalPnl >= 0 ? 'text-green-400' : 'text-red-400' },
+                  { label: 'Realisiert', value: `${realizedPL >= 0 ? '+' : ''}$${realizedPL.toFixed(2)}`, sub: `${realizedCount} Trades`, color: realizedPL >= 0 ? 'text-green-400' : 'text-red-400' },
+                  { label: 'Trades', value: `${totalTrades}`, sub: `${ap.length} offen`, color: 'text-white' },
                   { label: 'Win Rate', value: `${apWinRate.toFixed(0)}%`, sub: `${apWins}W / ${apLosses}L`, color: apWinRate >= 50 ? 'text-green-400' : 'text-red-400' },
                   { label: 'R/R', value: apRR > 0 ? apRR.toFixed(2) : '-', color: apRR >= 1 ? 'text-green-400' : apRR > 0 ? 'text-red-400' : 'text-gray-400' },
-                  { label: 'Ø / Trade', value: `${apAvgReturn >= 0 ? '+' : ''}${apAvgReturn.toFixed(2)}%`, color: apAvgReturn >= 0 ? 'text-green-400' : 'text-red-400' },
                   { label: 'Ø Win', value: apAvgWin > 0 ? `+${apAvgWin.toFixed(2)}%` : '-', color: 'text-green-400' },
                   { label: 'Ø Loss', value: apAvgLoss < 0 ? `${apAvgLoss.toFixed(2)}%` : '-', color: 'text-red-400' },
-                  { label: 'Investiert', value: `$${apTotalInvested.toLocaleString('de-DE', { minimumFractionDigits: 2 })}`, color: 'text-gray-300' },
                 ].map((item, i) => (
                   <div key={i} className="bg-dark-700/50 rounded-lg p-2 text-center">
                     <div className="text-[9px] text-gray-500 uppercase tracking-wider">{item.label}</div>
@@ -914,7 +1070,8 @@ function LiveTrading({ isAdmin, token }) {
                   <div key={i} className="bg-dark-700 rounded-lg p-3">
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold text-accent-400">{p.symbol}</span>
+                        <span className="text-sm font-bold text-accent-400">{p.name || p.symbol}</span>
+                        <span className="text-[10px] text-gray-500">{p.symbol}</span>
                         <span className={`text-[10px] px-1.5 py-0.5 rounded ${p.side === 'long' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{p.side.toUpperCase()}</span>
                         <span className="text-[10px] text-gray-500">{p.qty}x</span>
                       </div>
@@ -925,7 +1082,7 @@ function LiveTrading({ isAdmin, token }) {
                     <div className="grid grid-cols-3 gap-2 text-[10px]">
                       <div><span className="text-gray-500">Einstieg:</span> <span className="text-gray-300">${p.avg_entry_price.toFixed(2)}</span></div>
                       <div><span className="text-gray-500">Aktuell:</span> <span className="text-gray-300">${p.current_price.toFixed(2)}</span></div>
-                      <div><span className="text-gray-500">G/V:</span> <span className={p.unrealized_pl >= 0 ? 'text-green-400' : 'text-red-400'}>{p.unrealized_pl >= 0 ? '+' : ''}${p.unrealized_pl.toFixed(2)}</span></div>
+                      <div><span className="text-gray-500">Rendite:</span> <span className={p.unrealized_pl >= 0 ? 'text-green-400' : 'text-red-400'}>{p.unrealized_pl >= 0 ? '+' : ''}${p.unrealized_pl.toFixed(2)} ({p.unrealized_pl_pct >= 0 ? '+' : ''}{p.unrealized_pl_pct.toFixed(2)}%)</span></div>
                     </div>
                   </div>
                 ))}
@@ -936,45 +1093,49 @@ function LiveTrading({ isAdmin, token }) {
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="text-gray-500 text-left">
-                      <th className="pb-2 pr-3">Symbol</th>
+                      <th className="pb-2 pr-3">Name</th>
                       <th className="pb-2 pr-3">Seite</th>
                       <th className="pb-2 pr-3 text-right">Stück</th>
                       <th className="pb-2 pr-3 text-right">Einstieg</th>
                       <th className="pb-2 pr-3 text-right">Aktuell</th>
                       <th className="pb-2 pr-3 text-right">Marktwert</th>
-                      <th className="pb-2 pr-3 text-right">G/V $</th>
-                      <th className="pb-2 text-right">G/V %</th>
+                      <th className="pb-2 text-right">Rendite</th>
                     </tr>
                   </thead>
                   <tbody>
                     {alpacaPortfolio.positions.map((p, i) => (
                       <tr key={i} className="border-t border-dark-600/50">
-                        <td className="py-2 pr-3 font-medium text-accent-400">{p.symbol}</td>
+                        <td className="py-2 pr-3 font-medium text-accent-400">{p.name || p.symbol} <span className="text-[10px] text-gray-500 ml-1">{p.symbol}</span></td>
                         <td className={`py-2 pr-3 font-medium ${p.side === 'long' ? 'text-green-400' : 'text-red-400'}`}>{p.side.toUpperCase()}</td>
                         <td className="py-2 pr-3 text-right text-gray-300">{p.qty}</td>
                         <td className="py-2 pr-3 text-right text-gray-400">${p.avg_entry_price.toFixed(2)}</td>
                         <td className="py-2 pr-3 text-right text-gray-300">${p.current_price.toFixed(2)}</td>
                         <td className="py-2 pr-3 text-right text-gray-300">${p.market_value.toLocaleString('de-DE', { minimumFractionDigits: 2 })}</td>
-                        <td className={`py-2 pr-3 text-right font-medium ${p.unrealized_pl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          {p.unrealized_pl >= 0 ? '+' : ''}${p.unrealized_pl.toFixed(2)}
-                        </td>
-                        <td className={`py-2 text-right font-medium ${p.unrealized_pl_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          {p.unrealized_pl_pct >= 0 ? '+' : ''}{p.unrealized_pl_pct.toFixed(2)}%
+                        <td className={`py-2 text-right font-medium ${p.unrealized_pl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {p.unrealized_pl >= 0 ? '+' : ''}${p.unrealized_pl.toFixed(2)} ({p.unrealized_pl_pct >= 0 ? '+' : ''}{p.unrealized_pl_pct.toFixed(2)}%)
                         </td>
                       </tr>
                     ))}
                   </tbody>
                   <tfoot>
-                    <tr className="border-t border-dark-500">
-                      <td colSpan={5} className="py-2 pr-3 text-gray-400 font-medium">Gesamt</td>
-                      <td className="py-2 pr-3 text-right text-white font-medium">
-                        ${alpacaPortfolio.positions.reduce((s, p) => s + p.market_value, 0).toLocaleString('de-DE', { minimumFractionDigits: 2 })}
-                      </td>
-                      <td className={`py-2 pr-3 text-right font-bold ${alpacaPortfolio.positions.reduce((s, p) => s + p.unrealized_pl, 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {alpacaPortfolio.positions.reduce((s, p) => s + p.unrealized_pl, 0) >= 0 ? '+' : ''}${alpacaPortfolio.positions.reduce((s, p) => s + p.unrealized_pl, 0).toFixed(2)}
-                      </td>
-                      <td></td>
-                    </tr>
+                    {(() => {
+                      const totalMV = alpacaPortfolio.positions.reduce((s, p) => s + p.market_value, 0)
+                      const totalPnl = alpacaPortfolio.positions.reduce((s, p) => s + p.unrealized_pl, 0)
+                      const totalCost = alpacaPortfolio.positions.reduce((s, p) => s + (p.cost_basis || p.qty * p.avg_entry_price), 0)
+                      const totalPct = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0
+                      const pnlColor = totalPnl >= 0 ? 'text-green-400' : 'text-red-400'
+                      return (
+                        <tr className="border-t border-dark-500">
+                          <td colSpan={5} className="py-2 pr-3 text-gray-400 font-medium">Gesamt</td>
+                          <td className="py-2 pr-3 text-right text-white font-medium">
+                            ${totalMV.toLocaleString('de-DE', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className={`py-2 text-right font-bold ${pnlColor}`}>
+                            {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)} ({totalPct >= 0 ? '+' : ''}{totalPct.toFixed(2)}%)
+                          </td>
+                        </tr>
+                      )
+                    })()}
                   </tfoot>
                 </table>
               </div>
@@ -985,62 +1146,137 @@ function LiveTrading({ isAdmin, token }) {
             <div className="text-center py-4 text-gray-600 text-sm">Keine offenen Positionen</div>
           )}
 
-          {/* Recent Orders */}
-          {alpacaPortfolio.orders.length > 0 && (
-            <div>
-              <button
-                onClick={() => setShowAlpacaOrders(!showAlpacaOrders)}
-                className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors mb-2"
-              >
-                <svg className={`w-3 h-3 transition-transform ${showAlpacaOrders ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                </svg>
-                Letzte Orders ({alpacaPortfolio.orders.length})
-              </button>
-              {showAlpacaOrders && (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-[10px]">
-                    <thead>
-                      <tr className="text-gray-600">
-                        <th className="text-left pb-1">Symbol</th>
-                        <th className="text-left pb-1">Seite</th>
-                        <th className="text-left pb-1">Typ</th>
-                        <th className="text-right pb-1">Stück</th>
-                        <th className="text-right pb-1">Preis</th>
-                        <th className="text-right pb-1">SL</th>
-                        <th className="text-right pb-1">TP</th>
-                        <th className="text-left pb-1">Status</th>
-                        <th className="text-left pb-1">Datum</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {alpacaPortfolio.orders.map((o, i) => (
-                        <tr key={i} className="border-t border-dark-700/50">
-                          <td className="py-1 text-gray-300">{o.symbol}</td>
-                          <td className={o.side === 'buy' ? 'text-green-400' : 'text-red-400'}>{o.side?.toUpperCase()}</td>
-                          <td className="py-1">
-                            {o.order_class === 'bracket' ? (
-                              <span className="px-1 py-0.5 rounded bg-purple-500/20 text-purple-400">BRACKET</span>
-                            ) : o.order_class === 'oto' ? (
-                              <span className="px-1 py-0.5 rounded bg-blue-500/20 text-blue-400">OTO</span>
-                            ) : (
-                              <span className="text-gray-600">{o.order_type || 'market'}</span>
-                            )}
-                          </td>
-                          <td className="py-1 text-right text-gray-400">{o.filled_qty || o.qty}</td>
-                          <td className="py-1 text-right text-gray-400">{o.filled_avg_price > 0 ? `$${o.filled_avg_price.toFixed(2)}` : '-'}</td>
-                          <td className="py-1 text-right text-red-400/60">{o.stop_price > 0 ? `$${o.stop_price.toFixed(2)}` : o.legs?.find(l => l.type === 'stop')?.stop_price > 0 ? `$${o.legs.find(l => l.type === 'stop').stop_price.toFixed(2)}` : '-'}</td>
-                          <td className="py-1 text-right text-green-400/60">{o.limit_price > 0 ? `$${o.limit_price.toFixed(2)}` : o.legs?.find(l => l.type === 'limit')?.limit_price > 0 ? `$${o.legs.find(l => l.type === 'limit').limit_price.toFixed(2)}` : '-'}</td>
-                          <td className={`py-1 ${o.status === 'filled' ? 'text-green-400' : o.status === 'canceled' || o.status === 'cancelled' ? 'text-gray-600' : 'text-amber-400'}`}>{o.status}</td>
-                          <td className="py-1 text-gray-600">{o.filled_at ? new Date(o.filled_at).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : o.created_at ? new Date(o.created_at).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+          {/* Trade History */}
+          {alpacaPortfolio.orders.length > 0 && (() => {
+            const allOrders = alpacaPortfolio.orders.filter(o => o.status === 'filled' || o.status === 'partially_filled')
+            const filtered = ordersSearch
+              ? allOrders.filter(o => o.symbol?.toLowerCase().includes(ordersSearch.toLowerCase()) || o.name?.toLowerCase().includes(ordersSearch.toLowerCase()))
+              : allOrders
+            const perPage = 20
+            const totalPages = Math.max(1, Math.ceil(filtered.length / perPage))
+            const page = Math.min(ordersPage, totalPages)
+            const paged = filtered.slice((page - 1) * perPage, page * perPage)
+
+            const getSL = (o) => {
+              if (o.stop_price > 0) return o.stop_price
+              const leg = o.legs?.find(l => l.type === 'stop')
+              return leg?.stop_price > 0 ? leg.stop_price : 0
+            }
+            const getTP = (o) => {
+              if (o.limit_price > 0) return o.limit_price
+              const leg = o.legs?.find(l => l.type === 'limit')
+              return leg?.limit_price > 0 ? leg.limit_price : 0
+            }
+            const fmtDate = (o) => {
+              const d = o.filled_at || o.created_at
+              return d ? new Date(d).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'
+            }
+
+            return (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <button onClick={() => setShowAlpacaOrders(!showAlpacaOrders)} className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors">
+                    <svg className={`w-3 h-3 transition-transform ${showAlpacaOrders ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                    Trade History ({allOrders.length})
+                  </button>
+                  {showAlpacaOrders && (
+                    <input
+                      type="text"
+                      placeholder="Ticker suchen..."
+                      value={ordersSearch}
+                      onChange={e => { setOrdersSearch(e.target.value); setOrdersPage(1) }}
+                      className="bg-dark-700 border border-dark-600 rounded px-2 py-1 text-xs text-gray-300 w-32 focus:outline-none focus:border-accent-500"
+                    />
+                  )}
                 </div>
-              )}
-            </div>
-          )}
+                {showAlpacaOrders && (
+                  <>
+                    {/* Mobile Cards */}
+                    <div className="md:hidden space-y-2 mb-2">
+                      {paged.map((o, i) => {
+                        const sl = getSL(o); const tp = getTP(o)
+                        const plColor = o.trade_pl >= 0 ? 'text-green-400' : 'text-red-400'
+                        return (
+                          <div key={i} className="bg-dark-700 rounded-lg p-3">
+                            <div className="flex items-center justify-between mb-1">
+                              <div className="flex items-center gap-2">
+                                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${o.side === 'buy' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{o.side?.toUpperCase()}</span>
+                                <span className="text-sm font-bold text-accent-400">{o.name || o.symbol}</span>
+                                <span className="text-[10px] text-gray-500">{o.symbol}</span>
+                              </div>
+                              <span className="text-[10px] text-gray-500">{fmtDate(o)}</span>
+                            </div>
+                            <div className="grid grid-cols-3 gap-2 text-[10px]">
+                              <div><span className="text-gray-500">Stück:</span> <span className="text-gray-300">{o.filled_qty || o.qty}</span></div>
+                              <div><span className="text-gray-500">Kurs:</span> <span className="text-gray-300">${o.filled_avg_price > 0 ? o.filled_avg_price.toFixed(2) : '-'}</span></div>
+                              <div><span className="text-gray-500">Investiert:</span> <span className="text-gray-300">${o.invested > 0 ? o.invested.toFixed(2) : '-'}</span></div>
+                              {sl > 0 && <div><span className="text-gray-500">SL:</span> <span className="text-red-400/70">${sl.toFixed(2)}</span></div>}
+                              {tp > 0 && <div><span className="text-gray-500">TP:</span> <span className="text-green-400/70">${tp.toFixed(2)}</span></div>}
+                              {o.side === 'sell' && o.trade_pl !== 0 && <div><span className="text-gray-500">Rendite:</span> <span className={plColor}>{o.trade_pl >= 0 ? '+' : ''}${o.trade_pl.toFixed(2)} ({o.trade_pl_pct >= 0 ? '+' : ''}{o.trade_pl_pct.toFixed(2)}%)</span></div>}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+
+                    {/* Desktop Table */}
+                    <div className="hidden md:block overflow-x-auto mb-2">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="text-gray-500 text-left">
+                            <th className="pb-2 pr-2">Datum</th>
+                            <th className="pb-2 pr-2">Name</th>
+                            <th className="pb-2 pr-2">Seite</th>
+                            <th className="pb-2 pr-2 text-right">Stück</th>
+                            <th className="pb-2 pr-2 text-right">Kurs</th>
+                            <th className="pb-2 pr-2 text-right">Investiert</th>
+                            <th className="pb-2 pr-2 text-right">SL</th>
+                            <th className="pb-2 pr-2 text-right">TP</th>
+                            <th className="pb-2 pr-2 text-right">Rendite</th>
+                            <th className="pb-2 text-left">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {paged.map((o, i) => {
+                            const sl = getSL(o); const tp = getTP(o)
+                            const plColor = o.trade_pl >= 0 ? 'text-green-400' : 'text-red-400'
+                            const hasPL = o.side === 'sell' && (o.trade_pl !== 0 || o.trade_pl_pct !== 0)
+                            return (
+                              <tr key={i} className="border-t border-dark-700/50">
+                                <td className="py-1.5 pr-2 text-gray-500 whitespace-nowrap">{fmtDate(o)}</td>
+                                <td className="py-1.5 pr-2 text-accent-400 font-medium">{o.name || o.symbol} <span className="text-[10px] text-gray-600 ml-1">{o.symbol}</span></td>
+                                <td className={`py-1.5 pr-2 font-medium ${o.side === 'buy' ? 'text-green-400' : 'text-red-400'}`}>{o.side?.toUpperCase()}</td>
+                                <td className="py-1.5 pr-2 text-right text-gray-300">{o.filled_qty || o.qty}</td>
+                                <td className="py-1.5 pr-2 text-right text-gray-400">{o.filled_avg_price > 0 ? `$${o.filled_avg_price.toFixed(2)}` : '-'}</td>
+                                <td className="py-1.5 pr-2 text-right text-gray-300">{o.invested > 0 ? `$${o.invested.toFixed(2)}` : '-'}</td>
+                                <td className="py-1.5 pr-2 text-right text-red-400/60">{sl > 0 ? `$${sl.toFixed(2)}` : '-'}</td>
+                                <td className="py-1.5 pr-2 text-right text-green-400/60">{tp > 0 ? `$${tp.toFixed(2)}` : '-'}</td>
+                                <td className={`py-1.5 pr-2 text-right font-medium ${hasPL ? plColor : 'text-gray-600'}`}>
+                                  {hasPL ? `${o.trade_pl >= 0 ? '+' : ''}$${o.trade_pl.toFixed(2)} (${o.trade_pl_pct >= 0 ? '+' : ''}${o.trade_pl_pct.toFixed(2)}%)` : '-'}
+                                </td>
+                                <td className={`py-1.5 ${o.status === 'filled' ? 'text-green-400' : o.status === 'canceled' || o.status === 'cancelled' ? 'text-gray-600' : 'text-amber-400'}`}>{o.status}</td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Pagination */}
+                    {totalPages > 1 && (
+                      <div className="flex items-center justify-center gap-3 text-xs text-gray-500">
+                        <button onClick={() => setOrdersPage(Math.max(1, page - 1))} disabled={page <= 1} className="px-2 py-1 rounded bg-dark-700 hover:bg-dark-600 disabled:opacity-30 disabled:cursor-not-allowed">Zurück</button>
+                        <span>Seite {page} / {totalPages}</span>
+                        <button onClick={() => setOrdersPage(Math.min(totalPages, page + 1))} disabled={page >= totalPages} className="px-2 py-1 rounded bg-dark-700 hover:bg-dark-600 disabled:opacity-30 disabled:cursor-not-allowed">Weiter</button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )
+          })()}
         </div>
       )}
 
@@ -1117,8 +1353,12 @@ function LiveTrading({ isAdmin, token }) {
         const closed = allPos.filter(p => p.is_closed)
         const open = allPos.filter(p => !p.is_closed)
 
-        // Session duration
-        const sessionStart = status?.started_at ? new Date(status.started_at) : (allPos.length > 0 ? new Date(Math.min(...allPos.map(p => new Date(p.entry_time)))) : new Date())
+        // Session duration — find current session's started_at from active_sessions or sessions list
+        const currentSess = status?.active_sessions?.find(s => String(s.session_id) === String(urlSessionId))
+        const sessStartRaw = currentSess?.started_at || sessions.find(s => String(s.id) === String(urlSessionId))?.started_at
+        const sessStartDate = sessStartRaw ? new Date(sessStartRaw) : null
+        // Guard against zero time (Go 0001-01-01)
+        const sessionStart = (sessStartDate && sessStartDate.getFullYear() > 2000) ? sessStartDate : (allPos.length > 0 ? new Date(Math.min(...allPos.map(p => new Date(p.entry_time)))) : new Date())
         const sessionDaysRaw = (Date.now() - sessionStart) / 86400000
         const sessionDays = Math.max(1, sessionDaysRaw)
         const sessionWeeks = Math.max(1, sessionDays / 7)
@@ -1401,42 +1641,58 @@ function LiveTrading({ isAdmin, token }) {
       )}
 
       {/* Symbols Grid */}
-      {symbols.length > 0 && (
-        <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
-          <h3 className="text-sm font-medium text-white mb-3">Aktien ({symbols.length})</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-2">
-            {symbols.map(sym => {
-              const stat = symbolStats[sym] || { totalReturn: 0, trades: 0, openPos: null }
-              return (
-                <div key={sym} className="bg-dark-700 rounded p-2 border border-transparent hover:border-accent-500/30 transition-colors">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium text-white truncate">{sym}</span>
-                    {stat.openPos && <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />}
-                  </div>
-                  {symbolPrices[sym] != null && (
-                    <div className="text-[10px] text-gray-400 mt-0.5">{formatPrice(symbolPrices[sym], sym)}</div>
-                  )}
-                  <div className="flex justify-between mt-1 text-[10px]">
-                    {stat.trades > 0 ? (
-                      <span className={stat.totalReturn >= 0 ? 'text-green-400' : 'text-red-400'}>
-                        {stat.totalReturn >= 0 ? '+' : ''}{stat.totalReturn.toFixed(1)}%
-                      </span>
-                    ) : (
-                      <span className="text-gray-600">-</span>
+      {symbols.length > 0 && (() => {
+        const sorted = [...symbols].sort((a, b) => {
+          const sa = symbolStats[a] || { trades: 0 }
+          const sb = symbolStats[b] || { trades: 0 }
+          return sb.trades - sa.trades
+        })
+        const visible = sorted.slice(0, symbolsVisible)
+        return (
+          <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
+            <h3 className="text-sm font-medium text-white mb-3">Aktien ({symbols.length})</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-2">
+              {visible.map(sym => {
+                const stat = symbolStats[sym] || { totalReturn: 0, trades: 0, openPos: null }
+                return (
+                  <div key={sym} onClick={() => openAnalysis(sym)} className="bg-dark-700 rounded p-2 border border-transparent hover:border-accent-500/30 transition-colors cursor-pointer">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-white truncate">{sym}</span>
+                      {stat.openPos && <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />}
+                    </div>
+                    {symbolPrices[sym] != null && (
+                      <div className="text-[10px] text-gray-400 mt-0.5">{formatPrice(symbolPrices[sym], sym)}</div>
                     )}
-                    <span className="text-gray-500">{stat.trades}T</span>
-                    {stat.openPos && (
-                      <span className={stat.openPos.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}>
-                        {stat.openPos.profit_loss_pct >= 0 ? '+' : ''}{stat.openPos.profit_loss_pct.toFixed(1)}%
-                      </span>
-                    )}
+                    <div className="flex justify-between mt-1 text-[10px]">
+                      {stat.trades > 0 ? (
+                        <span className={stat.totalReturn >= 0 ? 'text-green-400' : 'text-red-400'}>
+                          {stat.totalReturn >= 0 ? '+' : ''}{stat.totalReturn.toFixed(1)}%
+                        </span>
+                      ) : (
+                        <span className="text-gray-600">-</span>
+                      )}
+                      <span className="text-gray-500">{stat.trades}T</span>
+                      {stat.openPos && (
+                        <span className={stat.openPos.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}>
+                          {stat.openPos.profit_loss_pct >= 0 ? '+' : ''}{stat.openPos.profit_loss_pct.toFixed(1)}%
+                        </span>
+                      )}
+                    </div>
                   </div>
-                </div>
-              )
-            })}
+                )
+              })}
+            </div>
+            {symbols.length > symbolsVisible && (
+              <button
+                onClick={() => setSymbolsVisible(v => v + 60)}
+                className="w-full mt-2 py-1.5 text-xs text-gray-400 hover:text-white bg-dark-700 hover:bg-dark-600 rounded transition-colors"
+              >
+                Mehr anzeigen ({symbolsVisible}/{symbols.length})
+              </button>
+            )}
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* Closed Trades */}
       {closedPositions.length > 0 && (
@@ -1597,7 +1853,7 @@ function LiveTrading({ isAdmin, token }) {
       )}
 
       {/* Debug-Log */}
-      {status?.session_id && (
+      {urlSessionId && (
         <div className="bg-dark-800 rounded-lg border border-dark-600 mb-4">
           <button
             onClick={() => setShowDebug(!showDebug)}
@@ -1620,9 +1876,12 @@ function LiveTrading({ isAdmin, token }) {
               TP: 'text-green-400',
               SKIP: 'text-gray-500',
               INFO: 'text-gray-400',
+              WARN: 'text-yellow-500',
               ERROR: 'text-orange-400',
               TRADE: 'text-purple-400',
               ALPACA: 'text-purple-400',
+              REFRESH: 'text-cyan-400',
+              DATA_MISMATCH: 'text-orange-500',
             }
             const levelBg = {
               SCAN: 'bg-blue-500/20 border-blue-500/30',
@@ -1633,9 +1892,12 @@ function LiveTrading({ isAdmin, token }) {
               TP: 'bg-green-500/20 border-green-500/30',
               SKIP: 'bg-gray-500/20 border-gray-500/30',
               INFO: 'bg-gray-500/20 border-gray-500/30',
+              WARN: 'bg-yellow-500/20 border-yellow-500/30',
               ERROR: 'bg-orange-500/20 border-orange-500/30',
               TRADE: 'bg-purple-500/20 border-purple-500/30',
               ALPACA: 'bg-purple-500/20 border-purple-500/30',
+              REFRESH: 'bg-cyan-500/20 border-cyan-500/30',
+              DATA_MISMATCH: 'bg-orange-500/30 border-orange-500/40',
             }
             const allLevels = [...new Set(debugLogs.map(l => l.level))].sort()
             const filteredLogs = debugLogs.filter(l => !hiddenLogLevels.has(l.level))
@@ -1685,7 +1947,7 @@ function LiveTrading({ isAdmin, token }) {
                         <span className="text-gray-600 shrink-0">{time}</span>
                         <span className={`shrink-0 w-14 text-right ${levelColors[log.level] || 'text-gray-400'}`}>{log.level}</span>
                         <span className="text-gray-500 shrink-0 w-16 text-right">{log.symbol !== '-' ? log.symbol : ''}</span>
-                        <span className="text-gray-300">{log.message}</span>
+                        <span className={log.level === 'DATA_MISMATCH' ? 'text-orange-400 font-bold' : 'text-gray-300'}>{log.message}</span>
                       </div>
                     )
                   })}
@@ -1776,7 +2038,7 @@ function LiveTrading({ isAdmin, token }) {
                           )}
                           {isAdmin && s.is_active && (
                             <button
-                              onClick={(e) => { e.stopPropagation(); stopLive() }}
+                              onClick={(e) => { e.stopPropagation(); stopLive(s.id) }}
                               className="px-2.5 py-1 bg-red-600 hover:bg-red-500 text-white text-[10px] font-medium rounded transition-colors"
                             >
                               Stoppen
@@ -1849,7 +2111,127 @@ function LiveTrading({ isAdmin, token }) {
           <div className="text-gray-500 mb-2">Noch keine Live-Trading Konfiguration</div>
           <div className="text-gray-600 text-sm">
             Gehe zur Trading Arena, konfiguriere deine Strategie und Filter,
-            und drücke "Start Live Trading" um zu beginnen.
+            und drücke "Neue Session starten" um zu beginnen.
+          </div>
+        </div>
+      )}
+
+      {/* Stock Analysis Overlay */}
+      {analysisSymbol && (
+        <div className="fixed inset-0 z-50 bg-dark-900/95 overflow-auto">
+          <div className="sticky top-0 z-10 bg-dark-800 border-b border-dark-600 px-6 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <h2 className="text-lg font-bold text-white">{analysisSymbol}</h2>
+              <span className="text-xs text-gray-500">{STRATEGY_LABELS[config?.strategy] || config?.strategy} | {config?.interval}</span>
+              {analysisData?.comparison?.mismatches > 0 && (
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-orange-500/20 border border-orange-500/30 text-orange-400 animate-pulse">
+                  {analysisData.comparison.mismatches} MISMATCH{analysisData.comparison.mismatches !== 1 ? 'ES' : ''}
+                </span>
+              )}
+            </div>
+            <button onClick={closeAnalysis} className="text-gray-400 hover:text-white transition-colors p-1">
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <div className="max-w-7xl mx-auto px-6 py-4 space-y-4">
+            {analysisLoading ? (
+              <div className="flex items-center justify-center py-20">
+                <div className="w-6 h-6 border-2 border-accent-500 border-t-transparent rounded-full animate-spin" />
+                <span className="ml-3 text-gray-400">Analysiere {analysisSymbol}...</span>
+              </div>
+            ) : analysisData ? (
+              <>
+                {/* Chart with Bollinger Bands */}
+                <ArenaChart
+                  symbol={analysisSymbol}
+                  interval={config?.interval || '4h'}
+                  token={token}
+                  markers={analysisData.markers}
+                  overlays={analysisData.overlays}
+                  customData={analysisData.chart_data}
+                />
+
+                {/* Indicator sub-chart */}
+                {analysisData.indicators?.length > 0 && (
+                  <ArenaIndicatorChart
+                    indicators={analysisData.indicators}
+                    markers={analysisData.markers}
+                    strategyName={STRATEGY_LABELS[config?.strategy] || config?.strategy}
+                  />
+                )}
+
+                {/* Backtest results */}
+                <ArenaBacktestPanel
+                  metrics={analysisData.metrics}
+                  trades={analysisData.trades}
+                  formatPrice={formatPrice}
+                  symbol={analysisSymbol}
+                  tradeAmount={config?.trade_amount || 500}
+                />
+
+                {/* Comparison panel */}
+                {analysisData.comparison && (
+                  <div className={`bg-dark-800 rounded-lg border p-4 ${analysisData.comparison.mismatches > 0 ? 'border-orange-500/50' : 'border-dark-600'}`}>
+                    <h3 className="text-sm font-medium text-white mb-3">Daten-Vergleich (Live vs. Backtest)</h3>
+                    <div className="grid grid-cols-2 gap-2 mb-3">
+                      <div className="bg-dark-700 rounded p-2 text-center">
+                        <div className="text-[10px] text-gray-500">Übereinstimmungen</div>
+                        <div className="text-base font-bold text-green-400">{analysisData.comparison.matches}</div>
+                      </div>
+                      <div className="bg-dark-700 rounded p-2 text-center">
+                        <div className="text-[10px] text-gray-500">Abweichungen</div>
+                        <div className={`text-base font-bold ${analysisData.comparison.mismatches > 0 ? 'text-orange-400' : 'text-green-400'}`}>
+                          {analysisData.comparison.mismatches}
+                        </div>
+                      </div>
+                    </div>
+                    {analysisData.comparison.mismatches === 0 && analysisData.comparison.matches === 0 && (
+                      <div className="text-xs text-gray-500 text-center py-2">Keine Trades seit Session-Start zum Vergleichen</div>
+                    )}
+                    {analysisData.comparison.mismatches === 0 && analysisData.comparison.matches > 0 && (
+                      <div className="text-xs text-green-400/70 text-center py-2">Alle Daten stimmen überein</div>
+                    )}
+                    {analysisData.comparison.details?.length > 0 && (
+                      <div className="max-h-48 overflow-auto mt-2">
+                        <table className="w-full text-[11px]">
+                          <thead>
+                            <tr className="text-gray-500 border-b border-dark-600">
+                              <th className="text-left py-1 pr-2">Typ</th>
+                              <th className="text-left py-1 pr-2">Zeit</th>
+                              <th className="text-left py-1">Beschreibung</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {analysisData.comparison.details.map((d, i) => (
+                              <tr key={i} className="border-b border-dark-700/30">
+                                <td className="py-1.5 pr-2">
+                                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
+                                    d.type === 'ENTRY_PRICE_DIFF' ? 'bg-yellow-500/20 text-yellow-400' :
+                                    d.type === 'MISSING_POSITION' ? 'bg-red-500/20 text-red-400' :
+                                    'bg-orange-500/20 text-orange-400'
+                                  }`}>
+                                    {d.type === 'ENTRY_PRICE_DIFF' ? 'PREIS' : d.type === 'MISSING_POSITION' ? 'FEHLT' : 'EXTRA'}
+                                  </span>
+                                </td>
+                                <td className="py-1.5 pr-2 text-gray-400 whitespace-nowrap">
+                                  {d.time ? new Date(d.time).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'}
+                                </td>
+                                <td className="py-1.5 text-orange-300">{d.message}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="text-center py-20 text-gray-500">Fehler beim Laden der Analyse</div>
+            )}
           </div>
         </div>
       )}

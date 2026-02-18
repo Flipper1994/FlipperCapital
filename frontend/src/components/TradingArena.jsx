@@ -1,8 +1,74 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, useTransition } from 'react'
 import ArenaChart from './ArenaChart'
 import ArenaBacktestPanel from './ArenaBacktestPanel'
 import ArenaIndicatorChart from './ArenaIndicatorChart'
 import { useCurrency } from '../context/CurrencyContext'
+
+// Skeleton building blocks
+const Sk = ({ className = '' }) => <div className={`bg-dark-700 rounded animate-pulse ${className}`} />
+
+function ArenaSkeleton() {
+  return (
+    <div className="space-y-4">
+      {/* Chart skeleton */}
+      <div className="bg-dark-800 rounded-lg border border-dark-600 p-4">
+        <div className="flex items-center gap-3 mb-3">
+          <Sk className="h-5 w-32" />
+          <Sk className="h-4 w-20" />
+          <div className="ml-auto"><Sk className="h-4 w-12" /></div>
+        </div>
+        <Sk className="h-[400px] w-full rounded-lg" />
+      </div>
+      {/* Backtest results skeleton */}
+      <div className="bg-dark-800 rounded-lg border border-dark-600 p-4">
+        <div className="flex items-center gap-3 mb-3">
+          <Sk className="h-4 w-40" />
+          <Sk className="h-4 w-24 ml-auto" />
+        </div>
+        <div className="grid grid-cols-4 gap-3 mb-4">
+          {[...Array(8)].map((_, i) => (
+            <div key={i} className="space-y-1.5">
+              <Sk className="h-3 w-16" />
+              <Sk className="h-5 w-20" />
+            </div>
+          ))}
+        </div>
+        <div className="space-y-2">
+          {[...Array(5)].map((_, i) => <Sk key={i} className="h-8 w-full" />)}
+        </div>
+      </div>
+      {/* Batch / Watchlist results skeleton */}
+      <div className="bg-dark-800 rounded-lg border border-dark-600 p-4">
+        <div className="flex items-center gap-3 mb-3">
+          <Sk className="h-4 w-48" />
+          <Sk className="h-6 w-24 ml-auto rounded-lg" />
+        </div>
+        <div className="grid grid-cols-3 gap-3">
+          {[...Array(6)].map((_, i) => (
+            <div key={i} className="bg-dark-700/50 rounded-lg p-3 space-y-2">
+              <Sk className="h-4 w-24" />
+              <Sk className="h-3 w-16" />
+              <Sk className="h-5 w-20" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SidebarSkeleton() {
+  return (
+    <div className="p-2 space-y-1">
+      {[...Array(20)].map((_, i) => (
+        <div key={i} className="flex items-center gap-2 px-2 py-1.5">
+          <Sk className="h-4 w-14" />
+          <Sk className="h-3 w-24" />
+        </div>
+      ))}
+    </div>
+  )
+}
 
 const INTERVALS = ['5m', '15m', '1h', '2h', '4h', '1D', '1W']
 const INTERVAL_MAP = {
@@ -18,6 +84,8 @@ const STRATEGIES = [
   { value: 'regression_scalping', label: 'Regression Scalping', beta: true },
   { value: 'hybrid_ai_trend', label: 'NW Bollinger Bands' },
   { value: 'diamond_signals', label: 'Diamond Signals', beta: true },
+  { value: 'smart_money_flow', label: 'Smart Money Flow', beta: true },
+  { value: 'hann_trend', label: 'Hann Trend (DMH + SAR)' },
 ]
 
 const STRATEGY_INFO = {
@@ -47,6 +115,34 @@ const STRATEGY_INFO = {
     desc: 'Multi-Confluence-Strategie. Erkennt Chartmuster (Symmetrische Formationen) und bestätigt Signale über RSI-Extremzonen. Nur Trades mit mindestens N Konfluenz-Faktoren werden ausgeführt.',
     indicators: 'Pattern Detection, RSI, Konfluenz-Score',
     timeframes: '4h, 1D',
+  },
+  smart_money_flow: {
+    title: 'Smart Money Flow Cloud',
+    desc: 'Volumenfluss-basierte Trendstrategie (BOSWaves). Erkennt Regime über adaptiven Geldfluss-Indikator. Einstieg erst nach Struktur-Bestätigung: Regime-Wechsel → Swing-Punkt → Pullback zur Baseline → Structure Break.',
+    indicators: 'Money Flow Cloud, Adaptive Bänder, Flow-Histogramm',
+    timeframes: '1h, 4h, 1D',
+    tips: '↑ Win Rate: Band Expansion erhöhen (2.5-3.0), Trend Length erhöhen (50+). ↑ Frequenz: Band Tightness senken (0.5-0.7), Flow Window kürzer (15-20)',
+    legend: [
+      { symbol: '▲ LONG', color: '#22c55e', desc: 'Entry — Structure Break über Swing-High nach Pullback' },
+      { symbol: '▼ SHORT', color: '#ef4444', desc: 'Entry — Structure Break unter Swing-Low nach Pullback' },
+      { symbol: '▼ TP', color: '#22c55e', desc: 'Take Profit (Risk × R/R)' },
+      { symbol: '▼ SL', color: '#ef4444', desc: 'Stop Loss (Pullback-Extrem)' },
+    ],
+  },
+  hann_trend: {
+    title: 'Hann Trend (DMH + SAR)',
+    desc: 'Trend+Pullback-Strategie nach Ehlers (TASC 2021.12). DMH-Oszillator bestimmt Trend-Richtung, Parabolic SAR erkennt Pullbacks. Nur erster Pullback nach DMH-Nulllinien-Kreuz wird gehandelt, Bestätigung über Swing-High/Low-Bruch.',
+    indicators: 'DMH-Histogramm, Parabolic SAR',
+    timeframes: '1h, 4h, 1D',
+    tips: '↑ Frequenz: DMH Length senken (15-20), SAR Increment erhöhen (0.04-0.05). ↑ Qualität: DMH Length erhöhen (40-50), Swing Lookback erhöhen (8-10)',
+    legend: [
+      { symbol: '▲ LONG', color: '#22c55e', desc: 'Entry — Close über Swing-High nach SAR-Pullback im Aufwärtstrend' },
+      { symbol: '▼ SHORT', color: '#ef4444', desc: 'Entry — Close unter Swing-Low nach SAR-Pullback im Abwärtstrend' },
+      { symbol: '▼ TP', color: '#22c55e', desc: 'Take Profit (Risk × R/R)' },
+      { symbol: '▼ SL', color: '#ef4444', desc: 'Stop Loss (Pullback-Extrem ± Buffer)' },
+      { symbol: '█ gelb', color: '#FFCC00', desc: 'DMH > 0 — bullischer Trend' },
+      { symbol: '█ blau', color: '#0055FF', desc: 'DMH < 0 — bärischer Trend' },
+    ],
   },
 }
 
@@ -87,12 +183,35 @@ const STRATEGY_PARAMS = {
     { key: 'cooldown', label: 'Cooldown', default: 5, min: 1, max: 20, step: 1 },
     { key: 'risk_reward', label: 'Risk/Reward', default: 2.0, min: 1.0, max: 5.0, step: 0.1 },
   ],
+  smart_money_flow: [
+    { key: 'trend_length', label: 'Trend Length', default: 34, min: 10, max: 100, step: 1 },
+    { key: 'basis_smooth', label: 'Trend Smoothing', default: 3, min: 1, max: 10, step: 1 },
+    { key: 'flow_window', label: 'Flow Window', default: 24, min: 5, max: 60, step: 1 },
+    { key: 'flow_smooth', label: 'Flow Smoothing', default: 5, min: 1, max: 15, step: 1 },
+    { key: 'flow_boost', label: 'Flow Boost', default: 1.2, min: 0.5, max: 3.0, step: 0.1 },
+    { key: 'atr_length', label: 'ATR Length', default: 14, min: 5, max: 50, step: 1 },
+    { key: 'band_tightness', label: 'Band Tightness', default: 0.9, min: 0.1, max: 2.0, step: 0.1 },
+    { key: 'band_expansion', label: 'Band Expansion', default: 2.2, min: 1.0, max: 5.0, step: 0.1 },
+    { key: 'dot_cooldown', label: 'Retest Cooldown', default: 12, min: 0, max: 30, step: 1 },
+    { key: 'risk_reward', label: 'Risk/Reward', default: 2.0, min: 1.0, max: 5.0, step: 0.1 },
+  ],
+  hann_trend: [
+    { key: 'dmh_length', label: 'DMH Length', default: 30, min: 5, max: 80, step: 1 },
+    { key: 'sar_start', label: 'SAR Start', default: 0.02, min: 0.005, max: 0.1, step: 0.005 },
+    { key: 'sar_increment', label: 'SAR Increment', default: 0.03, min: 0.005, max: 0.1, step: 0.005 },
+    { key: 'sar_max', label: 'SAR Max', default: 0.3, min: 0.1, max: 0.5, step: 0.01 },
+    { key: 'swing_lookback', label: 'Swing Lookback', default: 5, min: 2, max: 20, step: 1 },
+    { key: 'risk_reward', label: 'Risk/Reward', default: 2.0, min: 1.0, max: 5.0, step: 0.1 },
+    { key: 'sl_buffer', label: 'SL Buffer %', default: 0.3, min: 0, max: 3.0, step: 0.1 },
+  ],
 }
 
 const STRATEGY_DEFAULT_INTERVAL = {
   regression_scalping: '5m',
   hybrid_ai_trend: '5m',
   diamond_signals: '4h',
+  smart_money_flow: '4h',
+  hann_trend: '1h',
 }
 
 function getDefaultParams(strategy) {
@@ -105,6 +224,18 @@ function getDefaultParams(strategy) {
 function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSelectStock, filterSymbols, timeRange, formatTimeRange, tradeAmount }) {
   const [sortCol, setSortCol] = useState('entry_time')
   const [sortDir, setSortDir] = useState('desc')
+  const [stocksVisible, setStocksVisible] = useState(60)
+  const [tradesVisible, setTradesVisible] = useState(100)
+  const [filterUpdating, setFilterUpdating] = useState(false)
+
+  // Reset pagination when filters change
+  useEffect(() => {
+    setStocksVisible(60)
+    setTradesVisible(100)
+    setFilterUpdating(true)
+    const t = setTimeout(() => setFilterUpdating(false), 0)
+    return () => clearTimeout(t)
+  }, [longOnly, filterSymbols])
 
   const strategyLabel = STRATEGIES.find(s => s.value === strategy)?.label || strategy
 
@@ -144,15 +275,15 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
     trades = trades.filter(t => !t.is_open)
     if (trades.length === 0) return batchResults.metrics
     let wins = 0, losses = 0, totalReturn = 0, totalWinReturn = 0, totalLossReturn = 0
-    let maxDrawdown = 0, cumReturn = 0, peak = 0
+    let equity = 100, peak = 100, maxDD = 0
     for (const t of trades) {
-      cumReturn += t.return_pct
-      if (cumReturn > peak) peak = cumReturn
-      const dd = peak - cumReturn
-      if (dd > maxDrawdown) maxDrawdown = dd
-      if (t.return_pct > 0) { wins++; totalWinReturn += t.return_pct }
-      else { losses++; totalLossReturn += Math.abs(t.return_pct) }
       totalReturn += t.return_pct
+      if (t.return_pct >= 0) { wins++; totalWinReturn += t.return_pct }
+      else { losses++; totalLossReturn += Math.abs(t.return_pct) }
+      equity *= (1 + t.return_pct / 100)
+      if (equity > peak) peak = equity
+      const dd = (peak - equity) / peak * 100
+      if (dd > maxDD) maxDD = dd
     }
     const total = wins + losses
     const winRate = total > 0 ? (wins / total) * 100 : 0
@@ -161,8 +292,8 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
     const riskReward = avgLoss > 0 ? avgWin / avgLoss : 0
     return {
       win_rate: winRate, risk_reward: riskReward, total_return: totalReturn,
-      avg_return: total > 0 ? totalReturn / total : 0, max_drawdown: maxDrawdown,
-      net_profit: totalReturn, total_trades: total, wins, losses,
+      avg_return: total > 0 ? totalReturn / total : 0, max_drawdown: maxDD,
+      net_profit: equity - 100, total_trades: total, wins, losses,
     }
   }, [batchResults, longOnly, filterSymbols])
 
@@ -180,7 +311,7 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
     for (const [sym, trades] of Object.entries(perStock)) {
       let wins = 0, losses = 0, totalReturn = 0, totalWinReturn = 0, totalLossReturn = 0
       for (const t of trades) {
-        if (t.return_pct > 0) { wins++; totalWinReturn += t.return_pct }
+        if (t.return_pct >= 0) { wins++; totalWinReturn += t.return_pct }
         else { losses++; totalLossReturn += Math.abs(t.return_pct) }
         totalReturn += t.return_pct
       }
@@ -238,7 +369,15 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
   }, [filteredBatchTrades, tradeAmount])
 
   return (
-    <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mt-4">
+    <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mt-4 relative">
+      {filterUpdating && (
+        <div className="absolute inset-0 bg-dark-800/70 z-10 flex items-center justify-center rounded-lg">
+          <div className="flex items-center gap-2 text-sm text-gray-400">
+            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+            Aktualisiere...
+          </div>
+        </div>
+      )}
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-medium text-white">
           Watchlist Performance — {strategyLabel} ({interval})
@@ -311,28 +450,41 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
       </div>
 
       {/* Per-Stock Grid */}
-      {Object.keys(perStock).length > 0 && (
-        <div className="mb-4">
-          <div className="text-xs text-gray-500 mb-2">Performance pro Aktie ({Object.keys(perStock).length}/{Object.keys(batchResults?.per_stock || {}).length})</div>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
-            {Object.entries(perStock).sort((a, b) => b[1].total_return - a[1].total_return).map(([sym, sm]) => (
-              <div
-                key={sym}
-                className="bg-dark-700 rounded p-2 cursor-pointer hover:bg-dark-600 transition-colors border border-transparent hover:border-accent-500/30"
-                onClick={() => onSelectStock && onSelectStock(sym)}
-              >
-                <div className="text-xs font-medium text-white truncate">{sym}</div>
-                <div className="flex justify-between mt-1 text-[10px]">
-                  <span className={sm.win_rate >= 50 ? 'text-green-400' : 'text-red-400'}>{sm.win_rate?.toFixed(0)}%</span>
-                  <span className={sm.total_return >= 0 ? 'text-green-400' : 'text-red-400'}>{sm.total_return >= 0 ? '+' : ''}{sm.total_return?.toFixed(0)}%</span>
-                  <span className={`${(sm.risk_reward || 0) >= 1 ? 'text-green-400' : 'text-red-400'}`}>R/R {sm.risk_reward?.toFixed(1) || '-'}</span>
-                  <span className="text-gray-500">{sm.total_trades}T</span>
+      {Object.keys(perStock).length > 0 && (() => {
+        const sorted = Object.entries(perStock).sort((a, b) => b[1].total_return - a[1].total_return)
+        const totalStocks = sorted.length
+        const visible = sorted.slice(0, stocksVisible)
+        return (
+          <div className="mb-4">
+            <div className="text-xs text-gray-500 mb-2">Performance pro Aktie ({totalStocks}/{Object.keys(batchResults?.per_stock || {}).length})</div>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
+              {visible.map(([sym, sm]) => (
+                <div
+                  key={sym}
+                  className="bg-dark-700 rounded p-2 cursor-pointer hover:bg-dark-600 transition-colors border border-transparent hover:border-accent-500/30"
+                  onClick={() => onSelectStock && onSelectStock(sym, null, true)}
+                >
+                  <div className="text-xs font-medium text-white truncate">{sym}</div>
+                  <div className="flex justify-between mt-1 text-[10px]">
+                    <span className={sm.win_rate >= 50 ? 'text-green-400' : 'text-red-400'}>{sm.win_rate?.toFixed(0)}%</span>
+                    <span className={sm.total_return >= 0 ? 'text-green-400' : 'text-red-400'}>{sm.total_return >= 0 ? '+' : ''}{sm.total_return?.toFixed(0)}%</span>
+                    <span className={`${(sm.risk_reward || 0) >= 1 ? 'text-green-400' : 'text-red-400'}`}>R/R {sm.risk_reward?.toFixed(1) || '-'}</span>
+                    <span className="text-gray-500">{sm.total_trades}T</span>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
+            {totalStocks > stocksVisible && (
+              <button
+                onClick={() => setStocksVisible(v => v + 60)}
+                className="w-full mt-2 py-1.5 text-xs text-gray-400 hover:text-white bg-dark-700 hover:bg-dark-600 rounded transition-colors"
+              >
+                Mehr anzeigen ({stocksVisible}/{totalStocks})
+              </button>
+            )}
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* Sortable Trades Table */}
       <div className="text-xs text-gray-500 mb-2">Alle Trades ({filteredBatchTrades.length})</div>
@@ -361,7 +513,7 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
             </tr>
           </thead>
           <tbody>
-            {filteredBatchTrades.map((t, i) => (
+            {filteredBatchTrades.slice(0, tradesVisible).map((t, i) => (
               <tr key={i} className="border-b border-dark-700/50 last:border-0">
                 <td className="py-1.5 pr-2 font-medium text-accent-400">{t.symbol}</td>
                 <td className="py-1.5 pr-2">
@@ -390,6 +542,14 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
           </tbody>
         </table>
       </div>
+      {filteredBatchTrades.length > tradesVisible && (
+        <button
+          onClick={() => setTradesVisible(v => v + 100)}
+          className="w-full mt-2 py-1.5 text-xs text-gray-400 hover:text-white bg-dark-700 hover:bg-dark-600 rounded transition-colors"
+        >
+          Mehr Trades anzeigen ({tradesVisible}/{filteredBatchTrades.length})
+        </button>
+      )}
     </div>
   )
 }
@@ -407,6 +567,7 @@ function TradingArena({ isAdmin, token }) {
   // Trading Arena state
   const [backtestResults, setBacktestResults] = useState(null)
   const [backtestLoading, setBacktestLoading] = useState(false)
+  const [backtestError, setBacktestError] = useState(null)
   const [backtestStrategy, setBacktestStrategy] = useState('hybrid_ai_trend')
   const [tradingWatchlist, setTradingWatchlist] = useState([])
   const [addSymbol, setAddSymbol] = useState('')
@@ -419,7 +580,9 @@ function TradingArena({ isAdmin, token }) {
   const [batchProgress, setBatchProgress] = useState(null)
   const [noDataSymbols, setNoDataSymbols] = useState([])
   const [longOnly, setLongOnly] = useState(true)
-  const [usOnly, setUsOnly] = useState(false)
+  const [usOnly, setUsOnly] = useState(true)
+  const [hideFiltered, setHideFiltered] = useState(true)
+  const [isFilterPending, startFilterTransition] = useTransition()
   const [showSimulation, setShowSimulation] = useState(false)
   const [simTradeAmount, setSimTradeAmount] = useState(500)
   const [appliedFilters, setAppliedFilters] = useState(null)
@@ -427,11 +590,31 @@ function TradingArena({ isAdmin, token }) {
   const filterFormRef = useRef(null)
   const [simResults, setSimResults] = useState(null)
   const [strategyParams, setStrategyParams] = useState(() => getDefaultParams('hybrid_ai_trend'))
+  const [sessionName, setSessionName] = useState('')
+  const [showSessionNameDialog, setShowSessionNameDialog] = useState(false)
+
+  // Prefetch state
+  const [prefetchStatus, setPrefetchStatus] = useState(null) // null | 'fetching' | 'done'
+  const [prefetchProgress, setPrefetchProgress] = useState(null)
+  const prefetchAbortRef = useRef(null)
+
+  // Global loading state — true when prefetch OR batch is running
+  const isGlobalLoading = prefetchStatus === 'fetching' || batchLoading
+
+  const skipLoading = useCallback(() => {
+    if (prefetchAbortRef.current) prefetchAbortRef.current.abort()
+    if (batchAbortRef.current) batchAbortRef.current.abort()
+    setPrefetchStatus('done')
+    setPrefetchProgress(null)
+    setBatchLoading(false)
+    setBatchProgress(null)
+  }, [])
 
   // Debounce ref for param changes
   const paramDebounce = useRef(null)
   const settingsSaveDebounce = useRef(null)
   const savedSettingsRef = useRef({})
+  const batchAbortRef = useRef(null) // also used by skipLoading + runBatchBacktest
 
   // Load saved strategy settings (global or per-symbol)
   const loadSettings = useCallback(async (symbol = '') => {
@@ -507,14 +690,61 @@ function TradingArena({ isAdmin, token }) {
 
   // (scheduler status removed — now in Live Trading page)
 
-  // Batch-Trigger beim Laden (admin only)
+  // Prefetch + Auto-Batch beim Laden (admin only)
   useEffect(() => {
     if (!isAdmin || !token) return
-    fetch('/api/trading/backtest-batch', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}` },
-    }).catch(() => {})
-  }, [token, isAdmin])
+    let cancelled = false
+    const controller = new AbortController()
+    prefetchAbortRef.current = controller
+    const runPrefetch = async () => {
+      setPrefetchStatus('fetching')
+      setPrefetchProgress(null)
+      try {
+        const res = await fetch('/api/trading/arena/prefetch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ interval: INTERVAL_MAP[interval] || '4h' }),
+          signal: controller.signal,
+        })
+        if (!res.ok || !res.body) throw new Error('prefetch failed')
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        let latestProgress = null
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop()
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const msg = JSON.parse(line.slice(6))
+                if (cancelled) return
+                if (msg.type === 'progress') {
+                  latestProgress = { current: msg.current, total: msg.total, symbol: msg.symbol }
+                } else if (msg.type === 'complete') {
+                  setPrefetchStatus('done')
+                }
+              } catch { /* ignore parse error */ }
+            }
+          }
+          // Update once per network chunk — naturally rate-limited by I/O
+          if (latestProgress) setPrefetchProgress({ ...latestProgress })
+        }
+      } catch {
+        // Prefetch failed — continue anyway
+      }
+      if (!cancelled) {
+        setPrefetchStatus('done')
+        // Auto-trigger batch backtest after prefetch
+        runBatchBacktest(backtestStrategy, interval, strategyParams)
+      }
+    }
+    runPrefetch()
+    return () => { cancelled = true }
+  }, [token, isAdmin]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Search with debounce
   useEffect(() => {
@@ -543,6 +773,7 @@ function TradingArena({ isAdmin, token }) {
     if (!symbol) return
     setBacktestLoading(true)
     setBacktestResults(null)
+    setBacktestError(null)
     try {
       const res = await fetch('/api/trading/backtest', {
         method: 'POST',
@@ -560,9 +791,22 @@ function TradingArena({ isAdmin, token }) {
       if (res.ok) {
         const data = await res.json()
         setBacktestResults(data)
+        setAllStrategyResults(prev => ({
+          ...prev,
+          [strategy]: {
+            metrics: data.metrics,
+            trades: data.trades,
+            interval: INTERVAL_MAP[iv] || '4h',
+            updated_at: new Date().toISOString(),
+          }
+        }))
+      } else {
+        const err = await res.json().catch(() => ({}))
+        setBacktestError(err.error || `Backtest fehlgeschlagen (HTTP ${res.status})`)
       }
     } catch (err) {
       console.error('[TradingArena] Backtest error:', err)
+      setBacktestError('Netzwerkfehler: ' + err.message)
     }
     setBacktestLoading(false)
   }, [token])
@@ -610,15 +854,15 @@ function TradingArena({ isAdmin, token }) {
     const trades = filteredTrades
     if (trades.length === 0) return null
     let wins = 0, losses = 0, totalReturn = 0, totalWinReturn = 0, totalLossReturn = 0
-    let maxDrawdown = 0, cumReturn = 0, peak = 0
+    let equity = 100, peak = 100, maxDD = 0
     for (const t of trades) {
-      cumReturn += t.return_pct
-      if (cumReturn > peak) peak = cumReturn
-      const dd = peak - cumReturn
-      if (dd > maxDrawdown) maxDrawdown = dd
-      if (t.return_pct > 0) { wins++; totalWinReturn += t.return_pct }
-      else { losses++; totalLossReturn += Math.abs(t.return_pct) }
       totalReturn += t.return_pct
+      if (t.return_pct >= 0) { wins++; totalWinReturn += t.return_pct }
+      else { losses++; totalLossReturn += Math.abs(t.return_pct) }
+      equity *= (1 + t.return_pct / 100)
+      if (equity > peak) peak = equity
+      const dd = (peak - equity) / peak * 100
+      if (dd > maxDD) maxDD = dd
     }
     const total = wins + losses
     const winRate = total > 0 ? (wins / total) * 100 : 0
@@ -627,39 +871,42 @@ function TradingArena({ isAdmin, token }) {
     const riskReward = avgLoss > 0 ? avgWin / avgLoss : 0
     return {
       win_rate: winRate, risk_reward: riskReward, total_return: totalReturn,
-      avg_return: total > 0 ? totalReturn / total : 0, max_drawdown: maxDrawdown,
-      net_profit: totalReturn, total_trades: total, wins, losses,
+      avg_return: total > 0 ? totalReturn / total : 0, max_drawdown: maxDD,
+      net_profit: equity - 100, total_trades: total, wins, losses,
     }
   }, [filteredTrades, longOnly, backtestResults?.metrics])
 
   // Shared filtered symbols for Watchlist Performance + Simulation
-  const perfFilteredSymbols = useMemo(() => {
+  // Heavy per-stock metrics — only recompute when batch data or longOnly changes
+  const perStockMetrics = useMemo(() => {
     if (!batchResults?.per_stock) return null
+    if (!longOnly) return batchResults.per_stock
+    const ps = {}
+    const allTrades = batchResults.trades.filter(t => t.direction === 'LONG')
+    const bySymbol = {}
+    allTrades.forEach(t => { (bySymbol[t.symbol] = bySymbol[t.symbol] || []).push(t) })
+    Object.entries(bySymbol).forEach(([sym, trades]) => {
+      const wins = trades.filter(t => t.return_pct >= 0).length
+      const totalReturn = trades.reduce((s, t) => s + t.return_pct, 0)
+      const winReturns = trades.filter(t => t.return_pct >= 0).map(t => t.return_pct)
+      const lossReturns = trades.filter(t => t.return_pct < 0).map(t => Math.abs(t.return_pct))
+      const avgWin = winReturns.length ? winReturns.reduce((a, b) => a + b, 0) / winReturns.length : 0
+      const avgLoss = lossReturns.length ? lossReturns.reduce((a, b) => a + b, 0) / lossReturns.length : 1
+      let eq = 100, peak = 100, maxDD = 0
+      trades.forEach(t => { eq *= (1 + t.return_pct / 100); if (eq > peak) peak = eq; const dd = (peak - eq) / peak * 100; if (dd > maxDD) maxDD = dd })
+      ps[sym] = { win_rate: trades.length ? (wins / trades.length) * 100 : 0, risk_reward: avgLoss > 0 ? avgWin / avgLoss : 0, total_return: totalReturn, avg_return: trades.length ? totalReturn / trades.length : 0, net_profit: eq - 100, total_trades: trades.length }
+    })
+    return ps
+  }, [batchResults, longOnly])
+
+  // Light filter — runs fast when usOnly/appliedFilters change
+  const perfFilteredSymbols = useMemo(() => {
+    if (!perStockMetrics) return null
     const hasPerformanceFilters = filtersActive && appliedFilters
     if (!hasPerformanceFilters && !usOnly) return null // null = show all
-    const computePerStock = () => {
-      if (!longOnly) return batchResults.per_stock
-      const ps = {}
-      const allTrades = batchResults.trades.filter(t => t.direction === 'LONG')
-      const bySymbol = {}
-      allTrades.forEach(t => { (bySymbol[t.symbol] = bySymbol[t.symbol] || []).push(t) })
-      Object.entries(bySymbol).forEach(([sym, trades]) => {
-        const wins = trades.filter(t => t.return_pct >= 0).length
-        const totalReturn = trades.reduce((s, t) => s + t.return_pct, 0)
-        const winReturns = trades.filter(t => t.return_pct >= 0).map(t => t.return_pct)
-        const lossReturns = trades.filter(t => t.return_pct < 0).map(t => Math.abs(t.return_pct))
-        const avgWin = winReturns.length ? winReturns.reduce((a, b) => a + b, 0) / winReturns.length : 0
-        const avgLoss = lossReturns.length ? lossReturns.reduce((a, b) => a + b, 0) / lossReturns.length : 1
-        let eq = 100, peak = 100, maxDD = 0
-        trades.forEach(t => { eq *= (1 + t.return_pct / 100); if (eq > peak) peak = eq; const dd = (peak - eq) / peak * 100; if (dd > maxDD) maxDD = dd })
-        ps[sym] = { win_rate: trades.length ? (wins / trades.length) * 100 : 0, risk_reward: avgLoss > 0 ? avgWin / avgLoss : 0, total_return: totalReturn, avg_return: trades.length ? totalReturn / trades.length : 0, net_profit: eq - 100, total_trades: trades.length }
-      })
-      return ps
-    }
-    const perStock = computePerStock()
     const f = hasPerformanceFilters ? appliedFilters : null
-    const mc = batchResults.market_caps || {}
-    return Object.entries(perStock).filter(([sym, m]) => {
+    const mc = batchResults?.market_caps || {}
+    return Object.entries(perStockMetrics).filter(([sym, m]) => {
       if (usOnly && sym.includes('.')) return false
       if (f) {
         if (f.minWinRate !== '' && m.win_rate < Number(f.minWinRate)) return false
@@ -671,7 +918,11 @@ function TradingArena({ isAdmin, token }) {
       }
       return true
     }).map(([sym]) => sym)
-  }, [filtersActive, batchResults, longOnly, usOnly, appliedFilters])
+  }, [perStockMetrics, filtersActive, usOnly, appliedFilters, batchResults?.market_caps])
+
+  // O(1) lookup sets for watchlist rendering
+  const perfFilteredSet = useMemo(() => perfFilteredSymbols ? new Set(perfFilteredSymbols) : null, [perfFilteredSymbols])
+  const noDataSet = useMemo(() => new Set(noDataSymbols), [noDataSymbols])
 
   // Compute timeframe from chart data or batch trades
   const backtestTimeRange = useMemo(() => {
@@ -731,6 +982,11 @@ function TradingArena({ isAdmin, token }) {
   }, [perfFilteredSymbols, filtersActive, longOnly, simTradeAmount]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const runBatchBacktest = useCallback(async (strategy, iv, params) => {
+    // Cancel previous batch request if still running
+    if (batchAbortRef.current) batchAbortRef.current.abort()
+    const controller = new AbortController()
+    batchAbortRef.current = controller
+
     setBatchLoading(true)
     setBatchProgress(null)
     try {
@@ -745,10 +1001,13 @@ function TradingArena({ isAdmin, token }) {
           interval: INTERVAL_MAP[iv] || '4h',
           params,
         }),
+        signal: controller.signal,
       })
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      let latestProgress = null
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -760,7 +1019,7 @@ function TradingArena({ isAdmin, token }) {
             try {
               const msg = JSON.parse(line.slice(6))
               if (msg.type === 'progress') {
-                setBatchProgress({ current: msg.current, total: msg.total, symbol: msg.symbol })
+                latestProgress = { current: msg.current, total: msg.total, symbol: msg.symbol }
               } else if (msg.type === 'result') {
                 setBatchResults(msg.data)
                 setNoDataSymbols(msg.data.skipped_symbols || [])
@@ -768,12 +1027,17 @@ function TradingArena({ isAdmin, token }) {
             } catch { /* ignore parse error */ }
           }
         }
+        // Update once per network chunk
+        if (latestProgress) setBatchProgress({ ...latestProgress })
       }
     } catch (err) {
-      console.error('[TradingArena] Batch backtest error:', err)
+      if (err.name !== 'AbortError') {
+        console.error('[TradingArena] Batch backtest error:', err)
+      }
     }
     setBatchProgress(null)
     setBatchLoading(false)
+    batchAbortRef.current = null
   }, [token])
 
   // Auto-backtest on strategy change
@@ -825,54 +1089,58 @@ function TradingArena({ isAdmin, token }) {
     }
   }
 
-  const selectStock = async (symbol, stock = null) => {
+  const selectStock = async (symbol, stock = null, fromBatch = false) => {
     setSelectedSymbol(symbol)
     setSelectedStock(stock)
     setSearchQuery('')
     setSearchResults([])
     setBacktestResults(null)
     setAllStrategyResults(null)
+    setBacktestLoading(true) // Sofort Loading zeigen, nicht erst nach den awaits
 
-    // Load per-symbol settings and apply
-    const symbolSettings = await loadSettings(symbol)
     let useParams = strategyParams
     let useInterval = interval
-    if (symbolSettings) {
-      const saved = symbolSettings[backtestStrategy]
-      if (saved?.params) {
-        useParams = { ...getDefaultParams(backtestStrategy), ...saved.params }
-        setStrategyParams(useParams)
-      }
-      if (saved?.interval && INTERVALS.includes(saved.interval)) {
-        useInterval = saved.interval
-        setInterval(useInterval)
+
+    // Load per-symbol settings only when NOT clicking from batch results
+    // (batch results were calculated with current params/interval — keep them consistent)
+    if (!fromBatch) {
+      const symbolSettings = await loadSettings(symbol)
+      if (symbolSettings) {
+        const saved = symbolSettings[backtestStrategy]
+        if (saved?.params) {
+          useParams = { ...getDefaultParams(backtestStrategy), ...saved.params }
+          setStrategyParams(useParams)
+        }
+        if (saved?.interval && INTERVALS.includes(saved.interval)) {
+          useInterval = saved.interval
+          setInterval(useInterval)
+        }
       }
     }
 
-    // Load stored results for ALL strategies
-    try {
-      const res = await fetch(`/api/trading/backtest-results/${encodeURIComponent(symbol)}`, {
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
-      })
-      if (res.ok) {
-        const data = await res.json()
-        if (data && Object.keys(data).length > 0) {
-          setAllStrategyResults(data)
-        }
-      }
-    } catch { /* ignore */ }
+    // Load stored results for ALL strategies (parallel zum Backtest)
+    fetch(`/api/trading/backtest-results/${encodeURIComponent(symbol)}`, {
+      headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+    }).then(res => res.ok ? res.json() : null).then(data => {
+      if (data && Object.keys(data).length > 0) setAllStrategyResults(data)
+    }).catch(() => {})
 
-    // Auto-trigger backtest with (potentially symbol-specific) settings
+    // Auto-trigger backtest — nicht mehr blockiert durch await
     runBacktestNow(symbol, backtestStrategy, useInterval, useParams)
   }
 
-  // Start Live Trading — saves config and navigates to /live-trading
-  const handleStartLiveTrading = async () => {
+  // Start Live Trading — opens name dialog first
+  const handleStartLiveTrading = () => {
     const symbols = perfFilteredSymbols || Object.keys(batchResults?.per_stock || {})
     if (symbols.length === 0) {
       alert('Keine Symbole ausgewählt. Bitte erst Watchlist Backtest ausführen.')
       return
     }
+    setShowSessionNameDialog(true)
+  }
+
+  const confirmStartLiveTrading = async () => {
+    const symbols = perfFilteredSymbols || Object.keys(batchResults?.per_stock || {})
     try {
       const res = await fetch('/api/trading/live/config', {
         method: 'POST',
@@ -894,10 +1162,28 @@ function TradingArena({ isAdmin, token }) {
         }),
       })
       if (res.ok) {
-        window.location.href = '/live-trading'
+        const startRes = await fetch('/api/trading/live/start', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ name: sessionName.trim() || undefined }),
+        })
+        if (startRes.ok) {
+          const data = await startRes.json()
+          const sid = data.session?.ID || data.session?.id
+          window.location.href = sid ? `/live-trading/${sid}` : '/live-trading'
+        } else {
+          const err = await startRes.json()
+          alert(err.error || 'Session konnte nicht erstellt werden')
+        }
       }
     } catch (err) {
-      console.error('Failed to save live config:', err)
+      console.error('Failed to create live session:', err)
+    } finally {
+      setShowSessionNameDialog(false)
+      setSessionName('')
     }
   }
 
@@ -973,10 +1259,63 @@ function TradingArena({ isAdmin, token }) {
 
   const currentParams = STRATEGY_PARAMS[backtestStrategy] || []
 
+  // Compute loading label and percentage for overlay
+  const loadingInfo = useMemo(() => {
+    if (prefetchStatus === 'fetching') {
+      const p = prefetchProgress
+      if (!p || p.total === 0) return { label: 'Aktualisiere Kursdaten', pct: 0, detail: 'Prüfe Cache...' }
+      const pct = Math.round((p.current / p.total) * 100)
+      return { label: 'Aktualisiere Kursdaten', pct, detail: `${p.symbol || '...'} (${p.current}/${p.total})` }
+    }
+    if (batchLoading) {
+      const p = batchProgress
+      if (!p) return { label: 'Starte Watchlist Backtest', pct: 0, detail: 'Strategien werden geladen...' }
+      const pct = Math.round((p.current / p.total) * 100)
+      return { label: 'Watchlist Backtest läuft', pct, detail: `Teste ${p.symbol || '...'} (${p.current}/${p.total})` }
+    }
+    return null
+  }, [prefetchStatus, prefetchProgress, batchLoading, batchProgress])
+
   return (
-    <div className="flex-1 flex flex-col md:flex-row gap-0 min-h-0 overflow-hidden">
+    <div className="flex-1 flex flex-col md:flex-row gap-0 min-h-0 overflow-hidden relative">
+      {/* Non-blocking loading banner */}
+      {isGlobalLoading && loadingInfo && (
+        <div className="absolute top-0 left-0 right-0 z-40 bg-dark-800/95 border-b border-dark-600 px-4 py-2">
+          <div className="flex items-center gap-3 max-w-3xl mx-auto">
+            <div className="w-4 h-4 shrink-0 border-2 border-accent-500 border-t-transparent rounded-full animate-spin" />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-sm text-white font-medium truncate">{loadingInfo.label}</span>
+                <span className="text-xs text-gray-400 ml-2 shrink-0">{loadingInfo.detail}</span>
+              </div>
+              {loadingInfo.pct > 0 && (
+                <div className="w-full bg-dark-700 rounded-full h-1.5 overflow-hidden">
+                  <div
+                    className="h-full bg-accent-500 rounded-full transition-all duration-300"
+                    style={{ width: `${loadingInfo.pct}%` }}
+                  />
+                </div>
+              )}
+            </div>
+            <button
+              onClick={skipLoading}
+              className="text-xs text-gray-500 hover:text-white px-2 py-1 rounded hover:bg-dark-600 transition-colors shrink-0"
+            >
+              Überspringen
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Main content area */}
-      <div className="flex-1 flex flex-col p-4 min-w-0 overflow-y-auto">
+      <div className={`flex-1 flex flex-col p-4 min-w-0 overflow-y-auto ${isGlobalLoading ? 'pt-14' : ''}`}>
+        {/* Filter transition indicator */}
+        {isFilterPending && (
+          <div className="mb-3 flex items-center gap-2 px-3 py-2 bg-dark-800 rounded-lg border border-accent-500/30">
+            <svg className="animate-spin h-4 w-4 text-accent-400 shrink-0" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+            <span className="text-sm text-gray-300">Filter wird angewendet…</span>
+          </div>
+        )}
         {/* Top bar */}
         <div className="flex flex-wrap items-center gap-3 mb-4">
           {/* Search */}
@@ -1057,7 +1396,7 @@ function TradingArena({ isAdmin, token }) {
             <input
               type="checkbox"
               checked={longOnly}
-              onChange={e => setLongOnly(e.target.checked)}
+              onChange={e => { const v = e.target.checked; startFilterTransition(() => setLongOnly(v)) }}
               className="accent-accent-500 w-3.5 h-3.5"
             />
             <span className={`text-xs font-medium ${longOnly ? 'text-accent-400' : 'text-gray-400'}`}>Long Only</span>
@@ -1068,7 +1407,7 @@ function TradingArena({ isAdmin, token }) {
             <input
               type="checkbox"
               checked={usOnly}
-              onChange={e => setUsOnly(e.target.checked)}
+              onChange={e => { const v = e.target.checked; startFilterTransition(() => setUsOnly(v)) }}
               className="accent-accent-500 w-3.5 h-3.5"
             />
             <span className={`text-xs font-medium ${usOnly ? 'text-accent-400' : 'text-gray-400'}`}>US Only</span>
@@ -1097,14 +1436,14 @@ function TradingArena({ isAdmin, token }) {
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
               </svg>
-              Start Live Trading
+              Neue Session starten
             </button>
           ) : (
             <span className="flex items-center gap-2 px-4 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-gray-500 cursor-not-allowed">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
               </svg>
-              Start Live Trading
+              Neue Session starten
               <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-400 text-[10px] font-bold rounded">PRO</span>
             </span>
           )}
@@ -1173,6 +1512,11 @@ function TradingArena({ isAdmin, token }) {
             </button>
           ))}
         </div>
+
+        {/* Content skeleton while loading */}
+        {isGlobalLoading && !batchResults ? (
+          <ArenaSkeleton />
+        ) : <>
 
         {/* TradingView Embed */}
         {selectedSymbol && showTradingView && (
@@ -1247,6 +1591,7 @@ function TradingArena({ isAdmin, token }) {
               markers={filteredMarkers}
               overlays={backtestResults?.overlays}
               customData={backtestResults?.chart_data}
+              loading={backtestLoading}
             />
           </div>
         ) : (
@@ -1279,17 +1624,34 @@ function TradingArena({ isAdmin, token }) {
             timeRange={backtestTimeRange}
             tradeAmount={simTradeAmount}
           />
+        ) : backtestLoading ? (
+          <div className="bg-dark-800 rounded-lg border border-dark-600 p-4">
+            <div className="flex items-center gap-3 mb-3">
+              <Sk className="h-4 w-40" />
+              <Sk className="h-4 w-24 ml-auto" />
+            </div>
+            <div className="grid grid-cols-4 gap-3 mb-4">
+              {[...Array(8)].map((_, i) => (
+                <div key={i} className="space-y-1.5">
+                  <Sk className="h-3 w-16" />
+                  <Sk className="h-5 w-20" />
+                </div>
+              ))}
+            </div>
+            <div className="space-y-2">
+              {[...Array(3)].map((_, i) => <Sk key={i} className="h-8 w-full" />)}
+            </div>
+          </div>
+        ) : backtestError ? (
+          <div className="bg-dark-800 rounded-lg border border-red-500/30 p-4">
+            <div className="flex items-center gap-2 text-red-400 text-sm">
+              <span className="font-medium">Backtest-Fehler:</span> {backtestError}
+            </div>
+          </div>
         ) : (
           <div className="bg-dark-800 rounded-lg border border-dark-600 p-4">
             <div className="h-20 flex items-center justify-center text-gray-600 text-sm border border-dashed border-dark-600 rounded">
-              {backtestLoading ? (
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 border-2 border-accent-500 border-t-transparent rounded-full animate-spin" />
-                  <span>Backtest läuft...</span>
-                </div>
-              ) : (
-                'Wähle eine Aktie um den Backtest zu starten'
-              )}
+              Wähle eine Aktie um den Backtest zu starten
             </div>
           </div>
         )}
@@ -1384,39 +1746,7 @@ function TradingArena({ isAdmin, token }) {
           </div>
         )}
 
-        {/* Watchlist Batch Backtest Results */}
-        {batchLoading && (
-          <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mt-4">
-            {batchProgress ? (
-              <div className="py-3">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <div className="w-4 h-4 border-2 border-accent-500 border-t-transparent rounded-full animate-spin" />
-                    <span className="text-sm text-white font-medium">Watchlist Backtest</span>
-                  </div>
-                  <span className="text-sm text-gray-400">{batchProgress.current} / {batchProgress.total}</span>
-                </div>
-                <div className="w-full bg-dark-700 rounded-full h-2 mb-2">
-                  <div
-                    className="h-2 rounded-full bg-accent-500 transition-all duration-300"
-                    style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}
-                  />
-                </div>
-                <div className="text-xs text-gray-500">
-                  Zuletzt: <span className="text-gray-300">{batchProgress.symbol}</span>
-                  <span className="text-gray-600 ml-3">
-                    {Math.round((batchProgress.current / batchProgress.total) * 100)}%
-                  </span>
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 justify-center py-6 text-gray-400">
-                <div className="w-4 h-4 border-2 border-accent-500 border-t-transparent rounded-full animate-spin" />
-                <span className="text-sm">Watchlist Backtest wird vorbereitet...</span>
-              </div>
-            )}
-          </div>
-        )}
+        {/* Watchlist Batch Backtest Results — progress now shown in overlay */}
 
         {/* Shared Filters for Watchlist Performance + Simulation */}
         {batchResults && !batchLoading && (
@@ -1424,8 +1754,8 @@ function TradingArena({ isAdmin, token }) {
             <form ref={filterFormRef} className="flex items-center gap-3 flex-wrap" onSubmit={e => {
               e.preventDefault()
               const fd = new FormData(e.target)
-              setAppliedFilters({ minWinRate: fd.get('minWinRate'), minRR: fd.get('minRR'), minTotalReturn: fd.get('minTotalReturn'), minAvgReturn: fd.get('minAvgReturn'), minNetProfit: fd.get('minNetProfit'), minMarketCap: fd.get('minMarketCap') })
-              setFiltersActive(true)
+              const filters = { minWinRate: fd.get('minWinRate'), minRR: fd.get('minRR'), minTotalReturn: fd.get('minTotalReturn'), minAvgReturn: fd.get('minAvgReturn'), minNetProfit: fd.get('minNetProfit'), minMarketCap: fd.get('minMarketCap') }
+              startFilterTransition(() => { setAppliedFilters(filters); setFiltersActive(true) })
             }}>
               <span className="text-xs text-gray-400 font-medium whitespace-nowrap">Filter:</span>
               <div className="flex items-center gap-1">
@@ -1460,7 +1790,7 @@ function TradingArena({ isAdmin, token }) {
               </div>
               <button
                 type={filtersActive ? 'button' : 'submit'}
-                onClick={filtersActive ? () => { setFiltersActive(false); setAppliedFilters(null) } : undefined}
+                onClick={filtersActive ? () => startFilterTransition(() => { setFiltersActive(false); setAppliedFilters(null) }) : undefined}
                 className={`px-3 py-1 text-xs rounded font-medium transition-colors whitespace-nowrap ${
                   filtersActive
                     ? 'bg-accent-600 text-white hover:bg-accent-500'
@@ -1499,55 +1829,39 @@ function TradingArena({ isAdmin, token }) {
                   <button
                     onClick={() => {
                       if (!batchResults?.trades) return
-                      // Use shared perfFilteredSymbols or all symbols
-                      const symbolSet = perfFilteredSymbols ? new Set(perfFilteredSymbols) : null
-                      let trades = batchResults.trades
-                      if (symbolSet) trades = trades.filter(t => symbolSet.has(t.symbol))
-                      if (longOnly) trades = trades.filter(t => t.direction === 'LONG')
-
-                        // Simulation with EUR amounts
+                      startFilterTransition(() => {
+                        const symbolSet = perfFilteredSymbols ? new Set(perfFilteredSymbols) : null
+                        let trades = batchResults.trades
+                        if (symbolSet) trades = trades.filter(t => symbolSet.has(t.symbol))
+                        if (longOnly) trades = trades.filter(t => t.direction === 'LONG')
                         const amt = simTradeAmount || 500
                         const simTrades = trades.map(t => ({
-                          ...t,
-                          invested: amt,
-                          profitEUR: amt * (t.return_pct / 100),
+                          ...t, invested: amt, profitEUR: amt * (t.return_pct / 100),
                         })).sort((a, b) => a.entry_time - b.entry_time)
-
-                        // Track parallel positions
                         const events = []
-                        simTrades.forEach(t => {
-                          events.push({ time: t.entry_time, type: 1 })
-                          events.push({ time: t.exit_time, type: -1 })
-                        })
+                        simTrades.forEach(t => { events.push({ time: t.entry_time, type: 1 }); events.push({ time: t.exit_time, type: -1 }) })
                         events.sort((a, b) => a.time - b.time || a.type - b.type)
                         let open = 0, maxParallel = 0
                         events.forEach(e => { open += e.type; if (open > maxParallel) maxParallel = open })
-
                         const totalProfit = simTrades.reduce((s, t) => s + t.profitEUR, 0)
                         const wins = simTrades.filter(t => t.return_pct >= 0).length
                         const openCount = simTrades.filter(t => t.is_open).length
                         const requiredCapital = maxParallel * amt
-
                         const uniqueSymbols = new Set(simTrades.map(t => t.symbol))
                         setSimResults({
-                          trades: simTrades,
-                          filteredCount: uniqueSymbols.size,
+                          trades: simTrades, filteredCount: uniqueSymbols.size,
                           totalCount: Object.keys(batchResults.per_stock || {}).length,
-                          totalTrades: simTrades.length,
-                          totalProfit,
+                          totalTrades: simTrades.length, totalProfit,
                           winRate: simTrades.length ? (wins / simTrades.length) * 100 : 0,
-                          wins,
-                          losses: simTrades.length - wins,
-                          openCount,
-                          maxParallel,
-                          requiredCapital,
+                          wins, losses: simTrades.length - wins, openCount, maxParallel, requiredCapital,
                           roi: requiredCapital > 0 ? (totalProfit / requiredCapital) * 100 : 0,
                         })
-                      }}
-                      className="w-full px-3 py-1.5 bg-accent-600 hover:bg-accent-500 text-white text-xs rounded font-medium transition-colors"
-                    >
-                      Berechnen
-                    </button>
+                      })
+                    }}
+                    className="w-full px-3 py-1.5 bg-accent-600 hover:bg-accent-500 text-white text-xs rounded font-medium transition-colors"
+                  >
+                    {isFilterPending ? 'Berechne…' : 'Berechnen'}
+                  </button>
                 </div>
 
                 {/* Simulation Results */}
@@ -1620,6 +1934,7 @@ function TradingArena({ isAdmin, token }) {
           </div>
         )}
 
+        </>}
       </div>
 
       {/* Sidebar */}
@@ -1682,10 +1997,32 @@ function TradingArena({ isAdmin, token }) {
               )}
             </div>
           )}
-          <div className="flex-1 overflow-y-auto p-2">
+          {/* Hide filtered toggle */}
+          {(filtersActive || usOnly) && perfFilteredSet && (
+            <label className="flex items-center gap-1.5 px-3 py-1.5 border-b border-dark-600 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={hideFiltered}
+                onChange={e => setHideFiltered(e.target.checked)}
+                className="accent-accent-500 w-3 h-3"
+              />
+              <span className={`text-[11px] ${hideFiltered ? 'text-accent-400' : 'text-gray-500'}`}>Gefilterte ausblenden</span>
+              {perfFilteredSet && <span className="text-[10px] text-gray-600 ml-auto">{perfFilteredSet.size}/{tradingWatchlist.length}</span>}
+            </label>
+          )}
+          <div className="flex-1 overflow-y-auto p-2 relative">
+            {isFilterPending && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center bg-dark-800/70 rounded">
+                <div className="flex items-center gap-2 text-sm text-gray-300">
+                  <svg className="animate-spin h-4 w-4 text-accent-400" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                  Filter wird angewendet…
+                </div>
+              </div>
+            )}
             {tradingWatchlist.map(item => {
-              const excluded = (filtersActive || usOnly) && perfFilteredSymbols && !perfFilteredSymbols.includes(item.symbol)
-              const hasNoData = noDataSymbols.includes(item.symbol)
+              const excluded = (filtersActive || usOnly) && perfFilteredSet && !perfFilteredSet.has(item.symbol)
+              if (hideFiltered && excluded) return null
+              const hasNoData = noDataSet.has(item.symbol)
               return (
               <div
                 key={item.id}
@@ -1714,11 +2051,46 @@ function TradingArena({ isAdmin, token }) {
               </div>
             )})}
             {tradingWatchlist.length === 0 && (
-              <div className="text-gray-600 text-sm text-center py-8">Keine Trading-Symbole</div>
+              isGlobalLoading ? <SidebarSkeleton /> : <div className="text-gray-600 text-sm text-center py-8">Keine Trading-Symbole</div>
             )}
           </div>
         </div>
       </div>
+
+      {/* Session Name Dialog */}
+      {showSessionNameDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-dark-800 border border-dark-600 rounded-lg p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-medium text-white mb-4">Neue Live-Session erstellen</h3>
+            <div className="mb-4">
+              <label className="text-sm text-gray-400 block mb-2">Session-Name</label>
+              <input
+                type="text"
+                value={sessionName}
+                onChange={(e) => setSessionName(e.target.value)}
+                placeholder={`z.B. "Scalping Q1 2026" (leer = Auto-Name)`}
+                className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-white text-sm focus:border-accent-500 focus:outline-none"
+                autoFocus
+                onKeyDown={(e) => e.key === 'Enter' && confirmStartLiveTrading()}
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={confirmStartLiveTrading}
+                className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded text-sm font-medium transition-colors"
+              >
+                Session erstellen
+              </button>
+              <button
+                onClick={() => { setShowSessionNameDialog(false); setSessionName('') }}
+                className="flex-1 px-4 py-2 bg-dark-600 hover:bg-dark-500 text-gray-300 rounded text-sm font-medium transition-colors"
+              >
+                Abbrechen
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
