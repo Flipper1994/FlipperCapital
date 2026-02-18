@@ -8,10 +8,9 @@ import ArenaBacktestPanel from './ArenaBacktestPanel'
 const STRATEGY_LABELS = {
   regression_scalping: 'Regression Scalping',
   hybrid_ai_trend: 'NW Bollinger Bands',
-  diamond_signals: 'Diamond Signals',
 }
 
-const BETA_STRATEGIES = new Set(['regression_scalping', 'diamond_signals'])
+const BETA_STRATEGIES = new Set(['regression_scalping'])
 
 function TestOrderPanel({ headers, onOrderPlaced, tradeAmount, currency }) {
   const [symbol, setSymbol] = useState('AAPL')

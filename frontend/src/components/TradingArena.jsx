@@ -3,6 +3,7 @@ import ArenaChart from './ArenaChart'
 import ArenaBacktestPanel from './ArenaBacktestPanel'
 import ArenaIndicatorChart from './ArenaIndicatorChart'
 import { useCurrency } from '../context/CurrencyContext'
+import { INTERVALS, INTERVAL_MAP, TV_INTERVAL_MAP, STRATEGIES, STRATEGY_PARAMS, STRATEGY_DEFAULT_INTERVAL, getDefaultParams } from '../utils/arenaConfig'
 
 // Skeleton building blocks
 const Sk = ({ className = '' }) => <div className={`bg-dark-700 rounded animate-pulse ${className}`} />
@@ -85,30 +86,19 @@ function SidebarSkeleton() {
   )
 }
 
-const INTERVALS = ['5m', '15m', '1h', '2h', '4h', '1D', '1W']
-const INTERVAL_MAP = {
-  '5m': '5m', '15m': '15m', '1h': '60m',
-  '2h': '2h', '4h': '4h', '1D': '1d', '1W': '1wk',
-}
-const TV_INTERVAL_MAP = {
-  '5m': '5', '15m': '15', '1h': '60',
-  '2h': '120', '4h': '240', '1D': 'D', '1W': 'W',
-}
-
-const STRATEGIES = [
-  { value: 'regression_scalping', label: 'Regression Scalping', beta: true },
-  { value: 'hybrid_ai_trend', label: 'NW Bollinger Bands' },
-  { value: 'diamond_signals', label: 'Diamond Signals', beta: true },
-  { value: 'smart_money_flow', label: 'Smart Money Flow', beta: true },
-  { value: 'hann_trend', label: 'Hann Trend (DMH + SAR)' },
-]
-
 const STRATEGY_INFO = {
   regression_scalping: {
     title: 'Regression Scalping',
-    desc: 'Schnelle Mean-Reversion-Strategie. Nutzt polynomiale lineare Regression mit Standardabweichungs-Bändern — kauft bei Berührung des unteren Bands, verkauft am oberen. Bestätigung über Kerzenmuster optional.',
-    indicators: 'LinReg-Kanal, Standardabweichungs-Bänder',
+    desc: 'Mean-Reversion mit 3-Step-Bestätigung: (A) Close außerhalb der Regression-Bänder → (B) Awesome Oscillator Farbwechsel → (C) Heikin Ashi Kerzenfarbe bestätigt Richtung. Entry zum Open der Folgekerze.',
+    indicators: 'Polynomiale Regression-Bänder, Awesome Oscillator (AO), Heikin Ashi',
     timeframes: '5m, 15m',
+    tips: '↑ Win Rate: R/R senken (1.0–1.5), Confirmation aktivieren (3-Step). ↑ Frequenz: Confirmation=0 (nur Band-Touch). Kürzerer LinReg Length (50–80) = engere Bänder = mehr Signale.',
+    legend: [
+      { symbol: '▲ LONG', color: '#22c55e', desc: 'Entry — Close unter Lower Band + AO grün + HA bullish' },
+      { symbol: '▼ SHORT', color: '#ef4444', desc: 'Entry — Close über Upper Band + AO rot + HA bearish' },
+      { symbol: '▲ TP', color: '#22c55e', desc: 'Take Profit erreicht (Risk/Reward × Risiko)' },
+      { symbol: '▼ SL', color: '#ef4444', desc: 'Stop Loss ausgelöst (Swing Low/High der letzten N Bars)' },
+    ],
   },
   hybrid_ai_trend: {
     title: 'NW Bollinger Bands',
@@ -124,12 +114,6 @@ const STRATEGY_INFO = {
       { symbol: '▼ SL', color: '#ef4444', desc: 'Stop Loss ausgelöst (SL Buffer % unter Entry)' },
       { symbol: 'SIGNAL', color: '#eab308', desc: 'Gegenläufiges Signal schließt offene Position' },
     ],
-  },
-  diamond_signals: {
-    title: 'Diamond Signals',
-    desc: 'Multi-Confluence-Strategie. Erkennt Chartmuster (Symmetrische Formationen) und bestätigt Signale über RSI-Extremzonen. Nur Trades mit mindestens N Konfluenz-Faktoren werden ausgeführt.',
-    indicators: 'Pattern Detection, RSI, Konfluenz-Score',
-    timeframes: '4h, 1D',
   },
   smart_money_flow: {
     title: 'Smart Money Flow Cloud',
@@ -159,81 +143,6 @@ const STRATEGY_INFO = {
       { symbol: '█ blau', color: '#0055FF', desc: 'DMH < 0 — bärischer Trend' },
     ],
   },
-}
-
-const STRATEGY_PARAMS = {
-  regression_scalping: [
-    { key: 'degree', label: 'Degree', default: 2, min: 1, max: 5, step: 1 },
-    { key: 'length', label: 'LinReg Length', default: 100, min: 20, max: 300, step: 10 },
-    { key: 'multiplier', label: 'LinReg Multiplier', default: 3.0, min: 0.5, max: 5.0, step: 0.1 },
-    { key: 'risk_reward', label: 'Risk/Reward', default: 2.5, min: 1.0, max: 5.0, step: 0.1 },
-    { key: 'sl_lookback', label: 'SL Lookback', default: 30, min: 5, max: 100, step: 5 },
-    { key: 'confirmation_required', label: 'Confirmation', default: 1, min: 0, max: 1, step: 1, isToggle: true },
-  ],
-  hybrid_ai_trend: [
-    { key: 'bb1_period', label: 'BB1 Period', default: 20, min: 5, max: 50, step: 1 },
-    { key: 'bb1_stdev', label: 'BB1 StDev', default: 3.0, min: 1.0, max: 6.0, step: 0.25 },
-    { key: 'bb2_period', label: 'BB2 Period', default: 75, min: 20, max: 200, step: 5 },
-    { key: 'bb2_stdev', label: 'BB2 StDev', default: 3.0, min: 1.0, max: 6.0, step: 0.25 },
-    { key: 'bb3_period', label: 'BB3 Period', default: 100, min: 50, max: 300, step: 5 },
-    { key: 'bb3_stdev', label: 'BB3 StDev', default: 4.0, min: 1.0, max: 6.0, step: 0.25 },
-    { key: 'bb4_period', label: 'BB4 Period', default: 100, min: 50, max: 300, step: 5 },
-    { key: 'bb4_stdev', label: 'BB4 StDev', default: 4.25, min: 1.0, max: 6.0, step: 0.25 },
-    { key: 'nw_bandwidth', label: 'NW Smoothing', default: 6.0, min: 1.0, max: 15.0, step: 0.5 },
-    { key: 'nw_lookback', label: 'NW Lookback', default: 499, min: 50, max: 999, step: 10 },
-    { key: 'sl_buffer', label: 'SL Buffer %', default: 1.5, min: 0, max: 5.0, step: 0.1 },
-    { key: 'risk_reward', label: 'Risk/Reward', default: 2.0, min: 1.0, max: 5.0, step: 0.1 },
-    { key: 'hybrid_filter', label: 'mit Hybrid AlgoAI?', default: 0, min: 0, max: 1, step: 1, isToggle: true },
-    { key: 'hybrid_long_thresh', label: 'Threshold Long', default: 75, min: 0, max: 100, step: 1 },
-    { key: 'hybrid_short_thresh', label: 'Threshold Short', default: 25, min: 0, max: 100, step: 1 },
-    { key: 'confirm_candle', label: 'Bestätigungskerze?', default: 0, min: 0, max: 1, step: 1, isToggle: true },
-    { key: 'min_band_dist', label: 'Min Band-Abstand %', default: 0, min: 0, max: 3.0, step: 0.1 },
-  ],
-  diamond_signals: [
-    { key: 'pattern_length', label: 'Pattern Length', default: 20, min: 5, max: 50, step: 1 },
-    { key: 'rsi_period', label: 'RSI Period', default: 14, min: 5, max: 30, step: 1 },
-    { key: 'confluence_min', label: 'Confluence Min', default: 3, min: 1, max: 5, step: 1 },
-    { key: 'rsi_overbought', label: 'RSI Overbought', default: 65, min: 50, max: 90, step: 5 },
-    { key: 'rsi_oversold', label: 'RSI Oversold', default: 35, min: 10, max: 50, step: 5 },
-    { key: 'cooldown', label: 'Cooldown', default: 5, min: 1, max: 20, step: 1 },
-    { key: 'risk_reward', label: 'Risk/Reward', default: 2.0, min: 1.0, max: 5.0, step: 0.1 },
-  ],
-  smart_money_flow: [
-    { key: 'trend_length', label: 'Trend Length', default: 34, min: 10, max: 100, step: 1 },
-    { key: 'basis_smooth', label: 'Trend Smoothing', default: 3, min: 1, max: 10, step: 1 },
-    { key: 'flow_window', label: 'Flow Window', default: 24, min: 5, max: 60, step: 1 },
-    { key: 'flow_smooth', label: 'Flow Smoothing', default: 5, min: 1, max: 15, step: 1 },
-    { key: 'flow_boost', label: 'Flow Boost', default: 1.2, min: 0.5, max: 3.0, step: 0.1 },
-    { key: 'atr_length', label: 'ATR Length', default: 14, min: 5, max: 50, step: 1 },
-    { key: 'band_tightness', label: 'Band Tightness', default: 0.9, min: 0.1, max: 2.0, step: 0.1 },
-    { key: 'band_expansion', label: 'Band Expansion', default: 2.2, min: 1.0, max: 5.0, step: 0.1 },
-    { key: 'dot_cooldown', label: 'Retest Cooldown', default: 12, min: 0, max: 30, step: 1 },
-    { key: 'risk_reward', label: 'Risk/Reward', default: 2.0, min: 1.0, max: 5.0, step: 0.1 },
-  ],
-  hann_trend: [
-    { key: 'dmh_length', label: 'DMH Length', default: 30, min: 5, max: 80, step: 1 },
-    { key: 'sar_start', label: 'SAR Start', default: 0.02, min: 0.005, max: 0.1, step: 0.005 },
-    { key: 'sar_increment', label: 'SAR Increment', default: 0.03, min: 0.005, max: 0.1, step: 0.005 },
-    { key: 'sar_max', label: 'SAR Max', default: 0.3, min: 0.1, max: 0.5, step: 0.01 },
-    { key: 'swing_lookback', label: 'Swing Lookback', default: 5, min: 2, max: 20, step: 1 },
-    { key: 'risk_reward', label: 'Risk/Reward', default: 2.0, min: 1.0, max: 5.0, step: 0.1 },
-    { key: 'sl_buffer', label: 'SL Buffer %', default: 0.3, min: 0, max: 3.0, step: 0.1 },
-  ],
-}
-
-const STRATEGY_DEFAULT_INTERVAL = {
-  regression_scalping: '5m',
-  hybrid_ai_trend: '5m',
-  diamond_signals: '4h',
-  smart_money_flow: '4h',
-  hann_trend: '1h',
-}
-
-function getDefaultParams(strategy) {
-  const defs = STRATEGY_PARAMS[strategy] || []
-  const obj = {}
-  defs.forEach(p => { obj[p.key] = p.default })
-  return obj
 }
 
 function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSelectStock, filterSymbols, timeRange, formatTimeRange, tradeAmount, tradesFrom }) {
@@ -615,6 +524,7 @@ function TradingArena({ isAdmin, token }) {
   const [backtestStrategy, setBacktestStrategy] = useState('hybrid_ai_trend')
   const [tradingWatchlist, setTradingWatchlist] = useState([])
   const [addSymbol, setAddSymbol] = useState('')
+  const [addError, setAddError] = useState('')
   const [importProgress, setImportProgress] = useState(null)
   const [allStrategyResults, setAllStrategyResults] = useState(null)
   const [showParams, setShowParams] = useState(false)
@@ -1038,10 +948,12 @@ function TradingArena({ isAdmin, token }) {
           if (line.startsWith('data: ')) {
             try {
               const msg = JSON.parse(line.slice(6))
-              if (msg.type === 'prefetch') {
-                latestProgress = { current: 0, total: msg.total, symbol: '', prefetching: true, uncached: msg.uncached }
+              if (msg.type === 'cache_loaded') {
+                latestProgress = { current: 0, total: msg.total, symbol: '', cacheLoaded: true, cached: msg.cached, uncached: msg.uncached || 0 }
+              } else if (msg.type === 'prefetch') {
+                latestProgress = { ...latestProgress, prefetching: true, uncached: msg.uncached }
               } else if (msg.type === 'prefetch_progress') {
-                latestProgress = { current: 0, total: latestProgress?.total || msg.total, symbol: '', prefetching: true, prefetchCurrent: msg.current, prefetchTotal: msg.total }
+                latestProgress = { ...latestProgress, prefetching: true, prefetchCurrent: msg.current, prefetchTotal: msg.total }
               } else if (msg.type === 'progress') {
                 latestProgress = { current: msg.current, total: msg.total, symbol: msg.symbol }
               } else if (msg.type === 'result') {
@@ -1184,7 +1096,9 @@ function TradingArena({ isAdmin, token }) {
 
   const selectStock = async (symbol, stock = null, fromBatch = false) => {
     setSelectedSymbol(symbol)
-    setSelectedStock(stock)
+    // Resolve stock name from watchlist if not provided (e.g. batch card click)
+    const resolved = stock || tradingWatchlist.find(w => w.symbol === symbol) || null
+    setSelectedStock(resolved)
     setSearchQuery('')
     setSearchResults([])
     setBacktestResults(null)
@@ -1294,6 +1208,7 @@ function TradingArena({ isAdmin, token }) {
   // Add to trading watchlist
   const addToTrading = async () => {
     if (!addSymbol.trim()) return
+    setAddError('')
     try {
       const res = await fetch('/api/trading/watchlist', {
         method: 'POST',
@@ -1307,6 +1222,10 @@ function TradingArena({ isAdmin, token }) {
         const item = await res.json()
         setTradingWatchlist(prev => [...prev, item].sort((a, b) => a.symbol.localeCompare(b.symbol)))
         setAddSymbol('')
+      } else {
+        const data = await res.json().catch(() => ({}))
+        setAddError(data.error || 'Fehler beim Hinzufügen')
+        setTimeout(() => setAddError(''), 4000)
       }
     } catch { /* ignore */ }
   }
@@ -1348,7 +1267,11 @@ function TradingArena({ isAdmin, token }) {
               if (data.done) {
                 setImportProgress({ ...data, current: data.added + data.skipped + data.failed, total: data.added + data.skipped + data.failed })
                 fetchTradingWatchlist()
-                setTimeout(() => setImportProgress(null), 3000)
+                setTimeout(() => setImportProgress(null), 5000)
+              } else if (data.type === 'phase' && data.phase === 'alpaca_check') {
+                setImportProgress({ current: 0, total: data.total, phase: 'alpaca_check' })
+              } else if (data.type === 'alpaca_check_progress') {
+                setImportProgress(prev => ({ ...prev, current: data.current, total: data.total, phase: 'alpaca_check' }))
               } else {
                 setImportProgress(data)
               }
@@ -1386,15 +1309,20 @@ function TradingArena({ isAdmin, token }) {
     if (batchLoading) {
       const p = batchProgress
       if (!p) return { label: 'Starte Watchlist Backtest', pct: 0, detail: 'Verbinde...' }
+      if (p.cacheLoaded && !p.prefetching) {
+        const unc = p.uncached || 0
+        if (unc > 0) return { label: 'Cache geladen', pct: 0, detail: `${p.cached} im Cache, lade ${unc} fehlende...` }
+        return { label: 'Cache geladen', pct: 100, detail: `${p.cached} Aktien im Cache` }
+      }
       if (p.prefetching) {
         if (p.prefetchCurrent != null) {
           const pct = Math.round((p.prefetchCurrent / p.prefetchTotal) * 100)
-          return { label: 'Lade Kursdaten', pct, detail: `${p.prefetchCurrent}/${p.prefetchTotal} Aktien via Alpaca` }
+          return { label: 'Lade fehlende Kursdaten', pct, detail: `${p.prefetchCurrent}/${p.prefetchTotal} Aktien` }
         }
-        return { label: 'Lade Kursdaten', pct: 0, detail: `${p.uncached || '?'} Aktien nicht im Cache` }
+        return { label: 'Lade fehlende Kursdaten', pct: 0, detail: `${p.uncached || '?'} Aktien werden geladen...` }
       }
       const pct = Math.round((p.current / p.total) * 100)
-      return { label: 'Watchlist Backtest läuft', pct, detail: `Teste ${p.symbol || '...'} (${p.current}/${p.total})` }
+      return { label: 'Backtest läuft', pct, detail: `${p.symbol || '...'} (${p.current}/${p.total})` }
     }
     return null
   }, [prefetchStatus, prefetchProgress, batchLoading, batchProgress])
@@ -2106,13 +2034,18 @@ function TradingArena({ isAdmin, token }) {
                   </svg>
                 </button>
               </div>
+              {addError && (
+                <div className="mt-1.5 text-[10px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1">
+                  {addError}
+                </div>
+              )}
               {importProgress && (
                 <div className="mt-2">
                   <div className="flex justify-between text-[10px] text-gray-400 mb-1">
-                    <span>{importProgress.symbol || 'Starte...'}</span>
+                    <span>{importProgress.phase === 'alpaca_check' ? 'Alpaca-Prüfung...' : (importProgress.symbol || 'Starte...')}</span>
                     <span>
                       {importProgress.done
-                        ? `+${importProgress.added} | ${importProgress.failed} fehlgeschlagen`
+                        ? `+${importProgress.added}${importProgress.not_tradeable ? ` | ${importProgress.not_tradeable} nicht handelbar` : ''}${importProgress.failed ? ` | ${importProgress.failed} fehlgeschlagen` : ''}`
                         : `${importProgress.current}/${importProgress.total}`
                       }
                     </span>
@@ -2160,7 +2093,7 @@ function TradingArena({ isAdmin, token }) {
                 title={hasNoData ? 'Keine Yahoo-Finance-Daten verfügbar' : ''}
               >
                 <button
-                  onClick={() => selectStock(item.symbol)}
+                  onClick={() => selectStock(item.symbol, item)}
                   className={`flex-1 text-left text-sm ${
                     selectedSymbol === item.symbol ? 'text-white font-medium' : hasNoData ? 'text-yellow-600' : 'text-gray-300'
                   }`}

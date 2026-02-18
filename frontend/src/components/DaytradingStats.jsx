@@ -4,7 +4,6 @@ import { useCurrency } from '../context/CurrencyContext'
 const STRATEGY_LABELS = {
   regression_scalping: 'Regression Scalping',
   hybrid_ai_trend: 'NW Bollinger Bands',
-  diamond_signals: 'Diamond Signals',
 }
 
 function EquityCurve({ trades }) {
