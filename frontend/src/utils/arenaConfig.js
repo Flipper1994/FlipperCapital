@@ -17,6 +17,7 @@ export const STRATEGIES = [
   { value: 'hybrid_ai_trend', label: 'NW Bollinger Bands' },
   { value: 'smart_money_flow', label: 'Smart Money Flow', beta: true },
   { value: 'hann_trend', label: 'Hann Trend (DMH + SAR)' },
+  { value: 'gmma_pullback', label: 'GMMA Pullback' },
 ]
 
 export const STRATEGY_PARAMS = {
@@ -41,7 +42,7 @@ export const STRATEGY_PARAMS = {
     { key: 'nw_lookback', label: 'NW Lookback', default: 499, min: 50, max: 999, step: 10 },
     { key: 'sl_buffer', label: 'SL Buffer %', default: 1.5, min: 0, max: 5.0, step: 0.1 },
     { key: 'risk_reward', label: 'Risk/Reward', default: 2.0, min: 1.0, max: 5.0, step: 0.1 },
-    { key: 'hybrid_filter', label: 'mit Hybrid AlgoAI?', default: 0, min: 0, max: 1, step: 1, isToggle: true },
+    { key: 'hybrid_filter', label: 'mit Hybrid AlgoAI?', default: 1, min: 0, max: 1, step: 1, isToggle: true },
     { key: 'hybrid_long_thresh', label: 'Threshold Long', default: 75, min: 0, max: 100, step: 1 },
     { key: 'hybrid_short_thresh', label: 'Threshold Short', default: 25, min: 0, max: 100, step: 1 },
     { key: 'confirm_candle', label: 'Bestaetigungskerze?', default: 0, min: 0, max: 1, step: 1, isToggle: true },
@@ -70,6 +71,15 @@ export const STRATEGY_PARAMS = {
     { key: 'risk_reward', label: 'Risk/Reward', default: 2.0, min: 1.0, max: 5.0, step: 0.1 },
     { key: 'sl_buffer', label: 'SL Buffer %', default: 0.3, min: 0, max: 3.0, step: 0.1 },
   ],
+  gmma_pullback: [
+    { key: 'signal_len', label: 'Signal EMA', default: 9, min: 3, max: 30, step: 1 },
+    { key: 'smooth_len', label: 'Smoothing SMA', default: 3, min: 1, max: 10, step: 1 },
+    { key: 'fractal_periods', label: 'Fractal Periods', default: 5, min: 2, max: 15, step: 1 },
+    { key: 'zone_count', label: 'Aktive Zonen', default: 5, min: 1, max: 10, step: 1 },
+    { key: 'risk_reward', label: 'Risk/Reward', default: 2.0, min: 1.0, max: 5.0, step: 0.1 },
+    { key: 'sl_lookback', label: 'SL Lookback', default: 10, min: 3, max: 30, step: 1 },
+    { key: 'sl_buffer', label: 'SL Buffer %', default: 0.3, min: 0, max: 3.0, step: 0.1 },
+  ],
 }
 
 export const STRATEGY_DEFAULT_INTERVAL = {
@@ -77,6 +87,7 @@ export const STRATEGY_DEFAULT_INTERVAL = {
   hybrid_ai_trend: '5m',
   smart_money_flow: '4h',
   hann_trend: '1h',
+  gmma_pullback: '1h',
 }
 
 export function getDefaultParams(strategy) {

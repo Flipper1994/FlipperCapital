@@ -8,6 +8,7 @@ import ArenaBacktestPanel from './ArenaBacktestPanel'
 const STRATEGY_LABELS = {
   regression_scalping: 'Regression Scalping',
   hybrid_ai_trend: 'NW Bollinger Bands',
+  gmma_pullback: 'GMMA Pullback',
 }
 
 const BETA_STRATEGIES = new Set(['regression_scalping'])
@@ -138,6 +139,10 @@ function LiveTrading({ isAdmin, token }) {
   const [analysisData, setAnalysisData] = useState(null)
   const [analysisLoading, setAnalysisLoading] = useState(false)
   const [symbolsVisible, setSymbolsVisible] = useState(60)
+  const [symbolSearch, setSymbolSearch] = useState('')
+  const [strategies, setStrategies] = useState([])
+  const [showStrategies, setShowStrategies] = useState(false)
+  const [strategyFilter, setStrategyFilter] = useState('')
   const { formatPrice, currency } = useCurrency()
   const pollRef = useRef(null)
   const posPollRef = useRef(null)
@@ -215,6 +220,7 @@ function LiveTrading({ isAdmin, token }) {
         const data = await res.json()
         setPositions(data.positions || [])
         if (data.symbol_prices) setSymbolPrices(data.symbol_prices)
+        if (data.strategies) setStrategies(data.strategies)
       }
     } catch { /* ignore */ }
   }, [token])
@@ -491,6 +497,21 @@ function LiveTrading({ isAdmin, token }) {
     } catch { /* ignore */ }
   }
 
+  const toggleStrategy = async (stratId) => {
+    if (!urlSessionId) return
+    try {
+      const res = await fetch(`/api/trading/live/session/${urlSessionId}/strategy/${stratId}`, {
+        method: 'PUT', headers,
+      })
+      if (res.ok) {
+        fetchPositions(urlSessionId)
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Fehler')
+      }
+    } catch { alert('Verbindungsfehler') }
+  }
+
   const formatTime = (ts) => {
     if (!ts) return '-'
     const d = new Date(ts)
@@ -598,6 +619,9 @@ function LiveTrading({ isAdmin, token }) {
     return actions
   }).sort((a, b) => new Date(b.time) - new Date(a.time))
 
+  const currentSession = sessions.find(s => String(s.id) === String(urlSessionId))
+  const isSessionActive = currentSession?.is_active || status?.active_sessions?.some(s => String(s.session_id) === String(urlSessionId))
+
   // No session selected and no sessions exist — show empty state
   if (!urlSessionId && sessions.length === 0) {
     return (
@@ -622,17 +646,55 @@ function LiveTrading({ isAdmin, token }) {
           {config && (
             <div>
               <div className="flex items-center gap-3 mt-1 text-sm text-gray-400">
-                <span>{STRATEGY_LABELS[config.strategy] || config.strategy}{BETA_STRATEGIES.has(config.strategy) && <span className="ml-1 text-[8px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">BETA</span>}</span>
-                <span className="text-gray-600">|</span>
                 <span>{config.interval}</span>
                 <span className="text-gray-600">|</span>
                 <span>{symbols.length} Aktien</span>
-                {config.long_only && <span className="text-accent-400 text-xs">Long Only</span>}
                 <span className="text-gray-600">|</span>
                 <span>{config.trade_amount} {config.currency || 'EUR'}/Trade</span>
+                <span className="text-gray-600">|</span>
+                <span>{strategies.filter(s => s.is_enabled).length}/{strategies.length} Strategien aktiv</span>
               </div>
-              {config.params && Object.keys(config.params).length > 0 && (
+              {strategies.length > 0 && (
+                <div className="mt-2 space-y-1.5">
+                  {strategies.map(s => {
+                    let params = {}
+                    try { params = JSON.parse(s.params_json || '{}') } catch {}
+                    let stratSymbols = []
+                    try { stratSymbols = JSON.parse(s.symbols || '[]') } catch {}
+                    const paramEntries = Object.entries(params).filter(([, v]) => v !== null && v !== undefined)
+                    return (
+                      <div key={s.id} className="flex items-start gap-2">
+                        <span className={`shrink-0 mt-0.5 text-[10px] px-1.5 py-0.5 rounded font-bold ${
+                          s.is_enabled ? 'bg-green-500/20 text-green-400' : 'bg-gray-700 text-gray-500'
+                        }`}>
+                          {s.is_enabled ? 'ON' : 'OFF'}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 text-xs">
+                            <span className="text-white font-medium">{STRATEGY_LABELS[s.name] || s.name}</span>
+                            <span className="text-gray-600">|</span>
+                            <span className="text-gray-500">{stratSymbols.length} Symbole</span>
+                            <span className="text-gray-600">|</span>
+                            <span className="text-gray-500">{s.long_only ? 'Long Only' : 'Long+Short'}</span>
+                          </div>
+                          {paramEntries.length > 0 && (
+                            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                              {paramEntries.map(([key, val]) => (
+                                <span key={key} className="text-[10px] bg-dark-700 text-gray-500 px-1.5 py-0.5 rounded">
+                                  {key.replace(/_/g, ' ')}: <span className="text-gray-300">{val === 1 ? 'an' : val === 0 ? 'aus' : val}</span>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+              {strategies.length === 0 && config.params && Object.keys(config.params).length > 0 && (
                 <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  <span className="text-xs text-gray-400">{STRATEGY_LABELS[config.strategy] || config.strategy}</span>
                   {Object.entries(config.params).map(([key, val]) => (
                     <span key={key} className="text-[10px] bg-dark-700 text-gray-400 px-1.5 py-0.5 rounded">
                       {key.replace(/_/g, ' ')}: <span className="text-white">{typeof val === 'boolean' ? (val ? 'an' : 'aus') : val}</span>
@@ -698,10 +760,6 @@ function LiveTrading({ isAdmin, token }) {
       </div>
 
       {/* Session Header + Switcher */}
-      {(() => {
-        const currentSession = sessions.find(s => String(s.id) === String(urlSessionId))
-        const isSessionActive = currentSession?.is_active || status?.active_sessions?.some(s => String(s.session_id) === String(urlSessionId))
-        return (
           <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
             {/* Session Name + Switcher */}
             <div className="flex items-center justify-between mb-3 pb-3 border-b border-dark-700">
@@ -779,10 +837,12 @@ function LiveTrading({ isAdmin, token }) {
                 <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium ${
                   sess.ws_connected
                     ? 'bg-green-500/15 text-green-400 border border-green-500/30'
-                    : 'bg-yellow-500/15 text-yellow-400 border border-yellow-500/30'
+                    : sess.last_bar_received
+                      ? 'bg-yellow-500/15 text-yellow-400 border border-yellow-500/30'
+                      : 'bg-blue-500/15 text-blue-400 border border-blue-500/30'
                 }`}>
-                  <span className={`w-2 h-2 rounded-full ${sess.ws_connected ? 'bg-green-400' : 'bg-yellow-400 animate-pulse'}`} />
-                  {sess.ws_connected ? 'WebSocket (IEX) aktiv' : 'Reconnecting...'}
+                  <span className={`w-2 h-2 rounded-full ${sess.ws_connected ? 'bg-green-400' : sess.last_bar_received ? 'bg-yellow-400 animate-pulse' : 'bg-blue-400 animate-pulse'}`} />
+                  {sess.ws_connected ? 'WebSocket (IEX) aktiv' : sess.last_bar_received ? 'Reconnecting...' : 'Verbinde...'}
                 </span>
                 {sess.last_bar_received && (
                   <span className="text-xs text-gray-500">
@@ -800,7 +860,7 @@ function LiveTrading({ isAdmin, token }) {
                   : (countdown != null ? (countdown === 0 ? 'Jetzt...' : `${Math.floor(countdown / 60)}:${String(countdown % 60).padStart(2, '0')}`) : formatTime(sess.next_poll_at))
                 },
                 { label: 'Session Start', value: formatTime(sess.started_at) },
-                { label: isWS ? 'Verbindung' : 'Polls', value: isWS ? (sess.ws_connected ? 'Verbunden' : 'Getrennt') : sess.total_polls },
+                { label: isWS ? 'Verbindung' : 'Polls', value: isWS ? (sess.ws_connected ? 'Verbunden' : sess.last_bar_received ? 'Getrennt' : 'Verbinde...') : sess.total_polls },
               ].map((item, i) => (
                 <div key={i} className="bg-dark-700 rounded p-2">
                   <div className="text-gray-500">{item.label}</div>
@@ -826,8 +886,70 @@ function LiveTrading({ isAdmin, token }) {
           </>
         })()}
           </div>
-        )
-      })()}
+
+      {/* Strategies Panel */}
+      {strategies.length > 0 && (
+        <div className="bg-dark-800 rounded-lg border border-dark-600 mb-4">
+          <button
+            onClick={() => setShowStrategies(!showStrategies)}
+            className="w-full flex items-center justify-between p-4 text-sm hover:bg-dark-700 transition-colors rounded-lg"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-gray-300 font-medium">Strategien</span>
+              <span className="px-2 py-0.5 rounded text-xs bg-accent-500/20 text-accent-400">{strategies.length}</span>
+              <span className="text-xs text-gray-500">{strategies.filter(s => s.is_enabled).length} aktiv</span>
+            </div>
+            <svg className={`w-4 h-4 text-gray-500 transition-transform ${showStrategies ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          {showStrategies && (
+            <div className="px-4 pb-4 space-y-2">
+              {strategies.map(s => {
+                let stratSymbols = []
+                try { stratSymbols = JSON.parse(s.symbols || '[]') } catch {}
+                return (
+                  <div key={s.id} className="flex items-center justify-between bg-dark-700 rounded-lg p-3">
+                    <div className="flex items-center gap-3">
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        s.is_enabled ? 'bg-green-500/20 text-green-400' : 'bg-gray-700 text-gray-500'
+                      }`}>
+                        {s.is_enabled ? 'AKTIV' : 'INAKTIV'}
+                      </span>
+                      <div>
+                        <span className="text-sm text-white font-medium">{STRATEGY_LABELS[s.name] || s.name}</span>
+                        <div className="text-[10px] text-gray-500">
+                          {stratSymbols.length} Symbole | {s.long_only ? 'Long Only' : 'Long+Short'} | {new Date(s.created_at).toLocaleDateString('de-DE')}
+                        </div>
+                      </div>
+                    </div>
+                    {!isSessionActive && (isAdmin ? (
+                      <button
+                        onClick={() => toggleStrategy(s.id)}
+                        className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                          s.is_enabled
+                            ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
+                            : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                        }`}
+                      >
+                        {s.is_enabled ? 'Deaktivieren' : 'Aktivieren'}
+                      </button>
+                    ) : (
+                      <span className="flex items-center gap-1 px-2 py-1 text-[10px] text-gray-500 cursor-not-allowed">
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+                        <span className="px-1 py-0.5 bg-amber-500/20 text-amber-400 font-bold rounded">PRO</span>
+                      </span>
+                    ))}
+                  </div>
+                )
+              })}
+              {isSessionActive && isAdmin && (
+                <p className="text-[10px] text-gray-600 mt-1">Strategien nur bei gestoppter Session aktivieren/deaktivieren.</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Alpaca Broker Section — Admin only */}
       {isAdmin && (
@@ -996,9 +1118,14 @@ function LiveTrading({ isAdmin, token }) {
                 const isActive = acctStatus === 'ACTIVE'
                 // If we have session-level info, use it; otherwise fall back to account status
                 if (sess) {
+                  const neverChecked = !lastChecked
                   return <>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${alpacaOk ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
-                      {alpacaOk ? 'CONNECTED' : sess.alpaca_error || 'CONNECTION LOST'}
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                      alpacaOk ? 'bg-green-500/20 text-green-400'
+                        : neverChecked ? 'bg-blue-500/20 text-blue-400'
+                        : 'bg-red-500/20 text-red-400'
+                    }`}>
+                      {alpacaOk ? 'CONNECTED' : neverChecked ? 'Pruefe...' : sess.alpaca_error || 'CONNECTION LOST'}
                     </span>
                     {lastChecked && (
                       <span className="text-[9px] text-gray-600" title={sess.alpaca_error || ''}>
@@ -1315,7 +1442,7 @@ function LiveTrading({ isAdmin, token }) {
       )}
 
       {/* Resume Banner */}
-      {isAdmin && !status?.is_running && status?.last_session && (
+      {!status?.is_running && status?.last_session && (
         <div className={`rounded-lg p-4 mb-4 flex items-center justify-between ${
           status.last_session.can_resume
             ? 'bg-amber-500/10 border border-amber-500/30'
@@ -1335,14 +1462,20 @@ function LiveTrading({ isAdmin, token }) {
               )}
             </div>
           </div>
-          {status.last_session.can_resume && (
+          {status.last_session.can_resume && (isAdmin ? (
             <button
               onClick={() => resumeSession(status.last_session.id)}
               className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium rounded-lg transition-colors"
             >
               Fortsetzen
             </button>
-          )}
+          ) : (
+            <span className="flex items-center gap-2 px-4 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-gray-500 cursor-not-allowed">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+              Fortsetzen
+              <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-400 text-[10px] font-bold rounded">PRO</span>
+            </span>
+          ))}
         </div>
       )}
 
@@ -1608,6 +1741,7 @@ function LiveTrading({ isAdmin, token }) {
                     <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${p.direction === 'LONG' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{p.direction}</span>
                     {p.alpaca_order_id && <span className="text-[10px] px-1 py-0.5 rounded bg-purple-500/20 text-purple-400 border border-purple-500/30" title={`Order: ${p.alpaca_order_id}`}>ALPACA</span>}
                     {p.symbol.includes('.') && <span className="text-[10px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30" title="Nicht über Alpaca handelbar (nur DB-Tracking)">Non-US</span>}
+                    {p.strategy_name && <span className="text-[10px] px-1 py-0.5 rounded bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">{p.strategy_name}</span>}
                   </div>
                   <span className={`text-sm font-bold ${p.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                     {p.profit_loss_pct >= 0 ? '+' : ''}{p.profit_loss_pct?.toFixed(2)}%
@@ -1631,6 +1765,7 @@ function LiveTrading({ isAdmin, token }) {
                 <tr className="text-left text-gray-500 border-b border-dark-600">
                   <th className="pb-2 pr-3">Symbol</th>
                   <th className="pb-2 pr-3">Dir</th>
+                  {strategies.length > 1 && <th className="pb-2 pr-3">Strat</th>}
                   <th className="pb-2 pr-3">Entry</th>
                   <th className="pb-2 pr-3">Aktuell</th>
                   <th className="pb-2 pr-3 text-right">Stk</th>
@@ -1653,6 +1788,11 @@ function LiveTrading({ isAdmin, token }) {
                       {p.symbol.includes('.') && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-400" title="Nicht über Alpaca handelbar (nur DB-Tracking)">Non-US</span>}
                     </td>
                     <td className={`py-2 pr-3 font-medium ${p.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>{p.direction}</td>
+                    {strategies.length > 1 && (
+                      <td className="py-2 pr-3">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-400">{p.strategy_name || '-'}</span>
+                      </td>
+                    )}
                     <td className="py-2 pr-3 text-gray-400">
                       <div>{formatPrice(p.entry_price, p.symbol)}</div>
                       <div className="text-gray-600 text-[10px]">{formatTime(p.entry_time)}</div>
@@ -1682,7 +1822,9 @@ function LiveTrading({ isAdmin, token }) {
 
       {/* Symbols Grid */}
       {symbols.length > 0 && (() => {
-        const sorted = [...symbols].sort((a, b) => {
+        const q = symbolSearch.trim().toUpperCase()
+        const filtered = q ? symbols.filter(s => s.toUpperCase().includes(q)) : symbols
+        const sorted = [...filtered].sort((a, b) => {
           const sa = symbolStats[a] || { trades: 0 }
           const sb = symbolStats[b] || { trades: 0 }
           return sb.trades - sa.trades
@@ -1690,7 +1832,19 @@ function LiveTrading({ isAdmin, token }) {
         const visible = sorted.slice(0, symbolsVisible)
         return (
           <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
-            <h3 className="text-sm font-medium text-white mb-3">Aktien ({symbols.length})</h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-medium text-white">Aktien ({filtered.length}{q ? ` / ${symbols.length}` : ''})</h3>
+              <div className="relative">
+                <input
+                  type="text"
+                  value={symbolSearch}
+                  onChange={e => { setSymbolSearch(e.target.value); setSymbolsVisible(60) }}
+                  placeholder="Suche..."
+                  className="w-36 bg-dark-700 border border-dark-500 rounded px-2 py-1 pl-7 text-xs text-white placeholder-gray-500 focus:border-accent-500 focus:outline-none"
+                />
+                <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+              </div>
+            </div>
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-2">
               {visible.map(sym => {
                 const stat = symbolStats[sym] || { totalReturn: 0, trades: 0, openPos: null }
@@ -1722,12 +1876,12 @@ function LiveTrading({ isAdmin, token }) {
                 )
               })}
             </div>
-            {symbols.length > symbolsVisible && (
+            {filtered.length > symbolsVisible && (
               <button
                 onClick={() => setSymbolsVisible(v => v + 60)}
                 className="w-full mt-2 py-1.5 text-xs text-gray-400 hover:text-white bg-dark-700 hover:bg-dark-600 rounded transition-colors"
               >
-                Mehr anzeigen ({symbolsVisible}/{symbols.length})
+                Mehr anzeigen ({symbolsVisible}/{filtered.length})
               </button>
             )}
           </div>
@@ -1752,6 +1906,7 @@ function LiveTrading({ isAdmin, token }) {
                 <tr className="text-left text-gray-500 border-b border-dark-600">
                   <th className="pb-2 pr-2">Symbol</th>
                   <th className="pb-2 pr-2">Dir</th>
+                  {strategies.length > 1 && <th className="pb-2 pr-2">Strat</th>}
                   <th className="pb-2 pr-2">Entry</th>
                   <th className="pb-2 pr-2">Exit</th>
                   <th className="pb-2 pr-2 text-right">Stk</th>
@@ -1767,6 +1922,11 @@ function LiveTrading({ isAdmin, token }) {
                       {p.symbol.includes('.') && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-400" title="Nicht über Alpaca handelbar (nur DB-Tracking)">Non-US</span>}
                     </td>
                     <td className={`py-1.5 pr-2 ${p.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>{p.direction}</td>
+                    {strategies.length > 1 && (
+                      <td className="py-1.5 pr-2">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-400">{p.strategy_name || '-'}</span>
+                      </td>
+                    )}
                     <td className="py-1.5 pr-2 text-gray-400">
                       <div>{formatPrice(p.entry_price, p.symbol)}</div>
                       <div className="text-gray-600 text-[10px]">{formatTime(p.entry_time)}</div>
@@ -1943,8 +2103,10 @@ function LiveTrading({ isAdmin, token }) {
             }
             const allLevels = [...new Set(debugLogs.map(l => l.level))].sort()
             const searchLower = debugSearch.toLowerCase()
+            const allStrategies = [...new Set(debugLogs.map(l => l.strategy).filter(Boolean))].sort()
             const filteredLogs = debugLogs.filter(l => {
               if (hiddenLogLevels.has(l.level)) return false
+              if (strategyFilter && l.strategy !== strategyFilter) return false
               if (searchLower) {
                 const time = new Date(l.created_at).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
                 return l.symbol?.toLowerCase().includes(searchLower) ||
@@ -1972,7 +2134,17 @@ function LiveTrading({ isAdmin, token }) {
                     onChange={e => setDebugSearch(e.target.value)}
                     className="bg-dark-700 border border-dark-600 rounded px-2 py-1 text-xs text-gray-300 w-48 focus:outline-none focus:border-accent-500 placeholder-gray-600"
                   />
-                  {debugSearch && <button onClick={() => setDebugSearch('')} className="text-[10px] text-gray-500 hover:text-gray-300">×</button>}
+                  {debugSearch && <button onClick={() => setDebugSearch('')} className="text-[10px] text-gray-500 hover:text-gray-300">x</button>}
+                  {allStrategies.length > 1 && (
+                    <select
+                      value={strategyFilter}
+                      onChange={e => setStrategyFilter(e.target.value)}
+                      className="bg-dark-700 border border-dark-600 rounded px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-accent-500"
+                    >
+                      <option value="">Alle Strategien</option>
+                      {allStrategies.map(s => <option key={s} value={s}>{STRATEGY_LABELS[s] || s}</option>)}
+                    </select>
+                  )}
                   <span className="text-[10px] text-gray-600 ml-auto">{filteredLogs.length}/{debugLogs.length}</span>
                 </div>
                 {allLevels.length > 0 && (
@@ -2011,6 +2183,7 @@ function LiveTrading({ isAdmin, token }) {
                         <span className="text-gray-600 shrink-0">{time}</span>
                         <span className={`shrink-0 w-14 text-right ${levelColors[log.level] || 'text-gray-400'}`}>{log.level}</span>
                         <span className="text-gray-500 shrink-0 w-16 text-right">{log.symbol !== '-' ? log.symbol : ''}</span>
+                        {log.strategy && <span className="shrink-0 text-cyan-500 text-[10px]">[{log.strategy}]</span>}
                         <span className={log.level === 'DATA_MISMATCH' ? 'text-orange-400 font-bold' : 'text-gray-300'}>{log.message}</span>
                       </div>
                     )
@@ -2092,22 +2265,32 @@ function LiveTrading({ isAdmin, token }) {
                           {s.is_active && (
                             <span className="text-[10px] text-gray-500">Seit {formatTime(s.started_at)}</span>
                           )}
-                          {isAdmin && !s.is_active && s.can_resume && (
+                          {!s.is_active && s.can_resume && (isAdmin ? (
                             <button
                               onClick={(e) => { e.stopPropagation(); resumeSession(s.id) }}
                               className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-medium rounded transition-colors"
                             >
                               Fortsetzen
                             </button>
-                          )}
-                          {isAdmin && s.is_active && (
+                          ) : (
+                            <span className="flex items-center gap-1 px-2 py-1 text-[10px] text-gray-500 cursor-not-allowed">
+                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+                              <span className="px-1 py-0.5 bg-amber-500/20 text-amber-400 font-bold rounded">PRO</span>
+                            </span>
+                          ))}
+                          {s.is_active && (isAdmin ? (
                             <button
                               onClick={(e) => { e.stopPropagation(); stopLive(s.id) }}
                               className="px-2.5 py-1 bg-red-600 hover:bg-red-500 text-white text-[10px] font-medium rounded transition-colors"
                             >
                               Stoppen
                             </button>
-                          )}
+                          ) : (
+                            <span className="flex items-center gap-1 px-2 py-1 text-[10px] text-gray-500 cursor-not-allowed">
+                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+                              <span className="px-1 py-0.5 bg-amber-500/20 text-amber-400 font-bold rounded">PRO</span>
+                            </span>
+                          ))}
                           {isAdmin && !s.is_active && (
                             <button
                               onClick={(e) => { e.stopPropagation(); deleteSession(s.id) }}

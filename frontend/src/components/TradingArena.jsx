@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, useTransition } from
 import ArenaChart from './ArenaChart'
 import ArenaBacktestPanel from './ArenaBacktestPanel'
 import ArenaIndicatorChart from './ArenaIndicatorChart'
+import ArenaCalendarHeatmap from './ArenaCalendarHeatmap'
 import { useCurrency } from '../context/CurrencyContext'
 import { INTERVALS, INTERVAL_MAP, TV_INTERVAL_MAP, STRATEGIES, STRATEGY_PARAMS, STRATEGY_DEFAULT_INTERVAL, getDefaultParams } from '../utils/arenaConfig'
 
@@ -92,7 +93,7 @@ const STRATEGY_INFO = {
     desc: 'Mean-Reversion mit 3-Step-Bestätigung: (A) Close außerhalb der Regression-Bänder → (B) Awesome Oscillator Farbwechsel → (C) Heikin Ashi Kerzenfarbe bestätigt Richtung. Entry zum Open der Folgekerze.',
     indicators: 'Polynomiale Regression-Bänder, Awesome Oscillator (AO), Heikin Ashi',
     timeframes: '5m, 15m',
-    tips: '↑ Win Rate: R/R senken (1.0–1.5), Confirmation aktivieren (3-Step). ↑ Frequenz: Confirmation=0 (nur Band-Touch). Kürzerer LinReg Length (50–80) = engere Bänder = mehr Signale.',
+    tips: '↑ Win Rate: Confirmation aktivieren (3-Step filtert ~70% Fehlsignale), Multiplier erhöhen (3.5–4.5 = breitere Bänder, weniger Fehlausbrüche), LinReg Length erhöhen (150–200 = glattere Bänder). ↑ Frequenz: Confirmation=0 (nur Band-Touch), LinReg Length senken (50–80), Multiplier senken (2.0–2.5).',
     legend: [
       { symbol: '▲ LONG', color: '#22c55e', desc: 'Entry — Close unter Lower Band + AO grün + HA bullish' },
       { symbol: '▼ SHORT', color: '#ef4444', desc: 'Entry — Close über Upper Band + AO rot + HA bearish' },
@@ -105,7 +106,7 @@ const STRATEGY_INFO = {
     desc: '4-Level Bollinger Bänder mit Nadaraya-Watson Gaussian-Kernel Glättung (Flux Charts). BUY wenn Close unter Band 1 kreuzt, SELL wenn Close über Band 1 kreuzt. Quelle: HLC3, Smoothing h=6, Lookback 499 Bars.',
     indicators: 'BB Level 1 (20/3σ), Level 2 (75/3σ), Level 3 (100/4σ), Level 4 (100/4.25σ), NW-Smoothing',
     timeframes: '5m, 15m, 1h, 4h',
-    tips: '↑ Win Rate: R/R senken (1.5), SL Buffer erhöhen (2.5-3%), BB1 StDev erhöhen (3.5-4.0), HybridFilter aktivieren, NW Smoothing erhöhen (10-12)',
+    tips: '↑ Win Rate: NW Smoothing erhöhen (10-12 = glättet Rauschen), BB1 StDev erhöhen (3.5-4.0 = breitere Bänder, weniger Fehlkreuzungen), HybridFilter aktivieren (filtert schwache Setups), Bestätigungskerze ON (wartet auf Richtungsbestätigung), Min Band-Abstand 1-2% (filtert knappe Touches). ↑ Frequenz: NW Smoothing senken (3-4), BB1 StDev senken (2.0-2.5).',
     legend: [
       { symbol: '▲ LONG', color: '#22c55e', desc: 'Entry — Close kreuzt unter unteres Band 1' },
       { symbol: '▼ SHORT', color: '#ef4444', desc: 'Entry — Close kreuzt über oberes Band 1' },
@@ -120,7 +121,7 @@ const STRATEGY_INFO = {
     desc: 'Volumenfluss-basierte Trendstrategie (BOSWaves). Erkennt Regime über adaptiven Geldfluss-Indikator. Einstieg erst nach Struktur-Bestätigung: Regime-Wechsel → Swing-Punkt → Pullback zur Baseline → Structure Break.',
     indicators: 'Money Flow Cloud, Adaptive Bänder, Flow-Histogramm',
     timeframes: '1h, 4h, 1D',
-    tips: '↑ Win Rate: Band Expansion erhöhen (2.5-3.0), Trend Length erhöhen (50+). ↑ Frequenz: Band Tightness senken (0.5-0.7), Flow Window kürzer (15-20)',
+    tips: '↑ Win Rate: Trend Smoothing erhöhen (5-7 = weniger Regime-Whipsaws), Flow Smoothing erhöhen (8-10 = stabilere Bänder), Trend Length erhöhen (50+ = glattere Baseline), Band Tightness erhöhen (1.2-1.5 = sauberere Regime-Erkennung). ↑ Frequenz: Trend Length senken (15-20), Flow Window kürzer (15-20), Band Tightness senken (0.5-0.7).',
     legend: [
       { symbol: '▲ LONG', color: '#22c55e', desc: 'Entry — Structure Break über Swing-High nach Pullback' },
       { symbol: '▼ SHORT', color: '#ef4444', desc: 'Entry — Structure Break unter Swing-Low nach Pullback' },
@@ -133,7 +134,7 @@ const STRATEGY_INFO = {
     desc: 'Trend+Pullback-Strategie nach Ehlers (TASC 2021.12). DMH-Oszillator bestimmt Trend-Richtung, Parabolic SAR erkennt Pullbacks. Nur erster Pullback nach DMH-Nulllinien-Kreuz wird gehandelt, Bestätigung über Swing-High/Low-Bruch.',
     indicators: 'DMH-Histogramm, Parabolic SAR',
     timeframes: '1h, 4h, 1D',
-    tips: '↑ Frequenz: DMH Length senken (15-20), SAR Increment erhöhen (0.04-0.05). ↑ Qualität: DMH Length erhöhen (40-50), Swing Lookback erhöhen (8-10)',
+    tips: '↑ Win Rate: DMH Length erhöhen (40-50 = glatteres Signal, weniger Nulllinien-Whipsaws), SAR Start senken (0.01 = fängt tiefere Pullbacks), Swing Lookback erhöhen (8-10 = robustere Swing-Punkte), SL Buffer erhöhen (0.5-1.0%). ↑ Frequenz: DMH Length senken (15-20), SAR Increment erhöhen (0.04-0.05).',
     legend: [
       { symbol: '▲ LONG', color: '#22c55e', desc: 'Entry — Close über Swing-High nach SAR-Pullback im Aufwärtstrend' },
       { symbol: '▼ SHORT', color: '#ef4444', desc: 'Entry — Close unter Swing-Low nach SAR-Pullback im Abwärtstrend' },
@@ -141,6 +142,21 @@ const STRATEGY_INFO = {
       { symbol: '▼ SL', color: '#ef4444', desc: 'Stop Loss (Pullback-Extrem ± Buffer)' },
       { symbol: '█ gelb', color: '#FFCC00', desc: 'DMH > 0 — bullischer Trend' },
       { symbol: '█ blau', color: '#0055FF', desc: 'DMH < 0 — bärischer Trend' },
+    ],
+  },
+  gmma_pullback: {
+    title: 'GMMA Pullback',
+    desc: 'Trend-Pullback-Strategie mit GMMA Oscillator (JustUncleL) + Fractal Support/Resistance Zonen (Harry-8FX). Entry wenn Preis in S/R-Zone liegt und GMMA-Momentum Richtung bestätigt (Main kreuzt Signal-Linie).',
+    indicators: 'GMMA Oscillator (Main + Signal), Fractal S/R Zonen',
+    timeframes: '1h, 4h, 1D',
+    tips: '↑ Win Rate: Fractal Periods erhöhen (7-10 = stärkere Pivot-Punkte), Smoothing SMA erhöhen (5-7 = weniger Whipsaws), Signal EMA erhöhen (12-15 = langsamere Signal-Linie). ↑ Frequenz: Fractal Periods senken (3), Aktive Zonen erhöhen (8-10), Smoothing senken (1-2).',
+    legend: [
+      { symbol: '▲ LONG', color: '#22c55e', desc: 'Entry — Close in Support-Zone + GMMA Crossover (beide > 0)' },
+      { symbol: '▼ SHORT', color: '#ef4444', desc: 'Entry — Close in Resistance-Zone + GMMA Crossunder (beide < 0)' },
+      { symbol: '▼ TP', color: '#22c55e', desc: 'Take Profit (Risk × R/R)' },
+      { symbol: '▼ SL', color: '#ef4444', desc: 'Stop Loss (Swing Low/High ± Buffer)' },
+      { symbol: '█ grün', color: '#22c55e', desc: 'GMMA Main > Signal — bullisches Momentum' },
+      { symbol: '█ rot', color: '#ef4444', desc: 'GMMA Main < Signal — bärisches Momentum' },
     ],
   },
 }
@@ -151,6 +167,7 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
   const [stocksVisible, setStocksVisible] = useState(60)
   const [tradesVisible, setTradesVisible] = useState(100)
   const [filterUpdating, setFilterUpdating] = useState(false)
+  const [cardSearch, setCardSearch] = useState('')
 
   // Reset pagination when filters change
   useEffect(() => {
@@ -404,12 +421,29 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
 
       {/* Per-Stock Grid */}
       {Object.keys(perStock).length > 0 && (() => {
-        const sorted = Object.entries(perStock).sort((a, b) => b[1].total_return - a[1].total_return)
-        const totalStocks = sorted.length
-        const visible = sorted.slice(0, stocksVisible)
+        const all = Object.entries(perStock).sort((a, b) => b[1].total_return - a[1].total_return)
+        const searched = cardSearch ? all.filter(([sym]) => sym.toLowerCase().includes(cardSearch.toLowerCase())) : all
+        const totalStocks = all.length
+        const visible = cardSearch ? searched : all.slice(0, stocksVisible)
         return (
           <div className="mb-4">
-            <div className="text-xs text-gray-500 mb-2">Performance pro Aktie ({totalStocks}/{Object.keys(batchResults?.per_stock || {}).length})</div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-gray-500">Performance pro Aktie ({totalStocks}/{Object.keys(batchResults?.per_stock || {}).length})</span>
+              <div className="relative">
+                <input
+                  type="text"
+                  value={cardSearch}
+                  onChange={e => setCardSearch(e.target.value)}
+                  placeholder="Aktie suchen..."
+                  className="w-32 bg-dark-700 border border-dark-500 rounded px-2 py-1 text-xs text-white placeholder-gray-600 focus:border-accent-500 focus:outline-none"
+                />
+                {cardSearch && (
+                  <button onClick={() => setCardSearch('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white">
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                  </button>
+                )}
+              </div>
+            </div>
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
               {visible.map(([sym, sm]) => (
                 <div
@@ -427,7 +461,7 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
                 </div>
               ))}
             </div>
-            {totalStocks > stocksVisible && (
+            {!cardSearch && totalStocks > stocksVisible && (
               <button
                 onClick={() => setStocksVisible(v => v + 60)}
                 className="w-full mt-2 py-1.5 text-xs text-gray-400 hover:text-white bg-dark-700 hover:bg-dark-600 rounded transition-colors"
@@ -535,9 +569,11 @@ function TradingArena({ isAdmin, token }) {
   const [noDataSymbols, setNoDataSymbols] = useState([])
   const [longOnly, setLongOnly] = useState(true)
   const [usOnly, setUsOnly] = useState(true)
+  const [dataSource, setDataSource] = useState('alpaca') // 'alpaca' or 'yahoo'
   const [hideFiltered, setHideFiltered] = useState(true)
   const [isFilterPending, startFilterTransition] = useTransition()
   const [showSimulation, setShowSimulation] = useState(false)
+  const [showCalendar, setShowCalendar] = useState(true)
   const [simTradeAmount, setSimTradeAmount] = useState(500)
   const [appliedFilters, setAppliedFilters] = useState(null)
   const [filtersActive, setFiltersActive] = useState(false)
@@ -547,6 +583,9 @@ function TradingArena({ isAdmin, token }) {
   const [strategyParams, setStrategyParams] = useState(() => getDefaultParams('hybrid_ai_trend'))
   const [sessionName, setSessionName] = useState('')
   const [showSessionNameDialog, setShowSessionNameDialog] = useState(false)
+  const [showAddToSessionModal, setShowAddToSessionModal] = useState(false)
+  const [availableSessions, setAvailableSessions] = useState([])
+  const [addToSessionLoading, setAddToSessionLoading] = useState(false)
 
   // When clicking from batch results, override single backtest with batch data
   const batchOverrideRef = useRef(null)
@@ -555,6 +594,8 @@ function TradingArena({ isAdmin, token }) {
   const [prefetchStatus, setPrefetchStatus] = useState(null) // null | 'fetching' | 'done'
   const [prefetchProgress, setPrefetchProgress] = useState(null)
   const prefetchAbortRef = useRef(null)
+  const [manualRefresh, setManualRefresh] = useState(false) // true when admin clicks refresh button
+  const [lastUpdated, setLastUpdated] = useState(null) // { time: Date, source: 'auto'|'manual' }
 
   // Global loading state — true when prefetch OR batch is running
   const isGlobalLoading = prefetchStatus === 'fetching' || batchLoading
@@ -570,61 +611,21 @@ function TradingArena({ isAdmin, token }) {
 
   // Debounce ref for param changes
   const paramDebounce = useRef(null)
-  const settingsSaveDebounce = useRef(null)
-  const savedSettingsRef = useRef({})
+
   const batchAbortRef = useRef(null) // also used by skipLoading + runBatchBacktest
 
-  // Load saved strategy settings (global or per-symbol)
-  const loadSettings = useCallback(async (symbol = '') => {
-    try {
-      const url = symbol
-        ? `/api/trading/strategy-settings?symbol=${encodeURIComponent(symbol)}`
-        : '/api/trading/strategy-settings'
-      const res = await fetch(url, {
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
-      })
-      if (res.ok) {
-        const data = await res.json()
-        savedSettingsRef.current = data
-        return data
-      }
-    } catch { /* ignore */ }
-    return null
-  }, [token])
-
-  // Load global settings on mount
+  // Load default settings on mount
   useEffect(() => {
     // Non-admins: force allowed strategy
     if (!isAdmin && backtestStrategy !== 'hybrid_ai_trend') {
       setBacktestStrategy('hybrid_ai_trend')
       setStrategyParams(getDefaultParams('hybrid_ai_trend'))
     }
-    loadSettings().then(data => {
-      if (!data) return
-      const strat = (!isAdmin && backtestStrategy !== 'hybrid_ai_trend') ? 'hybrid_ai_trend' : backtestStrategy
-      const saved = data[strat]
-      if (saved?.params) {
-        setStrategyParams(prev => ({ ...prev, ...saved.params }))
-      }
-      if (saved?.interval && INTERVALS.includes(saved.interval)) {
-        setInterval(saved.interval)
-      }
-    })
+    // Always start with defaults — no saved settings loaded
+    const strat = (!isAdmin && backtestStrategy !== 'hybrid_ai_trend') ? 'hybrid_ai_trend' : backtestStrategy
+    setStrategyParams(getDefaultParams(strat))
+    setInterval(STRATEGY_DEFAULT_INTERVAL[strat] || '4h')
   }, [token])
-
-  const saveSettings = (strategy, params, iv, symbol = '') => {
-    if (settingsSaveDebounce.current) clearTimeout(settingsSaveDebounce.current)
-    settingsSaveDebounce.current = setTimeout(() => {
-      fetch('/api/trading/strategy-settings', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ symbol, strategy, params, interval: iv }),
-      }).catch(() => {})
-    }, 300)
-  }
 
   // Load trading watchlist and auto-select first stock
   const tradingWatchlistLoaded = useRef(false)
@@ -648,11 +649,10 @@ function TradingArena({ isAdmin, token }) {
 
   // (scheduler status removed — now in Live Trading page)
 
-  // Prefetch + Auto-Batch beim Laden (admin only)
+  // Auto-Batch beim Laden (admin only) — kein Prefetch, Batch nutzt eigenen Cache
   useEffect(() => {
     if (!isAdmin || !token) return
-    runPrefetchAndBatch(backtestStrategy, interval, strategyParams, usOnly)
-    return () => { if (prefetchAbortRef.current) prefetchAbortRef.current.abort() }
+    runBatchBacktest(backtestStrategy, interval, strategyParams, usOnly)
   }, [token, isAdmin]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Search with debounce
@@ -804,7 +804,7 @@ function TradingArena({ isAdmin, token }) {
     if (!batchResults?.per_stock) return null
     if (!longOnly && !tradesFromUnixMain) return batchResults.per_stock
     const ps = {}
-    let allTrades = batchResults.trades
+    let allTrades = batchResults.trades || []
     if (longOnly) allTrades = allTrades.filter(t => t.direction === 'LONG')
     if (tradesFromUnixMain > 0) allTrades = allTrades.filter(t => t.entry_time >= tradesFromUnixMain)
     const bySymbol = {}
@@ -847,6 +847,22 @@ function TradingArena({ isAdmin, token }) {
   // O(1) lookup sets for watchlist rendering
   const perfFilteredSet = useMemo(() => perfFilteredSymbols ? new Set(perfFilteredSymbols) : null, [perfFilteredSymbols])
   const noDataSet = useMemo(() => new Set(noDataSymbols), [noDataSymbols])
+
+  // Filtered trades for heatmap (same filter logic as WatchlistBatchPanel)
+  const heatmapTrades = useMemo(() => {
+    if (!batchResults?.trades) return []
+    let trades = batchResults.trades
+    if (longOnly) trades = trades.filter(t => t.direction === 'LONG')
+    if (perfFilteredSymbols) {
+      const set = new Set(perfFilteredSymbols)
+      trades = trades.filter(t => set.has(t.symbol))
+    }
+    if (tradesFrom) {
+      const cutoff = Math.floor(new Date(tradesFrom).getTime() / 1000)
+      if (cutoff > 0) trades = trades.filter(t => t.entry_time >= cutoff)
+    }
+    return trades
+  }, [batchResults?.trades, longOnly, perfFilteredSymbols, tradesFrom])
 
   // Compute timeframe from chart data or batch trades
   const backtestTimeRange = useMemo(() => {
@@ -909,7 +925,7 @@ function TradingArena({ isAdmin, token }) {
     })
   }, [perfFilteredSymbols, filtersActive, longOnly, simTradeAmount, tradesFrom]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const runBatchBacktest = useCallback(async (strategy, iv, params, usOnlyFlag = true) => {
+  const runBatchBacktest = useCallback(async (strategy, iv, params, usOnlyFlag = true, src = null) => {
     // Cancel previous batch request if still running
     if (batchAbortRef.current) batchAbortRef.current.abort()
     const controller = new AbortController()
@@ -930,6 +946,7 @@ function TradingArena({ isAdmin, token }) {
           interval: INTERVAL_MAP[iv] || '4h',
           params,
           us_only: usOnlyFlag,
+          data_source: src || dataSource,
         }),
         signal: controller.signal,
       })
@@ -938,6 +955,7 @@ function TradingArena({ isAdmin, token }) {
       const decoder = new TextDecoder()
       let buffer = ''
       let latestProgress = null
+      let lastFlush = 0
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -948,24 +966,30 @@ function TradingArena({ isAdmin, token }) {
           if (line.startsWith('data: ')) {
             try {
               const msg = JSON.parse(line.slice(6))
-              if (msg.type === 'cache_loaded') {
-                latestProgress = { current: 0, total: msg.total, symbol: '', cacheLoaded: true, cached: msg.cached, uncached: msg.uncached || 0 }
+              if (msg.type === 'init') {
+                latestProgress = { phase: 'init', current: 0, total: msg.total, startedAt: Date.now() }
               } else if (msg.type === 'prefetch') {
-                latestProgress = { ...latestProgress, prefetching: true, uncached: msg.uncached }
+                latestProgress = { phase: 'prefetch', current: 0, total: msg.total, prefetching: true, uncached: msg.uncached, source: msg.source, startedAt: Date.now() }
               } else if (msg.type === 'prefetch_progress') {
-                latestProgress = { ...latestProgress, prefetching: true, prefetchCurrent: msg.current, prefetchTotal: msg.total }
+                latestProgress = { ...latestProgress, phase: 'prefetch', prefetching: true, prefetchCurrent: msg.current, prefetchTotal: msg.total, source: msg.source || latestProgress?.source }
               } else if (msg.type === 'progress') {
-                latestProgress = { current: msg.current, total: msg.total, symbol: msg.symbol }
+                latestProgress = { ...latestProgress, phase: 'backtest', prefetching: false, current: msg.current, total: msg.total, symbol: msg.symbol }
               } else if (msg.type === 'result') {
                 setBatchResults(msg.data)
                 setNoDataSymbols(msg.data.skipped_symbols || [])
+                setLastUpdated({ time: new Date(), source: 'auto' })
               }
             } catch { /* ignore parse error */ }
           }
         }
-        // Update once per network chunk
-        if (latestProgress) setBatchProgress({ ...latestProgress })
+        // Flush to React after each chunk, throttled to ~150ms
+        const now = Date.now()
+        if (latestProgress && (now - lastFlush >= 150)) {
+          setBatchProgress({ ...latestProgress })
+          lastFlush = now
+        }
       }
+      if (latestProgress) setBatchProgress({ ...latestProgress })
     } catch (err) {
       if (err.name !== 'AbortError') {
         console.error('[TradingArena] Batch backtest error:', err)
@@ -976,73 +1000,82 @@ function TradingArena({ isAdmin, token }) {
     batchAbortRef.current = null
   }, [token])
 
-  // Prefetch OHLCV data for interval, then run batch backtest
-  const runPrefetchAndBatch = useCallback(async (strategy, iv, params, usOnlyFlag = true) => {
-    if (isAdmin && token) {
-      // Cancel previous prefetch AND batch (may still be running from different strategy)
-      if (prefetchAbortRef.current) prefetchAbortRef.current.abort()
-      if (batchAbortRef.current) batchAbortRef.current.abort()
-      const controller = new AbortController()
-      prefetchAbortRef.current = controller
-
-      setPrefetchStatus('fetching')
-      setPrefetchProgress(null)
-      try {
-        const res = await fetch('/api/trading/arena/prefetch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ interval: INTERVAL_MAP[iv] || '4h', us_only: usOnlyFlag }),
-          signal: controller.signal,
-        })
-        if (!res.ok || !res.body) throw new Error('prefetch failed')
-        const reader = res.body.getReader()
-        const decoder = new TextDecoder()
-        let buffer = ''
-        let latestProgress = null
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split('\n')
-          buffer = lines.pop()
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const msg = JSON.parse(line.slice(6))
-                if (controller.signal.aborted) return
-                if (msg.type === 'init') {
-                  latestProgress = { current: 0, total: msg.fetch_total, symbol: '', source: 'cache', cached: msg.cached, fetchTotal: msg.fetch_total }
-                } else if (msg.type === 'progress') {
-                  latestProgress = { current: msg.current, total: msg.total, symbol: msg.symbol, source: msg.source }
-                } else if (msg.type === 'complete') {
-                  setPrefetchStatus('done')
-                }
-              } catch { /* ignore parse error */ }
-            }
+  // Shared SSE prefetch reader — used by manual refresh button
+  const runPrefetch = useCallback(async (body, controller) => {
+    setPrefetchStatus('fetching')
+    setPrefetchProgress(null)
+    try {
+      const res = await fetch('/api/trading/arena/prefetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      })
+      if (!res.ok || !res.body) throw new Error('prefetch failed')
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let latestProgress = null
+      let lastFlush = 0
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop()
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const msg = JSON.parse(line.slice(6))
+              if (controller.signal.aborted) return
+              if (msg.type === 'init') {
+                latestProgress = { phase: 'fetching', current: 0, total: msg.fetch_total, cached: msg.cached, fetchTotal: msg.fetch_total, startedAt: Date.now() }
+              } else if (msg.type === 'progress') {
+                latestProgress = { phase: 'fetching', current: msg.current, total: msg.total, symbol: msg.symbol, source: msg.source }
+              } else if (msg.type === 'complete') {
+                setPrefetchStatus('done')
+              }
+            } catch { /* ignore parse error */ }
           }
-          if (latestProgress) setPrefetchProgress({ ...latestProgress })
         }
-      } catch {
-        // Prefetch failed or aborted
+        // Flush to React after each chunk, throttled to ~150ms
+        const now = Date.now()
+        if (latestProgress && (now - lastFlush >= 150)) {
+          setPrefetchProgress({ ...latestProgress })
+          lastFlush = now
+        }
       }
-      if (controller.signal.aborted) return
-      setPrefetchStatus('done')
+      if (latestProgress) setPrefetchProgress({ ...latestProgress })
+    } catch {
+      // Prefetch failed or aborted
     }
-    runBatchBacktest(strategy, iv, params, usOnlyFlag)
-  }, [token, isAdmin, runBatchBacktest])
+    if (controller.signal.aborted) return
+    setPrefetchStatus('done')
+  }, [token])
 
-  // Auto-backtest on strategy change
+  // Manual refresh: force-fetch all base intervals (5m + 60m) for all strategies
+  const runManualRefresh = useCallback(async () => {
+    if (!isAdmin || !token) return
+    if (prefetchAbortRef.current) prefetchAbortRef.current.abort()
+    if (batchAbortRef.current) batchAbortRef.current.abort()
+    const controller = new AbortController()
+    prefetchAbortRef.current = controller
+    setManualRefresh(true)
+    await runPrefetch({ intervals: ['5m', '60m'], us_only: usOnly, force: true }, controller)
+    setManualRefresh(false)
+    setLastUpdated({ time: new Date(), source: 'manual' })
+    if (controller.signal.aborted) return
+    // After refresh, re-run batch for current strategy
+    runBatchBacktest(backtestStrategy, interval, strategyParams, usOnly)
+  }, [token, isAdmin, usOnly, backtestStrategy, interval, strategyParams, runPrefetch, runBatchBacktest])
+
+  // Auto-backtest on strategy change — always reset to defaults
   const handleStrategyChange = (newStrategy) => {
     if (!isAdmin && newStrategy !== 'hybrid_ai_trend') return
     setBacktestStrategy(newStrategy)
-    // Load saved params for this strategy, or use defaults
-    const saved = savedSettingsRef.current[newStrategy]
-    const newParams = saved?.params
-      ? { ...getDefaultParams(newStrategy), ...saved.params }
-      : getDefaultParams(newStrategy)
+    const newParams = getDefaultParams(newStrategy)
     setStrategyParams(newParams)
-    // Set recommended interval for strategy (saved interval takes priority)
-    const newIv = saved?.interval || STRATEGY_DEFAULT_INTERVAL[newStrategy] || '4h'
+    const newIv = STRATEGY_DEFAULT_INTERVAL[newStrategy] || '4h'
     setInterval(newIv)
     if (selectedSymbol) {
       runBacktestNow(selectedSymbol, newStrategy, newIv, newParams)
@@ -1059,7 +1092,6 @@ function TradingArena({ isAdmin, token }) {
   // Auto-backtest on interval change
   const handleIntervalChange = (newIv) => {
     setInterval(newIv)
-    saveSettings(backtestStrategy, strategyParams, newIv, selectedSymbol)
     if (selectedSymbol) {
       runBacktestNow(selectedSymbol, backtestStrategy, newIv, strategyParams)
     }
@@ -1076,7 +1108,6 @@ function TradingArena({ isAdmin, token }) {
   const handleParamChange = (key, value) => {
     const updated = { ...strategyParams, [key]: value }
     setStrategyParams(updated)
-    saveSettings(backtestStrategy, updated, interval, selectedSymbol)
     if (paramDebounce.current) clearTimeout(paramDebounce.current)
     paramDebounce.current = setTimeout(() => {
       if (selectedSymbol) {
@@ -1088,7 +1119,6 @@ function TradingArena({ isAdmin, token }) {
   const resetParams = () => {
     const defs = getDefaultParams(backtestStrategy)
     setStrategyParams(defs)
-    saveSettings(backtestStrategy, defs, interval, selectedSymbol)
     if (selectedSymbol) {
       runBacktestNow(selectedSymbol, backtestStrategy, interval, defs)
     }
@@ -1119,22 +1149,7 @@ function TradingArena({ isAdmin, token }) {
       batchOverrideRef.current = null
     }
 
-    // Load per-symbol settings only when NOT clicking from batch results
-    // (batch results were calculated with current params/interval — keep them consistent)
-    if (!fromBatch) {
-      const symbolSettings = await loadSettings(symbol)
-      if (symbolSettings) {
-        const saved = symbolSettings[backtestStrategy]
-        if (saved?.params) {
-          useParams = { ...getDefaultParams(backtestStrategy), ...saved.params }
-          setStrategyParams(useParams)
-        }
-        if (saved?.interval && INTERVALS.includes(saved.interval)) {
-          useInterval = saved.interval
-          setInterval(useInterval)
-        }
-      }
-    }
+    // Keep current params/interval — no per-symbol settings loading
 
     // Load stored results for ALL strategies (parallel zum Backtest)
     fetch(`/api/trading/backtest-results/${encodeURIComponent(symbol)}`, {
@@ -1148,6 +1163,53 @@ function TradingArena({ isAdmin, token }) {
   }
 
   // Start Live Trading — opens name dialog first
+  const handleAddToSession = async () => {
+    const symbols = perfFilteredSymbols || Object.keys(batchResults?.per_stock || {})
+    if (symbols.length === 0) return
+    try {
+      const res = await fetch('/api/trading/live/sessions', {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+      })
+      if (!res.ok) return
+      const data = await res.json()
+      // Filter sessions with same interval
+      const matching = (data.sessions || []).filter(s => s.interval === interval)
+      setAvailableSessions(matching)
+      setShowAddToSessionModal(true)
+    } catch {}
+  }
+
+  const confirmAddToSession = async (sessionId) => {
+    const symbols = perfFilteredSymbols || Object.keys(batchResults?.per_stock || {})
+    setAddToSessionLoading(true)
+    try {
+      const res = await fetch(`/api/trading/live/session/${sessionId}/strategy`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          strategy: backtestStrategy,
+          params: JSON.stringify(strategyParams),
+          symbols,
+          long_only: longOnly,
+        }),
+      })
+      if (res.ok) {
+        setShowAddToSessionModal(false)
+        alert('Strategie hinzugefügt (deaktiviert). Aktivierung in der Live-Session.')
+      } else {
+        const err = await res.json()
+        alert(err.error || 'Fehler beim Hinzufügen')
+      }
+    } catch {
+      alert('Netzwerkfehler')
+    } finally {
+      setAddToSessionLoading(false)
+    }
+  }
+
   const handleStartLiveTrading = () => {
     const symbols = perfFilteredSymbols || Object.keys(batchResults?.per_stock || {})
     if (symbols.length === 0) {
@@ -1296,36 +1358,51 @@ function TradingArena({ isAdmin, token }) {
   }
   const loadingInfo = useMemo(() => {
     if (prefetchStatus === 'fetching') {
+      const lbl = manualRefresh ? 'Kurse aktualisieren (alle Strategien)' : 'Aktualisiere Kursdaten'
       const p = prefetchProgress
-      if (!p || p.total === 0) return { label: 'Aktualisiere Kursdaten', pct: 0, detail: 'Prüfe Cache...' }
-      if (p.current === 0 && p.cached > 0) {
-        return { label: 'Aktualisiere Kursdaten', pct: 0, detail: `${p.cached} im Cache, lade ${p.fetchTotal} verbleibende...` }
+      if (!p) return { label: lbl, pct: 0, detail: 'Verbinde...' }
+      if (p.current === 0) {
+        if (p.fetchTotal === 0 && p.cached > 0) return { label: lbl, pct: 100, detail: `Alle ${p.cached} Aktien bereits im Cache` }
+        if (p.cached > 0) return { label: lbl, pct: 0, detail: `${p.cached} im Cache, lade ${p.fetchTotal} Aktien...` }
+        return { label: lbl, pct: 0, detail: `Lade ${p.fetchTotal} Aktien...` }
       }
       const pct = Math.round((p.current / p.total) * 100)
-      const src = p.source ? ` via ${sourceLabel(p.source)}` : ''
-      const detail = `${p.symbol || '...'}${src} (${p.current}/${p.total})`
-      return { label: 'Aktualisiere Kursdaten', pct, detail }
+      let eta = ''
+      if (p.current > 3 && p.startedAt) {
+        const elapsed = (Date.now() - p.startedAt) / 1000
+        const remaining = (elapsed / p.current) * (p.total - p.current)
+        if (remaining > 60) eta = ` — ~${Math.ceil(remaining / 60)} Min`
+        else if (remaining > 5) eta = ` — ~${Math.ceil(remaining)}s`
+      }
+      const src = p.source === 'alpaca' ? 'Alpaca' : p.source === 'yahoo' ? 'Yahoo' : ''
+      return { label: `${lbl} — ${src}`, pct, detail: `${p.symbol || '...'} (${p.current}/${p.total})${eta}` }
     }
     if (batchLoading) {
       const p = batchProgress
-      if (!p) return { label: 'Starte Watchlist Backtest', pct: 0, detail: 'Verbinde...' }
-      if (p.cacheLoaded && !p.prefetching) {
-        const unc = p.uncached || 0
-        if (unc > 0) return { label: 'Cache geladen', pct: 0, detail: `${p.cached} im Cache, lade ${unc} fehlende...` }
-        return { label: 'Cache geladen', pct: 100, detail: `${p.cached} Aktien im Cache` }
-      }
+      if (!p) return { label: 'Starte Backtest', pct: 0, detail: 'Verbinde...' }
       if (p.prefetching) {
+        const src = p.source || 'Alpaca'
         if (p.prefetchCurrent != null) {
           const pct = Math.round((p.prefetchCurrent / p.prefetchTotal) * 100)
-          return { label: 'Lade fehlende Kursdaten', pct, detail: `${p.prefetchCurrent}/${p.prefetchTotal} Aktien` }
+          return { label: `Lade Kursdaten via ${src}`, pct, detail: `${p.prefetchCurrent}/${p.prefetchTotal} Aktien` }
         }
-        return { label: 'Lade fehlende Kursdaten', pct: 0, detail: `${p.uncached || '?'} Aktien werden geladen...` }
+        return { label: `Lade Kursdaten (${src})`, pct: 0, detail: `${p.uncached || '?'} Aktien nicht im Cache` }
+      }
+      if (p.phase === 'init') {
+        return { label: 'Backtest läuft', pct: 0, detail: `0/${p.total} Aktien` }
       }
       const pct = Math.round((p.current / p.total) * 100)
-      return { label: 'Backtest läuft', pct, detail: `${p.symbol || '...'} (${p.current}/${p.total})` }
+      let eta = ''
+      if (p.current > 5 && p.startedAt) {
+        const elapsed = (Date.now() - p.startedAt) / 1000
+        const remaining = (elapsed / p.current) * (p.total - p.current)
+        if (remaining > 60) eta = ` — ~${Math.ceil(remaining / 60)} Min`
+        else if (remaining > 5) eta = ` — ~${Math.ceil(remaining)}s`
+      }
+      return { label: 'Backtest läuft', pct, detail: `${p.symbol || '...'} (${p.current}/${p.total})${eta}` }
     }
     return null
-  }, [prefetchStatus, prefetchProgress, batchLoading, batchProgress])
+  }, [prefetchStatus, prefetchProgress, batchLoading, batchProgress, manualRefresh])
 
   return (
     <div className="flex-1 flex flex-col md:flex-row gap-0 min-h-0 overflow-hidden relative">
@@ -1440,6 +1517,31 @@ function TradingArena({ isAdmin, token }) {
             {backtestLoading ? 'Läuft...' : 'Backtest'}
           </button>
 
+          {/* Refresh button (admin only) */}
+          {isAdmin && (
+            <button
+              onClick={runManualRefresh}
+              disabled={manualRefresh || prefetchStatus === 'fetching'}
+              className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors border ${
+                manualRefresh
+                  ? 'bg-amber-500/20 text-amber-400 border-amber-500/30 cursor-wait'
+                  : 'bg-dark-700 text-gray-400 hover:text-white hover:bg-dark-600 border-dark-600'
+              }`}
+              title="Kurse für alle Strategien neu laden (5m + 1h)"
+            >
+              <svg className={`w-4 h-4 ${manualRefresh ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+            </button>
+          )}
+
+          {/* Last updated label */}
+          {lastUpdated && !isGlobalLoading && (
+            <span className="text-xs text-gray-500 hidden sm:inline" title={lastUpdated.time.toLocaleString('de-DE')}>
+              {lastUpdated.source === 'manual' ? '↻ Manuell' : '⟳ Auto'} {lastUpdated.time.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          )}
+
           {/* Long Only toggle */}
           <label className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-dark-700 border border-dark-600 cursor-pointer select-none">
             <input
@@ -1461,6 +1563,20 @@ function TradingArena({ isAdmin, token }) {
             />
             <span className={`text-xs font-medium ${usOnly ? 'text-accent-400' : 'text-gray-400'}`}>US Only</span>
           </label>
+
+          {/* Data source toggle */}
+          {isAdmin && (
+            <div className="flex items-center rounded-lg bg-dark-700 border border-dark-600 overflow-hidden">
+              <button
+                onClick={() => setDataSource('alpaca')}
+                className={`px-2.5 py-2 text-xs font-medium transition-colors ${dataSource === 'alpaca' ? 'bg-accent-500/20 text-accent-400' : 'text-gray-500 hover:text-gray-300'}`}
+              >Alpaca</button>
+              <button
+                onClick={() => setDataSource('yahoo')}
+                className={`px-2.5 py-2 text-xs font-medium transition-colors ${dataSource === 'yahoo' ? 'bg-amber-500/20 text-amber-400' : 'text-gray-500 hover:text-gray-300'}`}
+              >Yahoo</button>
+            </div>
+          )}
 
           {/* Trades ab Datum */}
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-dark-700 border border-dark-600">
@@ -1491,16 +1607,29 @@ function TradingArena({ isAdmin, token }) {
 
           {/* Start Live Trading */}
           {isAdmin ? (
-            <button
-              onClick={handleStartLiveTrading}
-              disabled={!batchResults || batchLoading}
-              className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white rounded-lg text-sm font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              Neue Session starten
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={handleStartLiveTrading}
+                disabled={!batchResults || batchLoading}
+                className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white rounded-lg text-sm font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                Neue Session
+              </button>
+              <button
+                onClick={handleAddToSession}
+                disabled={!batchResults || batchLoading}
+                className="flex items-center gap-2 px-3 py-2 bg-dark-700 hover:bg-dark-600 text-gray-300 hover:text-white border border-dark-600 rounded-lg text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Strategie zu bestehender Session hinzufügen"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                </svg>
+                Zu Session
+              </button>
+            </div>
           ) : (
             <span className="flex items-center gap-2 px-4 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-gray-500 cursor-not-allowed">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1805,7 +1934,10 @@ function TradingArena({ isAdmin, token }) {
           </div>
         )}
 
-        {/* Watchlist Batch Backtest Results — progress now shown in overlay */}
+        {/* Watchlist Batch Backtest Results — skeleton while loading */}
+        {batchLoading && !batchResults && (
+          <ArenaSkeleton loadingInfo={loadingInfo} />
+        )}
 
         {/* Shared Filters for Watchlist Performance + Simulation */}
         {batchResults && !batchLoading && (
@@ -1863,6 +1995,27 @@ function TradingArena({ isAdmin, token }) {
         )}
 
         {batchResults && !batchLoading && <WatchlistBatchPanel batchResults={batchResults} strategy={backtestStrategy} interval={interval} longOnly={longOnly} onSelectStock={selectStock} filterSymbols={perfFilteredSymbols} timeRange={batchTimeRange} formatTimeRange={formatTimeRange} tradeAmount={simTradeAmount} tradesFrom={tradesFrom} />}
+
+        {/* Calendar Heatmap Section */}
+        {batchResults && !batchLoading && heatmapTrades.length > 0 && (
+          <div className="bg-dark-800 rounded-lg border border-dark-600 mt-4">
+            <button
+              onClick={() => setShowCalendar(!showCalendar)}
+              className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-dark-700/50 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-white">Tägliche Performance</span>
+                {batchTimeRange && <span className="text-[10px] text-gray-500">{formatTimeRange(batchTimeRange)}</span>}
+              </div>
+              <svg className={`w-4 h-4 text-gray-400 transition-transform ${showCalendar ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+            </button>
+            {showCalendar && (
+              <div className="px-4 pb-4 border-t border-dark-600 pt-3">
+                <ArenaCalendarHeatmap trades={heatmapTrades} tradeAmount={simTradeAmount} />
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Simulation Section */}
         {batchResults && !batchLoading && (
@@ -2151,6 +2304,49 @@ function TradingArena({ isAdmin, token }) {
                 Abbrechen
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add to Session Modal */}
+      {showAddToSessionModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-dark-800 border border-dark-600 rounded-lg p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-medium text-white mb-2">Strategie zu Session hinzufuegen</h3>
+            <p className="text-xs text-gray-400 mb-4">
+              {backtestStrategy} ({interval}) wird als deaktivierte Strategie hinzugefuegt.
+            </p>
+            {availableSessions.length === 0 ? (
+              <p className="text-sm text-gray-500 mb-4">Keine Sessions mit Interval {interval} gefunden.</p>
+            ) : (
+              <div className="space-y-2 mb-4 max-h-64 overflow-y-auto">
+                {availableSessions.map(s => (
+                  <button
+                    key={s.id}
+                    onClick={() => confirmAddToSession(s.id)}
+                    disabled={addToSessionLoading}
+                    className="w-full text-left px-3 py-2 bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-white font-medium">{s.name}</span>
+                      <div className="flex items-center gap-2">
+                        {s.is_active && <span className="px-1.5 py-0.5 bg-green-500/20 text-green-400 text-[10px] rounded">AKTIV</span>}
+                        <span className="text-[10px] text-gray-500">{s.strategies_count || 1} Strat.</span>
+                      </div>
+                    </div>
+                    <div className="text-[10px] text-gray-500 mt-0.5">
+                      {s.strategy} | {s.symbols_count} Symbole | {s.total_trades || 0} Trades
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+            <button
+              onClick={() => setShowAddToSessionModal(false)}
+              className="w-full px-4 py-2 bg-dark-600 hover:bg-dark-500 text-gray-300 rounded text-sm font-medium transition-colors"
+            >
+              Abbrechen
+            </button>
           </div>
         </div>
       )}
