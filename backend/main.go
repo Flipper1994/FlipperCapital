@@ -2407,12 +2407,8 @@ func main() {
 	// Start the daily stock update scheduler
 	go startDailyUpdateScheduler()
 
-	// Start persistent OHLCV cache background worker (only without Alpaca — Alpaca uses on-demand prefetch)
-	if alpacaDataKey == "" {
-		go startOHLCVCacheWorker()
-	} else {
-		log.Println("[OHLCVCache] Background worker disabled — Alpaca active, using on-demand prefetch")
-	}
+	// Start persistent OHLCV cache background worker (Yahoo-based refresh)
+	go startOHLCVCacheWorker()
 
 	// Start SL/TP monitor (checks open positions every 2 min, independent of strategy interval)
 	go startSLTPMonitor()
@@ -24622,8 +24618,7 @@ func backtestWatchlistHandler(c *gin.Context) {
 	fmt.Fprintf(c.Writer, "data: %s\n\n", initJSON)
 	c.Writer.Flush()
 
-	// === Pre-warm cache: fetch uncached symbols via Alpaca or Yahoo ===
-	useYahoo := req.DataSource == "yahoo"
+	// === Pre-warm cache: fetch uncached symbols via Yahoo (fast, no rate-limit) ===
 	cacheInterval := interval
 	switch interval {
 	case "1h":
@@ -24651,184 +24646,78 @@ func backtestWatchlistHandler(c *gin.Context) {
 	}
 
 	if len(uncached) > 0 {
-		srcLabel := "Alpaca"
-		if useYahoo {
-			srcLabel = "Yahoo"
-		}
-		log.Printf("[Arena-Batch] Pre-warming %d uncached symbols via %s", len(uncached), srcLabel)
+		log.Printf("[Arena-Batch] Pre-warming %d uncached symbols via Yahoo", len(uncached))
 		prefetchJSON, _ := json.Marshal(gin.H{
-			"type": "prefetch", "uncached": len(uncached), "total": total, "source": srcLabel,
+			"type": "prefetch", "uncached": len(uncached), "total": total, "source": "Yahoo",
 		})
 		fmt.Fprintf(c.Writer, "data: %s\n\n", prefetchJSON)
 		c.Writer.Flush()
 
-		if useYahoo {
-			// Yahoo: parallel fetch with 10 concurrent workers (reduced to avoid rate-limiting)
-			yahooPeriod := backtestPeriodMap[cacheInterval]
-			if yahooPeriod == "" {
-				yahooPeriod = "60d"
+		yahooPeriod := backtestPeriodMap[cacheInterval]
+		if yahooPeriod == "" {
+			yahooPeriod = "60d"
+		}
+		var ywg sync.WaitGroup
+		ysem := make(chan struct{}, 20)
+		var yahooDone int64
+		var yahooFailed int64
+		type yahooProgress struct{ Symbol string }
+		yCh := make(chan yahooProgress, len(uncached))
+		for _, sym := range uncached {
+			if ctx.Err() != nil {
+				break
 			}
-			var ywg sync.WaitGroup
-			ysem := make(chan struct{}, 10)
-			var yahooDone int64
-			var yahooFailed int64
-			type yahooProgress struct{ Symbol string }
-			yCh := make(chan yahooProgress, len(uncached))
-			for _, sym := range uncached {
-				if ctx.Err() != nil {
-					break
+			ywg.Add(1)
+			go func(s string) {
+				defer ywg.Done()
+				select {
+				case ysem <- struct{}{}:
+				case <-ctx.Done():
+					return
 				}
-				ywg.Add(1)
-				go func(s string) {
-					defer ywg.Done()
-					select {
-					case ysem <- struct{}{}:
-					case <-ctx.Done():
-						return
-					}
-					defer func() { <-ysem }()
+				defer func() { <-ysem }()
+				if ctx.Err() != nil {
+					return
+				}
+				var ohlcv []OHLCV
+				var lastErr error
+				for attempt := 0; attempt < 3; attempt++ {
 					if ctx.Err() != nil {
 						return
 					}
-					// Retry up to 3 times with backoff for rate-limiting
-					var ohlcv []OHLCV
-					var lastErr error
-					for attempt := 0; attempt < 3; attempt++ {
-						if ctx.Err() != nil {
-							return
-						}
-						if attempt > 0 {
-							backoff := time.Duration(attempt) * 2 * time.Second
-							time.Sleep(backoff)
-						}
-						ohlcv, lastErr = fetchOHLCVFromYahoo(s, yahooPeriod, cacheInterval)
-						if lastErr == nil && len(ohlcv) > 0 {
-							break
-						}
-						// Only retry on rate-limit / auth errors
-						if lastErr != nil && !strings.Contains(lastErr.Error(), "status 4") {
-							break
-						}
+					if attempt > 0 {
+						time.Sleep(time.Duration(attempt) * 2 * time.Second)
 					}
+					ohlcv, lastErr = fetchOHLCVFromYahoo(s, yahooPeriod, cacheInterval)
 					if lastErr == nil && len(ohlcv) > 0 {
-						saveOHLCVCache(s, cacheInterval, ohlcv)
-					} else {
-						atomic.AddInt64(&yahooFailed, 1)
+						break
 					}
-					yCh <- yahooProgress{Symbol: s}
-				}(sym)
-			}
-			go func() { ywg.Wait(); close(yCh) }()
-			for range yCh {
-				done := atomic.AddInt64(&yahooDone, 1)
-				pJSON, _ := json.Marshal(gin.H{
-					"type": "prefetch_progress", "current": done, "total": len(uncached), "source": "Yahoo",
-				})
-				fmt.Fprintf(c.Writer, "data: %s\n\n", pJSON)
-				c.Writer.Flush()
-			}
-			if yahooFailed > 0 {
-				log.Printf("[Arena-Batch] Yahoo Prefetch: %d/%d fehlgeschlagen", yahooFailed, len(uncached))
-				failEvt, _ := json.Marshal(gin.H{"type": "prefetch_warning", "yahoo_failed": yahooFailed, "yahoo_total": len(uncached)})
-				fmt.Fprintf(c.Writer, "data: %s\n\n", failEvt)
-				c.Writer.Flush()
-			}
-		} else if alpacaDataKey != "" {
-			// Alpaca: batch fetch 50 symbols per request
-			const batchSize = 50
-			var prewarmDone int
-			for i := 0; i < len(uncached); i += batchSize {
-				end := i + batchSize
-				if end > len(uncached) {
-					end = len(uncached)
-				}
-				batch := uncached[i:end]
-				batchResult, err := fetchOHLCVBatchFromAlpaca(batch, interval)
-				if err == nil {
-					for _, sym := range batch {
-						if bars, ok := batchResult[sym]; ok && len(bars) > 0 {
-							saveOHLCVCache(sym, cacheInterval, bars)
-						}
+					if lastErr != nil && !strings.Contains(lastErr.Error(), "status 4") {
+						break
 					}
 				}
-				prewarmDone += len(batch)
-				pJSON, _ := json.Marshal(gin.H{
-					"type": "prefetch_progress", "current": prewarmDone, "total": len(uncached), "source": "Alpaca",
-				})
-				fmt.Fprintf(c.Writer, "data: %s\n\n", pJSON)
-				c.Writer.Flush()
-			}
-		} else {
-			// No Alpaca key and not Yahoo → Yahoo fallback
-			yahooPeriod := backtestPeriodMap[cacheInterval]
-			if yahooPeriod == "" {
-				yahooPeriod = "60d"
-			}
-			var ywg sync.WaitGroup
-			ysem := make(chan struct{}, 10) // reduced from 20 to avoid Yahoo rate-limiting
-			var yahooDone int64
-			var yahooFailed2 int64
-			type yahooProgress2 struct{ Symbol string }
-			yCh := make(chan yahooProgress2, len(uncached))
-			for _, sym := range uncached {
-				if ctx.Err() != nil {
-					break
+				if lastErr == nil && len(ohlcv) > 0 {
+					saveOHLCVCache(s, cacheInterval, ohlcv)
+				} else {
+					atomic.AddInt64(&yahooFailed, 1)
 				}
-				ywg.Add(1)
-				go func(s string) {
-					defer ywg.Done()
-					select {
-					case ysem <- struct{}{}:
-					case <-ctx.Done():
-						return
-					}
-					defer func() { <-ysem }()
-					if ctx.Err() != nil {
-						return
-					}
-					// Retry up to 3 times with backoff for rate-limiting
-					var ohlcv []OHLCV
-					var lastErr error
-					for attempt := 0; attempt < 3; attempt++ {
-						if ctx.Err() != nil {
-							return
-						}
-						if attempt > 0 {
-							backoff := time.Duration(attempt) * 2 * time.Second
-							time.Sleep(backoff)
-						}
-						ohlcv, lastErr = fetchOHLCVFromYahoo(s, yahooPeriod, cacheInterval)
-						if lastErr == nil && len(ohlcv) > 0 {
-							break
-						}
-						// Only retry on rate-limit / auth errors
-						if lastErr != nil && !strings.Contains(lastErr.Error(), "status 4") {
-							break
-						}
-					}
-					if lastErr == nil && len(ohlcv) > 0 {
-						saveOHLCVCache(s, cacheInterval, ohlcv)
-					} else {
-						atomic.AddInt64(&yahooFailed2, 1)
-					}
-					yCh <- yahooProgress2{Symbol: s}
-				}(sym)
-			}
-			go func() { ywg.Wait(); close(yCh) }()
-			for range yCh {
-				done := atomic.AddInt64(&yahooDone, 1)
-				pJSON, _ := json.Marshal(gin.H{
-					"type": "prefetch_progress", "current": done, "total": len(uncached), "source": "Yahoo",
-				})
-				fmt.Fprintf(c.Writer, "data: %s\n\n", pJSON)
-				c.Writer.Flush()
-			}
-			if yahooFailed2 > 0 {
-				log.Printf("[Arena-Batch] Yahoo Prefetch (fallback): %d/%d fehlgeschlagen", yahooFailed2, len(uncached))
-				failEvt, _ := json.Marshal(gin.H{"type": "prefetch_warning", "yahoo_failed": yahooFailed2, "yahoo_total": len(uncached)})
-				fmt.Fprintf(c.Writer, "data: %s\n\n", failEvt)
-				c.Writer.Flush()
-			}
+				yCh <- yahooProgress{Symbol: s}
+			}(sym)
+		}
+		go func() { ywg.Wait(); close(yCh) }()
+		for range yCh {
+			done := atomic.AddInt64(&yahooDone, 1)
+			pJSON, _ := json.Marshal(gin.H{
+				"type": "prefetch_progress", "current": done, "total": len(uncached), "source": "Yahoo",
+			})
+			fmt.Fprintf(c.Writer, "data: %s\n\n", pJSON)
+			c.Writer.Flush()
+		}
+		if yahooFailed > 0 {
+			log.Printf("[Arena-Batch] Yahoo Prefetch: %d/%d fehlgeschlagen", yahooFailed, len(uncached))
+			failEvt, _ := json.Marshal(gin.H{"type": "prefetch_warning", "yahoo_failed": yahooFailed, "yahoo_total": len(uncached)})
+			fmt.Fprintf(c.Writer, "data: %s\n\n", failEvt)
+			c.Writer.Flush()
 		}
 		log.Printf("[Arena-Batch] Pre-warm complete")
 	}
@@ -25101,130 +24990,65 @@ func arenaV2BatchHandler(c *gin.Context) {
 			sseMu.Unlock()
 		}
 
-		var uncachedUS, uncachedNonUS []string
+		// Yahoo-only prefetch (fast, no rate-limit, 20 concurrent)
+		var yahooWg sync.WaitGroup
+		yahooSem := make(chan struct{}, 20)
+		var yahooFailed int64
 		for _, sym := range uncachedSymbols {
-			if isNonUSStock(sym) {
-				uncachedNonUS = append(uncachedNonUS, sym)
-			} else {
-				uncachedUS = append(uncachedUS, sym)
+			if ctx.Err() != nil {
+				break
 			}
-		}
-
-		var alpacaFailed []string
-		if alpacaDataKey != "" && len(uncachedUS) > 0 {
-			const batchSize = 50
-			const maxConcurrentBatches = 3
-			var batchWg sync.WaitGroup
-			batchSem := make(chan struct{}, maxConcurrentBatches)
-			var failMu sync.Mutex
-			for i := 0; i < len(uncachedUS); i += batchSize {
-				end := i + batchSize
-				if end > len(uncachedUS) {
-					end = len(uncachedUS)
-				}
-				batch := uncachedUS[i:end]
-				batchWg.Add(1)
+			yahooWg.Add(1)
+			go func(s string) {
+				defer yahooWg.Done()
 				select {
-				case batchSem <- struct{}{}:
+				case yahooSem <- struct{}{}:
 				case <-ctx.Done():
-					batchWg.Done()
-					continue
+					return
 				}
-				go func(b []string) {
-					defer batchWg.Done()
-					defer func() { <-batchSem }()
-					if ctx.Err() != nil {
-						return
-					}
-					batchResult, err := fetchOHLCVBatchFromAlpaca(b, interval)
-					for _, sym := range b {
-						if err == nil {
-							if bars, ok := batchResult[sym]; ok && len(bars) > 0 {
-								saveOHLCVCache(sym, bulkCacheInterval, bars) // also writes to memory cache
-							} else {
-								failMu.Lock()
-								alpacaFailed = append(alpacaFailed, sym)
-								failMu.Unlock()
-							}
-						} else {
-							failMu.Lock()
-							alpacaFailed = append(alpacaFailed, sym)
-							failMu.Unlock()
-						}
-					}
-					done := atomic.AddInt64(&prewarmDone, int64(len(b)))
-					sendProgress(done)
-				}(batch)
-			}
-			batchWg.Wait()
-		} else {
-			alpacaFailed = uncachedUS
-		}
-
-		allYahoo := append(alpacaFailed, uncachedNonUS...)
-		if len(allYahoo) > 0 {
-			var yahooWg sync.WaitGroup
-			yahooSem := make(chan struct{}, 10) // reduced from 20 to avoid Yahoo rate-limiting
-			var yahooFailed int64
-			for _, sym := range allYahoo {
+				defer func() { <-yahooSem }()
 				if ctx.Err() != nil {
-					break
+					return
 				}
-				yahooWg.Add(1)
-				go func(s string) {
-					defer yahooWg.Done()
-					select {
-					case yahooSem <- struct{}{}:
-					case <-ctx.Done():
-						return
-					}
-					defer func() { <-yahooSem }()
+				yahooIv := bulkCacheInterval
+				period := backtestPeriodMap[yahooIv]
+				if period == "" {
+					period = "60d"
+				}
+				var ohlcv []OHLCV
+				var lastErr error
+				for attempt := 0; attempt < 3; attempt++ {
 					if ctx.Err() != nil {
 						return
 					}
-					yahooIv := bulkCacheInterval
-					period := backtestPeriodMap[yahooIv]
-					if period == "" {
-						period = "60d"
+					if attempt > 0 {
+						time.Sleep(time.Duration(attempt) * 2 * time.Second)
 					}
-					// Retry up to 3 times with backoff for rate-limiting
-					var ohlcv []OHLCV
-					var lastErr error
-					for attempt := 0; attempt < 3; attempt++ {
-						if ctx.Err() != nil {
-							return
-						}
-						if attempt > 0 {
-							backoff := time.Duration(attempt) * 2 * time.Second
-							time.Sleep(backoff)
-						}
-						ohlcv, lastErr = fetchOHLCVFromYahoo(s, period, yahooIv)
-						if lastErr == nil && len(ohlcv) > 0 {
-							break
-						}
-						// Only retry on rate-limit / auth errors
-						if lastErr != nil && !strings.Contains(lastErr.Error(), "status 4") {
-							break // non-retryable error (network, parse, etc.)
-						}
-					}
+					ohlcv, lastErr = fetchOHLCVFromYahoo(s, period, yahooIv)
 					if lastErr == nil && len(ohlcv) > 0 {
-						saveOHLCVCache(s, bulkCacheInterval, ohlcv)
-					} else {
-						atomic.AddInt64(&yahooFailed, 1)
+						break
 					}
-					done := atomic.AddInt64(&prewarmDone, 1)
-					sendProgress(done)
-				}(sym)
-			}
-			yahooWg.Wait()
-			if yahooFailed > 0 {
-				log.Printf("[Arena Batch] Yahoo Prefetch: %d/%d fehlgeschlagen", yahooFailed, len(allYahoo))
-				sseMu.Lock()
-				failEvt, _ := json.Marshal(gin.H{"type": "prefetch_warning", "yahoo_failed": yahooFailed, "yahoo_total": len(allYahoo), "alpaca_failed": len(alpacaFailed)})
-				fmt.Fprintf(c.Writer, "data: %s\n\n", failEvt)
-				c.Writer.Flush()
-				sseMu.Unlock()
-			}
+					if lastErr != nil && !strings.Contains(lastErr.Error(), "status 4") {
+						break
+					}
+				}
+				if lastErr == nil && len(ohlcv) > 0 {
+					saveOHLCVCache(s, bulkCacheInterval, ohlcv)
+				} else {
+					atomic.AddInt64(&yahooFailed, 1)
+				}
+				done := atomic.AddInt64(&prewarmDone, 1)
+				sendProgress(done)
+			}(sym)
+		}
+		yahooWg.Wait()
+		if yahooFailed > 0 {
+			log.Printf("[Arena Batch] Yahoo Prefetch: %d/%d fehlgeschlagen", yahooFailed, len(uncachedSymbols))
+			sseMu.Lock()
+			failEvt, _ := json.Marshal(gin.H{"type": "prefetch_warning", "yahoo_failed": yahooFailed, "yahoo_total": len(uncachedSymbols)})
+			fmt.Fprintf(c.Writer, "data: %s\n\n", failEvt)
+			c.Writer.Flush()
+			sseMu.Unlock()
 		}
 	}
 
@@ -26732,10 +26556,46 @@ func triggerPriorityRefresh(symbols []string, yahooInterval string, sessionID ui
 	logLiveEvent(sessionID, "INFO", "-", fmt.Sprintf("Priority-Prefetch: %d/%d Symbole fehlen im Cache (%s)", len(missing), len(symbols), yahooInterval))
 	start := time.Now()
 
-	const maxWorkers = 5
+	var fetched int64
+
+	// Try Alpaca batch first (50 symbols/request, fast for live-trading)
+	if alpacaDataKey != "" {
+		alpacaIv := yahooInterval
+		ivMap := map[string]string{"60m": "1h", "1d": "1D", "1wk": "1W"}
+		if mapped, ok := ivMap[alpacaIv]; ok {
+			alpacaIv = mapped
+		}
+		const batchSize = 50
+		for i := 0; i < len(missing); i += batchSize {
+			end := i + batchSize
+			if end > len(missing) {
+				end = len(missing)
+			}
+			batch := missing[i:end]
+			batchResult, err := fetchOHLCVBatchFromAlpaca(batch, alpacaIv)
+			if err == nil {
+				for _, sym := range batch {
+					if bars, ok := batchResult[sym]; ok && len(bars) > 0 {
+						saveOHLCVCache(sym, yahooInterval, bars)
+						atomic.AddInt64(&fetched, 1)
+					}
+				}
+			}
+		}
+		// Check what's still missing after Alpaca
+		var stillMissing []string
+		for _, sym := range missing {
+			if _, ok := getOHLCVFromMemCache(sym, yahooInterval); !ok {
+				stillMissing = append(stillMissing, sym)
+			}
+		}
+		missing = stillMissing
+	}
+
+	// Yahoo fallback for remaining (20 concurrent, no throttle)
+	const maxWorkers = 20
 	sem := make(chan struct{}, maxWorkers)
 	var wg sync.WaitGroup
-	var fetched int64
 
 	for _, sym := range missing {
 		wg.Add(1)
@@ -26743,8 +26603,6 @@ func triggerPriorityRefresh(symbols []string, yahooInterval string, sessionID ui
 		go func(symbol string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			time.Sleep(500 * time.Millisecond) // Rate limit
-			// Use getOHLCVCached for consistent Alpaca→Yahoo priority (same as backtest)
 			_, err := getOHLCVCached(symbol, yahooInterval, 1*time.Millisecond)
 			if err != nil {
 				return
@@ -30338,19 +30196,7 @@ func getOHLCVCached(symbol, interval string, freshness time.Duration) ([]OHLCV, 
 		return nil, fmt.Errorf("no cache for %s/%s", symbol, interval)
 	}
 
-	// Cache miss or stale — try Alpaca first (US stocks only), then Yahoo fallback
-	useAlpaca := alpacaDataKey != "" && !isNonUSStock(symbol)
-
-	if useAlpaca {
-		ohlcv, err := fetchOHLCVFromAlpaca(symbol, interval)
-		if err == nil && len(ohlcv) > 0 {
-			saveOHLCVCache(symbol, cacheInterval, ohlcv)
-			return ohlcv, nil
-		}
-		log.Printf("[OHLCVCache] Alpaca failed for %s/%s: %v — trying Yahoo", symbol, interval, err)
-	}
-
-	// Yahoo fallback
+	// Cache miss or stale — Yahoo primary (fast, no rate-limit), Alpaca only for live-trading
 	yahooInterval := cacheInterval
 	period := backtestPeriodMap[yahooInterval]
 	if period == "" {
@@ -30572,73 +30418,7 @@ func arenaPrefetchHandler(c *gin.Context) {
 			close(progressCh)
 		}()
 
-		// Group jobs by interval for Alpaca batching — run batches concurrently
-		if alpacaDataKey != "" {
-			byIv := map[string][]fetchJob{}
-			var nonUS []fetchJob
-			var nonUSMu sync.Mutex
-			for _, j := range jobs {
-				if isNonUSStock(j.Symbol) {
-					nonUS = append(nonUS, j)
-				} else {
-					byIv[j.AlpacaIv] = append(byIv[j.AlpacaIv], j)
-				}
-			}
-
-			// Build all batch chunks across all intervals
-			type batchChunk struct {
-				syms    []string
-				cacheIv string
-				yahooIv string
-				iv      string
-			}
-			var chunks []batchChunk
-			for iv, ivJobs := range byIv {
-				syms := make([]string, len(ivJobs))
-				for i, j := range ivJobs {
-					syms[i] = j.Symbol
-				}
-				const batchSize = 50
-				for i := 0; i < len(syms); i += batchSize {
-					end := i + batchSize
-					if end > len(syms) {
-						end = len(syms)
-					}
-					chunks = append(chunks, batchChunk{
-						syms: syms[i:end], cacheIv: ivJobs[0].CacheIv, yahooIv: ivJobs[0].YahooIv, iv: iv,
-					})
-				}
-			}
-
-			// Run batch chunks with 3 concurrent workers
-			var batchWg sync.WaitGroup
-			batchSem := make(chan struct{}, 3)
-			for _, chunk := range chunks {
-				batchWg.Add(1)
-				go func(ch batchChunk) {
-					defer batchWg.Done()
-					batchSem <- struct{}{}
-					defer func() { <-batchSem }()
-					batchResult, err := fetchOHLCVBatchFromAlpaca(ch.syms, ch.iv)
-					for _, sym := range ch.syms {
-						if err == nil && len(batchResult[sym]) > 0 {
-							saveOHLCVCache(sym, ch.cacheIv, batchResult[sym])
-							atomic.AddInt64(&fetched, 1)
-							progressCh <- prefetchProgress{Symbol: sym, Source: "alpaca"}
-						} else {
-							nonUSMu.Lock()
-							nonUS = append(nonUS, fetchJob{Symbol: sym, CacheIv: ch.cacheIv, YahooIv: ch.yahooIv})
-							nonUSMu.Unlock()
-						}
-					}
-				}(chunk)
-			}
-			batchWg.Wait()
-			// Alpaca failures + non-US → Yahoo
-			jobs = nonUS
-		}
-
-		// Yahoo parallel fetch for remaining jobs
+		// Yahoo-only parallel fetch (fast, no rate-limit, 20 concurrent)
 		if len(jobs) > 0 {
 			var wg sync.WaitGroup
 			sem := make(chan struct{}, 20)

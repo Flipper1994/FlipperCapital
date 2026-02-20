@@ -307,7 +307,7 @@ function StockPerformanceTable({ perStock, totalPerStock, cardSearch, setCardSea
   )
 }
 
-function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSelectStock, filterSymbols, timeRange, formatTimeRange, tradeAmount, tradesFrom, noDataSymbols = [] }) {
+function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSelectStock, filterSymbols, timeRange, formatTimeRange, tradeAmount, tradesFrom, noDataSymbols = [], onExport }) {
   const [sortCol, setSortCol] = useState('entry_time')
   const [sortDir, setSortDir] = useState('desc')
   const [tradesVisible, setTradesVisible] = useState(100)
@@ -503,7 +503,10 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
           Watchlist Performance — {strategyLabel} ({interval})
           {filterSymbols && <span className="text-accent-400 ml-2 text-xs">Filter aktiv ({filterSymbols.length} Aktien)</span>}
         </h3>
-        {timeRange && <span className="text-[10px] text-gray-500">{formatTimeRange(timeRange)}</span>}
+        <div className="flex items-center gap-2">
+          {timeRange && <span className="text-[10px] text-gray-500">{formatTimeRange(timeRange)}</span>}
+          {onExport && <button onClick={onExport} className="text-[10px] px-2 py-0.5 rounded bg-dark-600 hover:bg-dark-500 text-gray-300 hover:text-white transition-colors border border-dark-500">CSV Export</button>}
+        </div>
       </div>
 
       {/* Aggregated Metrics */}
@@ -1043,6 +1046,90 @@ function TradingArena({ isAdmin, token }) {
     a.click()
     URL.revokeObjectURL(url)
   }, [filteredMetrics, filteredTrades, backtestStrategy, selectedSymbol, interval, strategyParams, simTradeAmount, longOnly, backtestTimeRange])
+
+  const handleBatchExport = useCallback(() => {
+    if (!batchResults) return
+    const strat = STRATEGIES.find(s => s.value === backtestStrategy)
+    const stratLabel = strat?.label || backtestStrategy
+
+    const fmtTs = (ts) => {
+      if (!ts) return ''
+      const d = new Date(ts * 1000)
+      return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') +
+        ' ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0')
+    }
+
+    // Use the inner filtered data via a fresh computation (same logic as WatchlistBatchPanel)
+    let trades = batchResults.trades || []
+    if (longOnly) trades = trades.filter(t => t.direction === 'LONG')
+    if (perfFilteredSymbols) { const set = new Set(perfFilteredSymbols); trades = trades.filter(t => set.has(t.symbol)) }
+    const tradesFromUnix = tradesFrom ? Math.floor(new Date(tradesFrom).getTime() / 1000) : 0
+    if (tradesFromUnix > 0) trades = trades.filter(t => t.entry_time >= tradesFromUnix)
+
+    // Per-stock metrics (recalculate from filtered trades)
+    const ps = {}
+    const closedTrades = trades.filter(t => !t.is_open)
+    for (const t of closedTrades) {
+      if (!ps[t.symbol]) ps[t.symbol] = { wins: 0, losses: 0, totalReturn: 0, totalWinReturn: 0, totalLossReturn: 0 }
+      const s = ps[t.symbol]
+      s.totalReturn += t.return_pct
+      if (t.return_pct >= 0) { s.wins++; s.totalWinReturn += t.return_pct }
+      else { s.losses++; s.totalLossReturn += Math.abs(t.return_pct) }
+    }
+    const perStockRows = Object.entries(ps).map(([sym, s]) => {
+      const total = s.wins + s.losses
+      const winRate = total > 0 ? (s.wins / total) * 100 : 0
+      const avgWin = s.wins > 0 ? s.totalWinReturn / s.wins : 0
+      const avgLoss = s.losses > 0 ? s.totalLossReturn / s.losses : 0
+      const rr = avgLoss > 0 ? avgWin / avgLoss : 0
+      const avgReturn = total > 0 ? s.totalReturn / total : 0
+      const mc = batchResults.market_caps?.[sym] || ''
+      return [sym, winRate.toFixed(1), rr.toFixed(2), s.totalReturn.toFixed(1), avgReturn.toFixed(1), '', '', total, s.wins, s.losses, mc].join(',')
+    }).sort()
+
+    // Time range
+    let trMin = Infinity, trMax = -Infinity
+    for (const t of trades) {
+      if (t.entry_time < trMin) trMin = t.entry_time
+      if (t.exit_time > trMax) trMax = t.exit_time
+      if (t.entry_time > trMax) trMax = t.entry_time
+    }
+    const rangeStr = trMin < Infinity ? `${fmtTs(trMin)} - ${fmtTs(trMax)}` : ''
+
+    const symbols = new Set(trades.map(t => t.symbol))
+
+    const lines = []
+    // Section 1: Meta
+    lines.push('Strategy,Interval,LongOnly,TradeAmount,ExportedAt,TimeRange,TotalSymbols')
+    lines.push([stratLabel, interval, longOnly, simTradeAmount, new Date().toISOString().slice(0,19), rangeStr, symbols.size].join(','))
+    lines.push('')
+
+    // Section 2: Per-Stock Summary
+    lines.push('Symbol,WinRate%,RR,TotalReturn%,AvgReturn%,MaxDD%,NetProfit%,Trades,Wins,Losses,MarketCap')
+    lines.push(...perStockRows)
+    lines.push('')
+
+    // Section 3: All Trades
+    lines.push('Symbol,Direction,EntryDate,EntryPrice,ExitDate,ExitPrice,Return%,ExitReason,IsOpen')
+    for (const t of trades) {
+      lines.push([
+        t.symbol, t.direction, fmtTs(t.entry_time), t.entry_price?.toFixed(2) ?? '',
+        fmtTs(t.exit_time), t.exit_price?.toFixed(2) ?? '',
+        t.return_pct != null ? (t.return_pct >= 0 ? '+' : '') + t.return_pct.toFixed(2) : '',
+        t.exit_reason || '', !!t.is_open
+      ].join(','))
+    }
+
+    const csv = lines.join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const date = new Date().toISOString().slice(0, 10)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `batch_backtest_${backtestStrategy}_${interval}_${date}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }, [batchResults, backtestStrategy, interval, longOnly, simTradeAmount, perfFilteredSymbols, tradesFrom])
 
   const batchTimeRange = useMemo(() => {
     if (!batchResults?.trades?.length) return null
@@ -2179,7 +2266,7 @@ function TradingArena({ isAdmin, token }) {
           </div>
         )}
 
-        {batchResults && !batchLoading && <WatchlistBatchPanel batchResults={batchResults} strategy={backtestStrategy} interval={interval} longOnly={longOnly} onSelectStock={selectStock} filterSymbols={perfFilteredSymbols} timeRange={batchTimeRange} formatTimeRange={formatTimeRange} tradeAmount={simTradeAmount} tradesFrom={tradesFrom} noDataSymbols={noDataSymbols} />}
+        {batchResults && !batchLoading && <WatchlistBatchPanel batchResults={batchResults} strategy={backtestStrategy} interval={interval} longOnly={longOnly} onSelectStock={selectStock} filterSymbols={perfFilteredSymbols} timeRange={batchTimeRange} formatTimeRange={formatTimeRange} tradeAmount={simTradeAmount} tradesFrom={tradesFrom} noDataSymbols={noDataSymbols} onExport={handleBatchExport} />}
 
         {/* Calendar Heatmap Section */}
         {batchResults && !batchLoading && heatmapTrades.length > 0 && (
