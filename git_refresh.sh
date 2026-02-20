@@ -3,20 +3,32 @@
 echo "🔄 FlipperCapital Git Refresh & Deploy"
 echo "======================================="
 
-# 1. Lokale Änderungen stashen
-echo ""
-echo "📦 Stashing local changes..."
-git stash push -m "wip"
+# 1. Abgebrochenen Merge/Rebase aufräumen
+if [ -f .git/MERGE_HEAD ]; then
+    echo ""
+    echo "⚠️  Unfinished merge detected, aborting..."
+    git merge --abort
+fi
+if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
+    echo ""
+    echo "⚠️  Unfinished rebase detected, aborting..."
+    git rebase --abort
+fi
 
-# 2. Neueste Version ziehen
+# 2. Alle lokalen Änderungen verwerfen (temp files, untracked etc.)
+echo ""
+echo "🧹 Resetting local changes..."
+git checkout -- .
+git clean -fd
+
+# 3. Neueste Version ziehen
 echo ""
 echo "⬇️  Pulling latest changes..."
-git pull
-
-# 3. Stash wieder anwenden (falls vorhanden)
-echo ""
-echo "📦 Restoring local files..."
-git stash pop 2>/dev/null || echo "   (keine gestashten Änderungen)"
+git pull --ff-only || {
+    echo "⚠️  Fast-forward failed, hard resetting to origin/master..."
+    git fetch origin
+    git reset --hard origin/master
+}
 
 # 4. Berechtigungen setzen
 echo ""
