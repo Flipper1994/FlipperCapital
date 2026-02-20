@@ -837,6 +837,18 @@ type BacktestLabHistory struct {
 	CreatedAt        time.Time `json:"created_at"`
 }
 
+// Alpaca Account Management
+type AlpacaAccount struct {
+	ID        uint      `json:"id" gorm:"primaryKey"`
+	Name      string    `json:"name" gorm:"not null"`
+	ApiKey    string    `json:"-" gorm:"type:text"`
+	SecretKey string    `json:"-" gorm:"type:text"`
+	IsPaper   bool      `json:"is_paper" gorm:"default:true"`
+	IsDefault bool      `json:"is_default" gorm:"default:false"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // Live Trading
 type LiveTradingConfig struct {
 	ID            uint      `json:"id" gorm:"primaryKey"`
@@ -850,6 +862,7 @@ type LiveTradingConfig struct {
 	FiltersJSON   string    `json:"filters_json" gorm:"type:text"`
 	FiltersActive   bool      `json:"filters_active"`
 	Currency        string    `json:"currency" gorm:"default:'USD'"`
+	AlpacaAccountID uint      `json:"alpaca_account_id" gorm:"default:0"`
 	AlpacaApiKey    string    `json:"alpaca_api_key" gorm:"type:text"`
 	AlpacaSecretKey string    `json:"alpaca_secret_key" gorm:"type:text"`
 	AlpacaEnabled   bool      `json:"alpaca_enabled" gorm:"default:false"`
@@ -1763,7 +1776,38 @@ func main() {
 	db.Exec("DROP INDEX IF EXISTS idx_b_xtrender_configs_mode")
 	db.Exec("DROP INDEX IF EXISTS idx_v2_sym_strat_iv")
 
-	db.AutoMigrate(&User{}, &Stock{}, &Category{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{}, &DBSession{}, &BotLog{}, &BotTodo{}, &BXtrenderConfig{}, &BXtrenderQuantConfig{}, &QuantStockPerformance{}, &QuantTrade{}, &QuantPosition{}, &BXtrenderDitzConfig{}, &DitzStockPerformance{}, &DitzTrade{}, &DitzPosition{}, &BXtrenderTraderConfig{}, &TraderStockPerformance{}, &TraderTrade{}, &TraderPosition{}, &SystemSetting{}, &BotStockAllowlist{}, &BotFilterConfig{}, &SignalListFilterConfig{}, &SignalListVisibility{}, &UserNotification{}, &TradingWatchlistItem{}, &TradingVirtualPosition{}, &ArenaBacktestHistory{}, &ArenaStrategySettings{}, &WeeklyOHLCVCache{}, &OHLCVCache{}, &BacktestLabHistory{}, &LiveTradingConfig{}, &LiveTradingSession{}, &LiveTradingPosition{}, &LiveTradingLog{}, &LiveSessionStrategy{}, &ArenaV2BatchResult{}, &GlobalSetting{})
+	db.AutoMigrate(&User{}, &Stock{}, &Category{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{}, &DBSession{}, &BotLog{}, &BotTodo{}, &BXtrenderConfig{}, &BXtrenderQuantConfig{}, &QuantStockPerformance{}, &QuantTrade{}, &QuantPosition{}, &BXtrenderDitzConfig{}, &DitzStockPerformance{}, &DitzTrade{}, &DitzPosition{}, &BXtrenderTraderConfig{}, &TraderStockPerformance{}, &TraderTrade{}, &TraderPosition{}, &SystemSetting{}, &BotStockAllowlist{}, &BotFilterConfig{}, &SignalListFilterConfig{}, &SignalListVisibility{}, &UserNotification{}, &TradingWatchlistItem{}, &TradingVirtualPosition{}, &ArenaBacktestHistory{}, &ArenaStrategySettings{}, &WeeklyOHLCVCache{}, &OHLCVCache{}, &BacktestLabHistory{}, &LiveTradingConfig{}, &LiveTradingSession{}, &LiveTradingPosition{}, &LiveTradingLog{}, &LiveSessionStrategy{}, &ArenaV2BatchResult{}, &GlobalSetting{}, &AlpacaAccount{})
+
+	// Migrate existing Alpaca keys from LiveTradingConfig to AlpacaAccount (one-time)
+	var alpacaAccountCount int64
+	db.Model(&AlpacaAccount{}).Count(&alpacaAccountCount)
+	if alpacaAccountCount == 0 {
+		var configs []LiveTradingConfig
+		db.Where("alpaca_api_key != '' AND alpaca_api_key IS NOT NULL").Find(&configs)
+		seen := map[string]uint{}
+		for _, cfg := range configs {
+			if cfg.AlpacaApiKey == "" {
+				continue
+			}
+			if existingID, ok := seen[cfg.AlpacaApiKey]; ok {
+				db.Model(&LiveTradingConfig{}).Where("id = ?", cfg.ID).Update("alpaca_account_id", existingID)
+				continue
+			}
+			acc := AlpacaAccount{
+				Name:      fmt.Sprintf("Account %d", len(seen)+1),
+				ApiKey:    cfg.AlpacaApiKey,
+				SecretKey: cfg.AlpacaSecretKey,
+				IsPaper:   cfg.AlpacaPaper,
+				IsDefault: len(seen) == 0,
+			}
+			db.Create(&acc)
+			seen[cfg.AlpacaApiKey] = acc.ID
+			db.Model(&LiveTradingConfig{}).Where("id = ?", cfg.ID).Update("alpaca_account_id", acc.ID)
+		}
+		if len(seen) > 0 {
+			log.Printf("[AlpacaAccount] Migrated %d existing key(s) to alpaca_accounts", len(seen))
+		}
+	}
 
 	// Migrate WeeklyOHLCVCache → OHLCVCache (one-time)
 	var weeklyCount int64
@@ -2149,6 +2193,14 @@ func main() {
 		api.GET("/trading/scheduler/status", authMiddleware(), adminOnly(), getTradingSchedulerStatus)
 		api.POST("/trading/scheduler/toggle", authMiddleware(), adminOnly(), toggleTradingScheduler)
 
+		// Alpaca Account Management (admin only)
+		api.GET("/admin/alpaca-accounts", authMiddleware(), adminOnly(), getAlpacaAccounts)
+		api.POST("/admin/alpaca-accounts", authMiddleware(), adminOnly(), createAlpacaAccount)
+		api.PUT("/admin/alpaca-accounts/:id", authMiddleware(), adminOnly(), updateAlpacaAccount)
+		api.DELETE("/admin/alpaca-accounts/:id", authMiddleware(), adminOnly(), deleteAlpacaAccount)
+		api.POST("/admin/alpaca-accounts/:id/validate", authMiddleware(), adminOnly(), validateAlpacaAccount)
+		api.POST("/admin/alpaca-accounts/:id/default", authMiddleware(), adminOnly(), setDefaultAlpacaAccount)
+
 		// Live Trading — write actions: admin only, read actions: all authenticated users
 		api.POST("/trading/live/config", authMiddleware(), adminOnly(), saveLiveTradingConfig)
 		api.GET("/trading/live/config", authMiddleware(), getLiveTradingConfig)
@@ -2160,6 +2212,7 @@ func main() {
 		api.POST("/trading/live/session/:id/resume", authMiddleware(), adminOnly(), resumeLiveTrading)
 		api.PATCH("/trading/live/session/:id/name", authMiddleware(), adminOnly(), renameLiveSession)
 		api.DELETE("/trading/live/session/:id", authMiddleware(), adminOnly(), deleteLiveSession)
+		api.POST("/trading/live/session/:id/reset", authMiddleware(), adminOnly(), resetLiveSession)
 		api.GET("/trading/live/session/:id/strategies", authMiddleware(), getLiveSessionStrategies)
 		api.POST("/trading/live/session/:id/strategy", authMiddleware(), adminOnly(), addLiveSessionStrategy)
 		api.PUT("/trading/live/session/:id/strategy/:strategyId", authMiddleware(), adminOnly(), toggleLiveSessionStrategy)
@@ -25474,6 +25527,7 @@ func arenaV2StartSession(c *gin.Context) {
 	if req.ConfigID > 0 {
 		var existingConfig LiveTradingConfig
 		if db.First(&existingConfig, req.ConfigID).Error == nil {
+			newConfig.AlpacaAccountID = existingConfig.AlpacaAccountID
 			newConfig.AlpacaApiKey = existingConfig.AlpacaApiKey
 			newConfig.AlpacaSecretKey = existingConfig.AlpacaSecretKey
 			newConfig.AlpacaEnabled = existingConfig.AlpacaEnabled
@@ -26879,6 +26933,7 @@ func saveLiveTradingConfig(c *gin.Context) {
 		Filters         map[string]interface{} `json:"filters"`
 		FiltersActive   bool                   `json:"filters_active"`
 		Currency        string                 `json:"currency"`
+		AlpacaAccountID *uint                  `json:"alpaca_account_id"`
 		AlpacaApiKey    *string                `json:"alpaca_api_key"`
 		AlpacaSecretKey *string                `json:"alpaca_secret_key"`
 		AlpacaEnabled   *bool                  `json:"alpaca_enabled"`
@@ -26916,34 +26971,211 @@ func saveLiveTradingConfig(c *gin.Context) {
 	config.FiltersJSON = string(filtersBytes)
 	config.FiltersActive = req.FiltersActive
 	config.Currency = currency
-	if req.AlpacaApiKey != nil && !strings.HasPrefix(*req.AlpacaApiKey, "****") {
-		config.AlpacaApiKey = *req.AlpacaApiKey
-	}
-	if req.AlpacaSecretKey != nil && !strings.HasPrefix(*req.AlpacaSecretKey, "****") {
-		config.AlpacaSecretKey = *req.AlpacaSecretKey
+
+	// Resolve Alpaca Account if ID provided
+	if req.AlpacaAccountID != nil && *req.AlpacaAccountID > 0 {
+		var acc AlpacaAccount
+		if db.First(&acc, *req.AlpacaAccountID).Error == nil {
+			config.AlpacaAccountID = acc.ID
+			config.AlpacaApiKey = acc.ApiKey
+			config.AlpacaSecretKey = acc.SecretKey
+			config.AlpacaPaper = acc.IsPaper
+		}
+	} else if req.AlpacaAccountID != nil && *req.AlpacaAccountID == 0 {
+		config.AlpacaAccountID = 0
+		config.AlpacaApiKey = ""
+		config.AlpacaSecretKey = ""
+	} else {
+		// Legacy: direct key input
+		if req.AlpacaApiKey != nil && !strings.HasPrefix(*req.AlpacaApiKey, "****") {
+			config.AlpacaApiKey = *req.AlpacaApiKey
+		}
+		if req.AlpacaSecretKey != nil && !strings.HasPrefix(*req.AlpacaSecretKey, "****") {
+			config.AlpacaSecretKey = *req.AlpacaSecretKey
+		}
 	}
 	if req.AlpacaEnabled != nil {
 		config.AlpacaEnabled = *req.AlpacaEnabled
 	}
-	if req.AlpacaPaper != nil {
+	if req.AlpacaPaper != nil && (req.AlpacaAccountID == nil || *req.AlpacaAccountID == 0) {
 		config.AlpacaPaper = *req.AlpacaPaper
 	}
 	config.UpdatedAt = time.Now()
 	db.Save(&config)
 
 	c.JSON(200, gin.H{
-		"id":             config.ID,
-		"strategy":       config.Strategy,
-		"interval":       config.Interval,
-		"params":         req.Params,
-		"symbols":        req.Symbols,
-		"long_only":      config.LongOnly,
-		"trade_amount":   config.TradeAmount,
-		"filters":        req.Filters,
-		"filters_active": config.FiltersActive,
-		"currency":       config.Currency,
-		"updated_at":     config.UpdatedAt,
+		"id":                config.ID,
+		"strategy":          config.Strategy,
+		"interval":          config.Interval,
+		"params":            req.Params,
+		"symbols":           req.Symbols,
+		"long_only":         config.LongOnly,
+		"trade_amount":      config.TradeAmount,
+		"filters":           req.Filters,
+		"filters_active":    config.FiltersActive,
+		"currency":          config.Currency,
+		"alpaca_account_id": config.AlpacaAccountID,
+		"updated_at":        config.UpdatedAt,
 	})
+}
+
+// --- Alpaca Account CRUD ---
+
+func getAlpacaAccounts(c *gin.Context) {
+	var accounts []AlpacaAccount
+	db.Order("is_default DESC, name ASC").Find(&accounts)
+
+	result := make([]gin.H, len(accounts))
+	for i, a := range accounts {
+		result[i] = gin.H{
+			"id":         a.ID,
+			"name":       a.Name,
+			"api_key":    maskKey(a.ApiKey),
+			"is_paper":   a.IsPaper,
+			"is_default": a.IsDefault,
+			"created_at": a.CreatedAt,
+			"updated_at": a.UpdatedAt,
+		}
+	}
+	c.JSON(200, result)
+}
+
+func createAlpacaAccount(c *gin.Context) {
+	var req struct {
+		Name      string `json:"name"`
+		ApiKey    string `json:"api_key"`
+		SecretKey string `json:"secret_key"`
+		IsPaper   bool   `json:"is_paper"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Name == "" || req.ApiKey == "" || req.SecretKey == "" {
+		c.JSON(400, gin.H{"error": "Name, API Key und Secret Key erforderlich"})
+		return
+	}
+
+	account := AlpacaAccount{
+		Name:      req.Name,
+		ApiKey:    req.ApiKey,
+		SecretKey: req.SecretKey,
+		IsPaper:   req.IsPaper,
+	}
+	db.Create(&account)
+	c.JSON(200, gin.H{
+		"id":         account.ID,
+		"name":       account.Name,
+		"api_key":    maskKey(account.ApiKey),
+		"is_paper":   account.IsPaper,
+		"is_default": account.IsDefault,
+		"created_at": account.CreatedAt,
+	})
+}
+
+func updateAlpacaAccount(c *gin.Context) {
+	id := c.Param("id")
+	var account AlpacaAccount
+	if db.First(&account, id).Error != nil {
+		c.JSON(404, gin.H{"error": "Account nicht gefunden"})
+		return
+	}
+
+	var req struct {
+		Name      *string `json:"name"`
+		ApiKey    *string `json:"api_key"`
+		SecretKey *string `json:"secret_key"`
+		IsPaper   *bool   `json:"is_paper"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "Ungültige Anfrage"})
+		return
+	}
+
+	if req.Name != nil {
+		account.Name = *req.Name
+	}
+	if req.ApiKey != nil && !strings.HasPrefix(*req.ApiKey, "****") {
+		account.ApiKey = *req.ApiKey
+	}
+	if req.SecretKey != nil && !strings.HasPrefix(*req.SecretKey, "****") {
+		account.SecretKey = *req.SecretKey
+	}
+	if req.IsPaper != nil {
+		account.IsPaper = *req.IsPaper
+	}
+	account.UpdatedAt = time.Now()
+	db.Save(&account)
+
+	c.JSON(200, gin.H{
+		"id":         account.ID,
+		"name":       account.Name,
+		"api_key":    maskKey(account.ApiKey),
+		"is_paper":   account.IsPaper,
+		"is_default": account.IsDefault,
+		"updated_at": account.UpdatedAt,
+	})
+}
+
+func deleteAlpacaAccount(c *gin.Context) {
+	id := c.Param("id")
+	var account AlpacaAccount
+	if db.First(&account, id).Error != nil {
+		c.JSON(404, gin.H{"error": "Account nicht gefunden"})
+		return
+	}
+
+	// Check if any active session uses this account
+	var activeCount int64
+	db.Model(&LiveTradingSession{}).
+		Joins("JOIN live_trading_configs ON live_trading_configs.id = live_trading_sessions.config_id").
+		Where("live_trading_sessions.is_active = ? AND live_trading_configs.alpaca_account_id = ?", true, account.ID).
+		Count(&activeCount)
+	if activeCount > 0 {
+		c.JSON(400, gin.H{"error": "Account wird von aktiven Sessions verwendet"})
+		return
+	}
+
+	db.Delete(&account)
+	c.JSON(200, gin.H{"ok": true})
+}
+
+func validateAlpacaAccount(c *gin.Context) {
+	id := c.Param("id")
+	var account AlpacaAccount
+	if db.First(&account, id).Error != nil {
+		c.JSON(404, gin.H{"error": "Account nicht gefunden"})
+		return
+	}
+
+	tempConfig := LiveTradingConfig{
+		AlpacaApiKey:    account.ApiKey,
+		AlpacaSecretKey: account.SecretKey,
+		AlpacaPaper:     account.IsPaper,
+	}
+	acc, err := alpacaGetAccount(tempConfig)
+	if err != nil {
+		c.JSON(400, gin.H{"error": fmt.Sprintf("Verbindung fehlgeschlagen: %v", err)})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"status":         acc["status"],
+		"buying_power":   acc["buying_power"],
+		"cash":           acc["cash"],
+		"account_number": acc["account_number"],
+		"paper":          account.IsPaper,
+	})
+}
+
+func setDefaultAlpacaAccount(c *gin.Context) {
+	id := c.Param("id")
+	var account AlpacaAccount
+	if db.First(&account, id).Error != nil {
+		c.JSON(404, gin.H{"error": "Account nicht gefunden"})
+		return
+	}
+
+	// Clear all defaults, then set new one
+	db.Model(&AlpacaAccount{}).Where("is_default = ?", true).Update("is_default", false)
+	db.Model(&account).Update("is_default", true)
+	c.JSON(200, gin.H{"ok": true})
 }
 
 func validateAlpacaKeys(c *gin.Context) {
@@ -27358,6 +27590,54 @@ func deleteLiveSession(c *gin.Context) {
 	c.JSON(200, gin.H{"message": fmt.Sprintf("Session #%d gelöscht", session.ID)})
 }
 
+func resetLiveSession(c *gin.Context) {
+	uid := liveOwnerUID(c)
+	id := c.Param("id")
+
+	var session LiveTradingSession
+	if db.Where("id = ? AND user_id = ?", id, uid).First(&session).Error != nil {
+		c.JSON(404, gin.H{"error": "Session nicht gefunden"})
+		return
+	}
+
+	// Stop if active
+	if session.IsActive {
+		liveSchedulerMu.Lock()
+		state, hasScheduler := liveSchedulers[session.ID]
+		if hasScheduler {
+			close(state.StopChan)
+			delete(liveSchedulers, session.ID)
+		}
+		liveSchedulerMu.Unlock()
+	}
+
+	// Clear liveOpenPosGuard entries for this session's positions
+	var positions []LiveTradingPosition
+	db.Where("session_id = ?", session.ID).Find(&positions)
+	for _, pos := range positions {
+		liveOpenPosGuard.Delete(openPosGuardKey(session.ID, pos.StrategyID, pos.Symbol))
+	}
+
+	// Delete positions and logs
+	db.Where("session_id = ?", session.ID).Delete(&LiveTradingPosition{})
+	db.Where("session_id = ?", session.ID).Delete(&LiveTradingLog{})
+
+	// Reset session fields
+	db.Model(&session).Updates(map[string]interface{}{
+		"is_active":        false,
+		"started_at":       nil,
+		"stopped_at":       nil,
+		"last_poll_at":     nil,
+		"next_poll_at":     nil,
+		"total_polls":      0,
+		"symbol_prices_json": nil,
+	})
+
+	logLiveEvent(session.ID, "INFO", "-", "Session zurückgesetzt")
+	log.Printf("[LiveTrading] Session #%d zurückgesetzt von User %d", session.ID, uid)
+	c.JSON(200, gin.H{"message": fmt.Sprintf("Session #%d zurückgesetzt", session.ID)})
+}
+
 func getAlpacaPortfolio(c *gin.Context) {
 	uid := liveOwnerUID(c)
 
@@ -27663,19 +27943,20 @@ func getLiveTradingConfig(c *gin.Context) {
 	json.Unmarshal([]byte(config.FiltersJSON), &filters)
 
 	result := gin.H{
-		"id":             config.ID,
-		"strategy":       config.Strategy,
-		"interval":       config.Interval,
-		"params":         params,
-		"symbols":        symbols,
-		"long_only":      config.LongOnly,
-		"trade_amount":   config.TradeAmount,
-		"filters":        filters,
-		"filters_active": config.FiltersActive,
-		"currency":       config.Currency,
-		"updated_at":     config.UpdatedAt,
-		"alpaca_enabled": config.AlpacaEnabled,
-		"alpaca_paper":   config.AlpacaPaper,
+		"id":                config.ID,
+		"strategy":          config.Strategy,
+		"interval":          config.Interval,
+		"params":            params,
+		"symbols":           symbols,
+		"long_only":         config.LongOnly,
+		"trade_amount":      config.TradeAmount,
+		"filters":           filters,
+		"filters_active":    config.FiltersActive,
+		"currency":          config.Currency,
+		"updated_at":        config.UpdatedAt,
+		"alpaca_enabled":    config.AlpacaEnabled,
+		"alpaca_paper":      config.AlpacaPaper,
+		"alpaca_account_id": config.AlpacaAccountID,
 	}
 
 	// Only admins see API keys (masked)

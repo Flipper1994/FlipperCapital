@@ -281,14 +281,11 @@ function LiveTrading({ isAdmin, token }) {
   const [debugLogs, setDebugLogs] = useState([])
   const [lastLogId, setLastLogId] = useState(0)
   const [notificationsEnabled, setNotificationsEnabled] = useState(false)
-  const [showAlpaca, setShowAlpaca] = useState(false)
-  const [alpacaKey, setAlpacaKey] = useState('')
-  const [alpacaSecret, setAlpacaSecret] = useState('')
   const [alpacaEnabled, setAlpacaEnabled] = useState(false)
   const [alpacaPaper, setAlpacaPaper] = useState(true)
-  const [alpacaValidation, setAlpacaValidation] = useState(null)
-  const [alpacaValidating, setAlpacaValidating] = useState(false)
   const [tradeAmount, setTradeAmount] = useState(500)
+  const [alpacaAccounts, setAlpacaAccounts] = useState([])
+  const [selectedAccountId, setSelectedAccountId] = useState(0)
   const [alpacaPortfolio, setAlpacaPortfolio] = useState(null)
   const [alpacaPortfolioLoading, setAlpacaPortfolioLoading] = useState(false)
   const [showAlpacaOrders, setShowAlpacaOrders] = useState(false)
@@ -365,11 +362,10 @@ function LiveTrading({ isAdmin, token }) {
         const data = await res.json()
         console.log(`[LT] fetchConfig OK: symbols=${data.symbols?.length}, alpaca=${data.alpaca_enabled}, amount=${data.trade_amount}`)
         if (data.symbols) setConfig(data)
-        if (data.alpaca_api_key) setAlpacaKey(data.alpaca_api_key)
-        if (data.alpaca_secret_key) setAlpacaSecret(data.alpaca_secret_key)
         if (data.alpaca_enabled != null) setAlpacaEnabled(data.alpaca_enabled)
         if (data.alpaca_paper != null) setAlpacaPaper(data.alpaca_paper)
         if (data.trade_amount) setTradeAmount(data.trade_amount)
+        if (data.alpaca_account_id) setSelectedAccountId(data.alpaca_account_id)
       }
     } catch (err) { console.log(`[LT] fetchConfig error:`, err) }
   }, [token])
@@ -447,11 +443,17 @@ function LiveTrading({ isAdmin, token }) {
     }
   }, [urlSessionId])
 
-  // Fetch Alpaca portfolio when enabled + session known + keys saved
+  // Fetch Alpaca accounts for dropdown (admin only)
+  useEffect(() => {
+    if (!isAdmin) return
+    fetch('/api/admin/alpaca-accounts', { headers }).then(r => r.ok ? r.json() : []).then(setAlpacaAccounts).catch(() => {})
+  }, [isAdmin, token])
+
+  // Fetch Alpaca portfolio when enabled + session known + account selected
   const alpacaPollRef = useRef(null)
   useEffect(() => {
-    console.log(`[LT] EFFECT:alpaca enabled=${alpacaEnabled} sid=${urlSessionId} key=${!!alpacaKey}`)
-    if (!alpacaEnabled || !urlSessionId || !alpacaKey) {
+    console.log(`[LT] EFFECT:alpaca enabled=${alpacaEnabled} sid=${urlSessionId} acc=${selectedAccountId}`)
+    if (!alpacaEnabled || !urlSessionId) {
       if (alpacaPollRef.current) clearInterval(alpacaPollRef.current)
       if (!alpacaEnabled) setAlpacaPortfolio(null)
       return
@@ -459,7 +461,7 @@ function LiveTrading({ isAdmin, token }) {
     fetchAlpacaPortfolio(urlSessionId)
     alpacaPollRef.current = setInterval(() => fetchAlpacaPortfolio(urlSessionId), 30000)
     return () => clearInterval(alpacaPollRef.current)
-  }, [alpacaEnabled, urlSessionId, alpacaKey])
+  }, [alpacaEnabled, urlSessionId, selectedAccountId])
 
   // Poll status + sessions when session is active
   useEffect(() => {
@@ -652,6 +654,20 @@ function LiveTrading({ isAdmin, token }) {
       } else {
         const data = await res.json()
         alert(data.error || 'Fehler beim Löschen')
+      }
+    } catch { alert('Verbindungsfehler') }
+  }
+
+  const resetSession = async (id) => {
+    if (!confirm(`Session #${id} zurücksetzen? Alle Positionen und Logs werden gelöscht. Settings und Strategien bleiben erhalten.`)) return
+    try {
+      const res = await fetch(`/api/trading/live/session/${id}/reset`, { method: 'POST', headers })
+      if (res.ok) {
+        fetchSessions()
+        if (selectedSessionId === id) { setPositions([]); setDebugLogs([]) }
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Fehler beim Zurücksetzen')
       }
     } catch { alert('Verbindungsfehler') }
   }
@@ -1167,151 +1183,72 @@ function LiveTrading({ isAdmin, token }) {
         </div>
       )}
 
-      {/* Alpaca Broker Section — Admin only */}
+      {/* Alpaca Account + Trade Amount — Admin only */}
       {isAdmin && (
-        <div className="bg-dark-800 rounded-lg border border-dark-600 mb-4">
-          <button
-            onClick={() => setShowAlpaca(!showAlpaca)}
-            className="w-full flex items-center justify-between p-4 text-sm hover:bg-dark-700 transition-colors rounded-lg"
-          >
-            <div className="flex items-center gap-2">
-              <span className="text-gray-300 font-medium">Broker-Anbindung</span>
-              {alpacaEnabled && (
-                <span className="px-2 py-0.5 rounded text-xs bg-green-500/20 text-green-400 border border-green-500/30">
-                  {alpacaPaper ? 'Paper' : 'Live'}
-                </span>
-              )}
-              {!alpacaEnabled && <span className="text-gray-600 text-xs">Optional</span>}
+        <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="flex-1 min-w-[200px]">
+              <label className="text-xs text-gray-500 block mb-1">Alpaca Account</label>
+              <select
+                value={selectedAccountId}
+                onChange={e => {
+                  const id = Number(e.target.value)
+                  setSelectedAccountId(id)
+                  const acc = alpacaAccounts.find(a => a.id === id)
+                  if (acc) {
+                    setAlpacaPaper(acc.is_paper)
+                    setAlpacaEnabled(true)
+                  } else {
+                    setAlpacaEnabled(false)
+                  }
+                }}
+                className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-sm text-white focus:border-accent-500 focus:outline-none"
+              >
+                <option value={0}>— Kein Broker —</option>
+                {alpacaAccounts.map(acc => (
+                  <option key={acc.id} value={acc.id}>
+                    {acc.name} ({acc.api_key}) {acc.is_paper ? '[Paper]' : '[Live]'}{acc.is_default ? ' ★' : ''}
+                  </option>
+                ))}
+              </select>
             </div>
-            <svg className={`w-4 h-4 text-gray-500 transition-transform ${showAlpaca ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
-          {showAlpaca && (
-            <div className="px-4 pb-4 space-y-3">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs text-gray-500 block mb-1">Alpaca API Key</label>
-                  <input
-                    type="text"
-                    value={alpacaKey}
-                    onChange={e => setAlpacaKey(e.target.value)}
-                    placeholder="PK..."
-                    className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-accent-500 focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-gray-500 block mb-1">Secret Key</label>
-                  <input
-                    type="password"
-                    value={alpacaSecret}
-                    onChange={e => setAlpacaSecret(e.target.value)}
-                    placeholder="••••••••"
-                    className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-accent-500 focus:outline-none"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 block mb-1">Betrag pro Trade (USD)</label>
-                <input
-                  type="number"
-                  value={tradeAmount}
-                  onChange={e => setTradeAmount(Number(e.target.value) || 0)}
-                  min="1"
-                  step="50"
-                  className="w-full md:w-48 bg-dark-700 border border-dark-500 rounded px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-accent-500 focus:outline-none"
-                />
-              </div>
-              <div className="flex items-center gap-4">
-                <button
-                  onClick={async () => {
-                    setAlpacaValidating(true)
-                    setAlpacaValidation(null)
-                    try {
-                      const res = await fetch('/api/trading/live/alpaca/validate', {
-                        method: 'POST',
-                        headers: { ...headers, 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ api_key: alpacaKey, secret_key: alpacaSecret, paper: alpacaPaper })
-                      })
-                      const data = await res.json()
-                      if (res.ok) {
-                        setAlpacaValidation({ ok: true, ...data })
-                      } else {
-                        setAlpacaValidation({ ok: false, error: data.error })
-                      }
-                    } catch {
-                      setAlpacaValidation({ ok: false, error: 'Verbindungsfehler' })
-                    }
-                    setAlpacaValidating(false)
-                  }}
-                  disabled={!alpacaKey || !alpacaSecret || alpacaValidating}
-                  className="px-3 py-1.5 text-xs bg-accent-600 hover:bg-accent-500 disabled:bg-dark-600 disabled:text-gray-600 text-white rounded transition-colors"
-                >
-                  {alpacaValidating ? 'Prüfe...' : 'Verbindung testen'}
-                </button>
-                <label className="flex items-center gap-2 text-sm cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={alpacaEnabled}
-                    onChange={e => setAlpacaEnabled(e.target.checked)}
-                    className="rounded bg-dark-700 border-dark-500 text-accent-500 focus:ring-accent-500"
-                  />
-                  <span className="text-gray-300">Orders an Alpaca senden</span>
-                </label>
-              </div>
-              {alpacaValidation && (
-                <div className={`text-xs p-2 rounded ${alpacaValidation.ok ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
-                  {alpacaValidation.ok
-                    ? `Verbunden — Status: ${alpacaValidation.status} | Kaufkraft: $${numFmtDE0.format(Number(alpacaValidation.buying_power))} | ${alpacaValidation.paper ? 'Paper Trading' : 'LIVE'}`
-                    : `Fehler: ${alpacaValidation.error}`
+            <div className="w-36">
+              <label className="text-xs text-gray-500 block mb-1">Betrag/Trade (USD)</label>
+              <input type="number" value={tradeAmount} onChange={e => setTradeAmount(Number(e.target.value) || 0)}
+                min="1" step="50" className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-sm text-white focus:border-accent-500 focus:outline-none" />
+            </div>
+            <button
+              onClick={async () => {
+                try {
+                  const configId = config?.id
+                  const saveUrl = configId ? `/api/trading/live/config?config_id=${configId}` : '/api/trading/live/config'
+                  await fetch(saveUrl, {
+                    method: 'POST',
+                    headers: { ...headers, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      ...config,
+                      alpaca_account_id: selectedAccountId || 0,
+                      alpaca_enabled: selectedAccountId > 0,
+                      trade_amount: tradeAmount,
+                    })
+                  })
+                  if (urlSessionId) {
+                    fetchConfig(urlSessionId)
+                    setTimeout(() => fetchAlpacaPortfolio(urlSessionId), 500)
                   }
-                </div>
-              )}
-              {alpacaEnabled && (
-                <div className="text-xs text-yellow-400/70 bg-yellow-500/5 border border-yellow-500/10 rounded p-2">
-                  {alpacaPaper
-                    ? 'Paper-Trading aktiv — keine echten Trades. Orders werden an die Alpaca Paper-API gesendet.'
-                    : 'LIVE-Trading aktiv — echte Orders werden ausgeführt!'
-                  }
-                </div>
-              )}
-              <div className="flex justify-end">
-                <button
-                  onClick={async () => {
-                    try {
-                      const configId = config?.id
-                      const saveUrl = configId ? `/api/trading/live/config?config_id=${configId}` : '/api/trading/live/config'
-                      await fetch(saveUrl, {
-                        method: 'POST',
-                        headers: { ...headers, 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                          ...config,
-                          alpaca_api_key: alpacaKey,
-                          alpaca_secret_key: alpacaSecret,
-                          alpaca_enabled: alpacaEnabled,
-                          alpaca_paper: alpacaPaper,
-                          trade_amount: tradeAmount,
-                        })
-                      })
-                      setShowAlpaca(false)
-                      // Re-fetch config + portfolio after save (short delay for DB consistency)
-                      if (urlSessionId) {
-                        fetchConfig(urlSessionId)
-                        setTimeout(() => fetchAlpacaPortfolio(urlSessionId), 500)
-                      }
-                    } catch { alert('Speichern fehlgeschlagen') }
-                  }}
-                  className="px-4 py-1.5 text-xs bg-dark-600 hover:bg-dark-500 text-white rounded transition-colors"
-                >
-                  Speichern
-                </button>
-              </div>
-              {alpacaEnabled && alpacaPaper && (
-                <TestOrderPanel headers={headers} tradeAmount={tradeAmount} onOrderPlaced={() => {
-                  if (urlSessionId) fetchAlpacaPortfolio(urlSessionId)
-                  if (urlSessionId) fetchPositions(urlSessionId)
-                }} />
-              )}
+                } catch { alert('Speichern fehlgeschlagen') }
+              }}
+              className="px-4 py-2 text-xs bg-accent-600 hover:bg-accent-500 text-white rounded transition-colors"
+            >
+              Speichern
+            </button>
+          </div>
+          {selectedAccountId > 0 && (
+            <div className="mt-2 flex items-center gap-2">
+              <span className={`px-2 py-0.5 rounded text-xs ${alpacaPaper ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'}`}>
+                {alpacaPaper ? 'Paper' : 'Live'}
+              </span>
+              <span className="text-[11px] text-gray-500">Accounts verwalten: Admin Panel → Alpaca</span>
             </div>
           )}
         </div>
@@ -2522,6 +2459,15 @@ function LiveTrading({ isAdmin, token }) {
                               <span className="px-1 py-0.5 bg-amber-500/20 text-amber-400 font-bold rounded">PRO</span>
                             </span>
                           ))}
+                          {isAdmin && !s.is_active && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); resetSession(s.id) }}
+                              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-medium rounded transition-colors"
+                              title="Session zurücksetzen (Positionen & Logs löschen, Settings behalten)"
+                            >
+                              Reset
+                            </button>
+                          )}
                           {isAdmin && !s.is_active && (
                             <button
                               onClick={(e) => { e.stopPropagation(); deleteSession(s.id) }}

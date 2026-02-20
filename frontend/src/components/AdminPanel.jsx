@@ -180,6 +180,14 @@ function AdminPanel() {
   const [botFilterSaving, setBotFilterSaving] = useState(null)
   const [globalFilter, setGlobalFilter] = useState({})
 
+  // Alpaca accounts state
+  const [alpacaAccounts, setAlpacaAccounts] = useState([])
+  const [editingAccount, setEditingAccount] = useState(null)
+  const [accountForm, setAccountForm] = useState({ name: '', api_key: '', secret_key: '', is_paper: true })
+  const [savingAccount, setSavingAccount] = useState(false)
+  const [validatingAccount, setValidatingAccount] = useState(null)
+  const [validationResult, setValidationResult] = useState({})
+
   const fetchAllowlist = async () => {
     setAllowlistLoading(true)
     try {
@@ -295,6 +303,9 @@ function AdminPanel() {
     if (activeTab === 'botfilter') {
       fetchBotFilterConfigs()
     }
+    if (activeTab === 'alpaca') {
+      fetchAlpacaAccounts()
+    }
   }, [activeTab])
 
   const fetchBotFilterConfigs = async () => {
@@ -309,6 +320,79 @@ function AdminPanel() {
     } catch (err) {
       console.error('Failed to fetch bot filter configs:', err)
     }
+  }
+
+  const fetchAlpacaAccounts = async () => {
+    try {
+      const res = await fetch('/api/admin/alpaca-accounts', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) setAlpacaAccounts(await res.json())
+    } catch (err) { console.error('Failed to fetch alpaca accounts:', err) }
+  }
+
+  const saveAlpacaAccount = async () => {
+    setSavingAccount(true)
+    try {
+      const isEdit = editingAccount && editingAccount.id
+      const url = isEdit ? `/api/admin/alpaca-accounts/${editingAccount.id}` : '/api/admin/alpaca-accounts'
+      const res = await fetch(url, {
+        method: isEdit ? 'PUT' : 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(accountForm)
+      })
+      if (res.ok) {
+        setEditingAccount(null)
+        setAccountForm({ name: '', api_key: '', secret_key: '', is_paper: true })
+        fetchAlpacaAccounts()
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Fehler beim Speichern')
+      }
+    } catch { alert('Verbindungsfehler') }
+    setSavingAccount(false)
+  }
+
+  const deleteAlpacaAccount = async (id) => {
+    if (!confirm('Account wirklich löschen?')) return
+    try {
+      const res = await fetch(`/api/admin/alpaca-accounts/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) {
+        fetchAlpacaAccounts()
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Fehler beim Löschen')
+      }
+    } catch { alert('Verbindungsfehler') }
+  }
+
+  const validateAlpacaAccountFn = async (id) => {
+    setValidatingAccount(id)
+    setValidationResult(prev => ({ ...prev, [id]: null }))
+    try {
+      const res = await fetch(`/api/admin/alpaca-accounts/${id}/validate`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      setValidationResult(prev => ({ ...prev, [id]: res.ok ? { ok: true, ...data } : { ok: false, error: data.error } }))
+    } catch {
+      setValidationResult(prev => ({ ...prev, [id]: { ok: false, error: 'Verbindungsfehler' } }))
+    }
+    setValidatingAccount(null)
+  }
+
+  const setDefaultAccount = async (id) => {
+    try {
+      const res = await fetch(`/api/admin/alpaca-accounts/${id}/default`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) fetchAlpacaAccounts()
+    } catch { alert('Verbindungsfehler') }
   }
 
   const saveBotFilterConfig = async (botName) => {
@@ -2082,6 +2166,7 @@ function AdminPanel() {
             { key: 'trader', label: 'Trader' },
             { key: 'botfilter', label: 'Bot Filter' },
             { key: 'allowlist', label: 'Aktien Listen' },
+            { key: 'alpaca', label: 'Alpaca' },
             { key: 'settings', label: 'Einstellungen' }
           ].map(tab => (
             <button
@@ -6971,6 +7056,119 @@ function AdminPanel() {
           </div>
         </div>
       )}
+
+            {activeTab === 'alpaca' && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-bold text-white">Alpaca Accounts</h2>
+                  <button
+                    onClick={() => {
+                      setEditingAccount({})
+                      setAccountForm({ name: '', api_key: '', secret_key: '', is_paper: true })
+                    }}
+                    className="px-3 py-1.5 text-xs bg-accent-600 hover:bg-accent-500 text-white rounded transition-colors"
+                  >
+                    + Neuer Account
+                  </button>
+                </div>
+
+                {/* Create/Edit Form */}
+                {editingAccount && (
+                  <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 space-y-3">
+                    <h3 className="text-sm font-semibold text-white">{editingAccount.id ? 'Account bearbeiten' : 'Neuer Account'}</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs text-gray-500 block mb-1">Name</label>
+                        <input type="text" value={accountForm.name} onChange={e => setAccountForm(f => ({ ...f, name: e.target.value }))}
+                          placeholder="z.B. Paper Trading" className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-accent-500 focus:outline-none" />
+                      </div>
+                      <div className="flex items-end">
+                        <label className="flex items-center gap-2 text-sm cursor-pointer">
+                          <input type="checkbox" checked={accountForm.is_paper} onChange={e => setAccountForm(f => ({ ...f, is_paper: e.target.checked }))}
+                            className="rounded bg-dark-700 border-dark-500 text-accent-500 focus:ring-accent-500" />
+                          <span className="text-gray-300">Paper Trading</span>
+                        </label>
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-500 block mb-1">API Key</label>
+                        <input type="text" value={accountForm.api_key} onChange={e => setAccountForm(f => ({ ...f, api_key: e.target.value }))}
+                          placeholder="PK..." className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-accent-500 focus:outline-none" />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-500 block mb-1">Secret Key</label>
+                        <input type="password" value={accountForm.secret_key} onChange={e => setAccountForm(f => ({ ...f, secret_key: e.target.value }))}
+                          placeholder="••••••••" className="w-full bg-dark-700 border border-dark-500 rounded px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-accent-500 focus:outline-none" />
+                      </div>
+                    </div>
+                    <div className="flex gap-2 justify-end">
+                      <button onClick={() => { setEditingAccount(null); setAccountForm({ name: '', api_key: '', secret_key: '', is_paper: true }) }}
+                        className="px-3 py-1.5 text-xs text-gray-400 hover:text-white transition-colors">Abbrechen</button>
+                      <button onClick={saveAlpacaAccount} disabled={savingAccount || !accountForm.name}
+                        className="px-3 py-1.5 text-xs bg-accent-600 hover:bg-accent-500 disabled:bg-dark-600 disabled:text-gray-600 text-white rounded transition-colors">
+                        {savingAccount ? 'Speichern...' : 'Speichern'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Account Table */}
+                <div className="bg-dark-800 rounded-lg border border-dark-600 overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-dark-600 text-left text-gray-400">
+                        <th className="px-4 py-3 font-medium">Name</th>
+                        <th className="px-4 py-3 font-medium">API Key</th>
+                        <th className="px-4 py-3 font-medium">Modus</th>
+                        <th className="px-4 py-3 font-medium">Status</th>
+                        <th className="px-4 py-3 font-medium text-right">Aktionen</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {alpacaAccounts.length === 0 && (
+                        <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-500">Keine Accounts vorhanden</td></tr>
+                      )}
+                      {alpacaAccounts.map(acc => (
+                        <tr key={acc.id} className="border-b border-dark-700 hover:bg-dark-700/50">
+                          <td className="px-4 py-3 text-white font-medium">
+                            {acc.name}
+                            {acc.is_default && <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] bg-accent-500/20 text-accent-400 border border-accent-500/30">Default</span>}
+                          </td>
+                          <td className="px-4 py-3 text-gray-400 font-mono text-xs">{acc.api_key}</td>
+                          <td className="px-4 py-3">
+                            <span className={`px-2 py-0.5 rounded text-xs ${acc.is_paper ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'}`}>
+                              {acc.is_paper ? 'Paper' : 'Live'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3">
+                            {validationResult[acc.id] && (
+                              <span className={`text-xs ${validationResult[acc.id].ok ? 'text-green-400' : 'text-red-400'}`}>
+                                {validationResult[acc.id].ok ? `OK — $${Number(validationResult[acc.id].buying_power).toLocaleString('de-DE', {maximumFractionDigits: 0})}` : validationResult[acc.id].error}
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <div className="flex gap-1 justify-end">
+                              <button onClick={() => validateAlpacaAccountFn(acc.id)} disabled={validatingAccount === acc.id}
+                                className="px-2 py-1 text-[11px] bg-dark-600 hover:bg-dark-500 text-gray-300 rounded transition-colors" title="Testen">
+                                {validatingAccount === acc.id ? '...' : 'Testen'}
+                              </button>
+                              <button onClick={() => { setEditingAccount(acc); setAccountForm({ name: acc.name, api_key: acc.api_key, secret_key: '', is_paper: acc.is_paper }) }}
+                                className="px-2 py-1 text-[11px] bg-dark-600 hover:bg-dark-500 text-gray-300 rounded transition-colors">Bearbeiten</button>
+                              {!acc.is_default && (
+                                <button onClick={() => setDefaultAccount(acc.id)}
+                                  className="px-2 py-1 text-[11px] bg-dark-600 hover:bg-dark-500 text-accent-400 rounded transition-colors">Default</button>
+                              )}
+                              <button onClick={() => deleteAlpacaAccount(acc.id)}
+                                className="px-2 py-1 text-[11px] bg-dark-600 hover:bg-dark-500 text-red-400 rounded transition-colors">Löschen</button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
 
             {activeTab === 'settings' && (
               <div className="bg-dark-800 rounded-xl border border-dark-600 p-6">
