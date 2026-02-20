@@ -73,7 +73,7 @@ function TradeOverlay({ title, trades, tradeAmount, onClose }) {
   }, [onClose])
 
   const sorted = useMemo(() =>
-    [...trades].sort((a, b) => b.exit_time - a.exit_time),
+    [...trades].sort((a, b) => b.entry_time - a.entry_time),
     [trades]
   )
 
@@ -181,25 +181,37 @@ export default function ArenaCalendarHeatmap({ trades, tradeAmount = 500 }) {
   const [collapsed, setCollapsed] = useState({})
   const [overlay, setOverlay] = useState(null) // { title, trades }
 
-  const closedTrades = useMemo(() =>
-    (trades || []).filter(t => !t.is_open && t.exit_time),
+  const allTrades = useMemo(() =>
+    (trades || []).filter(t => t.entry_time),
     [trades]
   )
 
   const { days, weeks, months, totals, maxAbsEUR } = useMemo(() => {
-    if (!closedTrades.length) return { days: {}, weeks: {}, months: {}, totals: null, maxAbsEUR: 0 }
+    if (!allTrades.length) return { days: {}, weeks: {}, months: {}, totals: null, maxAbsEUR: 0 }
 
     const dayMap = {}
     const amt = tradeAmount || 500
 
-    for (const t of closedTrades) {
-      const d = new Date(t.exit_time * 1000)
+    // Group trades by entry day
+    const dayTrades = {}
+    for (const t of allTrades) {
+      const d = new Date(t.entry_time * 1000)
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-      if (!dayMap[key]) dayMap[key] = { date: d, trades: 0, invested: 0, profitEUR: 0, returns: [] }
-      dayMap[key].trades++
-      dayMap[key].invested += amt
-      dayMap[key].profitEUR += amt * (t.return_pct / 100)
-      dayMap[key].returns.push(t.return_pct)
+      if (!dayTrades[key]) dayTrades[key] = []
+      dayTrades[key].push(t)
+    }
+
+    for (const [key, trades] of Object.entries(dayTrades)) {
+      const profitEUR = trades.reduce((sum, t) => sum + amt * (t.return_pct / 100), 0)
+      const invested = trades.length * amt
+
+      dayMap[key] = {
+        date: new Date(trades[0].entry_time * 1000),
+        trades: trades.length,
+        invested,
+        profitEUR,
+        returns: trades.map(t => t.return_pct),
+      }
     }
 
     for (const k in dayMap) {
@@ -246,12 +258,35 @@ export default function ArenaCalendarHeatmap({ trades, tradeAmount = 500 }) {
       if (abs > mx) mx = abs
     }
 
+    const numDays = Object.keys(dayMap).length
+    const numWeeks = Object.keys(weekMap).length
+    const numMonths = Object.keys(monthMap).length
+
+    // Average EUR per period
+    const avgDayEUR = numDays > 0 ? totalProfit / numDays : 0
+    const avgWeekEUR = numWeeks > 0 ? totalProfit / numWeeks : 0
+    const avgMonthEUR = numMonths > 0 ? totalProfit / numMonths : 0
+
+    // Average return % per period (mean of individual period returns)
+    const avgDayPct = numDays > 0 ? Object.values(dayMap).reduce((s, d) => s + d.returnPct, 0) / numDays : 0
+    const avgWeekPct = numWeeks > 0 ? Object.values(weekMap).reduce((s, w) => s + w.returnPct, 0) / numWeeks : 0
+    const avgMonthPct = numMonths > 0 ? Object.values(monthMap).reduce((s, m) => s + m.returnPct, 0) / numMonths : 0
+
+    // Annualized: compound monthly average over 12 months
+    const annualPct = avgMonthPct !== 0 ? (Math.pow(1 + avgMonthPct / 100, 12) - 1) * 100 : 0
+    const annualEUR = avgMonthEUR * 12
+
     return {
       days: dayMap, weeks: weekMap, months: monthMap,
-      totals: { trades: totalTrades, invested: totalInvested, profitEUR: totalProfit, returnPct: totalInvested > 0 ? (totalProfit / totalInvested) * 100 : 0 },
+      totals: {
+        trades: totalTrades, invested: totalInvested, profitEUR: totalProfit,
+        returnPct: totalInvested > 0 ? (totalProfit / totalInvested) * 100 : 0,
+        avgDayEUR, avgDayPct, avgWeekEUR, avgWeekPct, avgMonthEUR, avgMonthPct, annualPct, annualEUR,
+        numDays, numWeeks, numMonths,
+      },
       maxAbsEUR: mx,
     }
-  }, [closedTrades, tradeAmount])
+  }, [allTrades, tradeAmount])
 
   const sortedMonths = useMemo(() => {
     return Object.entries(months).sort(([a], [b]) => b.localeCompare(a)).map(([mk, mData]) => {
@@ -280,21 +315,21 @@ export default function ArenaCalendarHeatmap({ trades, tradeAmount = 500 }) {
     end.setHours(23, 59, 59, 999)
     const startUnix = start.getTime() / 1000
     const endUnix = end.getTime() / 1000
-    return closedTrades.filter(t => t.exit_time >= startUnix && t.exit_time <= endUnix)
+    return allTrades.filter(t => t.entry_time >= startUnix && t.entry_time <= endUnix)
   }
 
   const getTradesForWeek = (weekKey, weekDays) => {
     const dayKeys = new Set(weekDays.map(d => typeof d === 'string' ? d : d.key))
-    return closedTrades.filter(t => {
-      const d = new Date(t.exit_time * 1000)
+    return allTrades.filter(t => {
+      const d = new Date(t.entry_time * 1000)
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
       return dayKeys.has(key)
     })
   }
 
   const getTradesForMonth = (monthKey) => {
-    return closedTrades.filter(t => {
-      const d = new Date(t.exit_time * 1000)
+    return allTrades.filter(t => {
+      const d = new Date(t.entry_time * 1000)
       const mk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
       return mk === monthKey
     })
@@ -304,19 +339,27 @@ export default function ArenaCalendarHeatmap({ trades, tradeAmount = 500 }) {
     if (tradeList.length > 0) setOverlay({ title, trades: tradeList })
   }
 
-  if (!closedTrades.length || !totals) return null
+  if (!allTrades.length || !totals) return null
 
   const toggleMonth = (mk) => setCollapsed(prev => ({ ...prev, [mk]: !prev[mk] }))
 
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-[10px] text-gray-500">Positionsgröße: {fmtNum(tradeAmount)} €</span>
-        <div className="flex items-center gap-3">
-          <span className="text-[10px] text-gray-500">{fmtNum(totals.trades)} Trades</span>
-          <EURCell value={totals.profitEUR} className="text-xs font-semibold" />
-          <ReturnCell value={totals.returnPct} className="text-[10px]" />
+      <div className="mb-3 space-y-1.5">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] text-gray-500">Positionsgröße: {fmtNum(tradeAmount)} €</span>
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] text-gray-500">{fmtNum(totals.trades)} Trades</span>
+            <EURCell value={totals.profitEUR} className="text-xs font-semibold" />
+            <ReturnCell value={totals.returnPct} className="text-[10px]" />
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-gray-500">
+          <span>Ø Tag: <EURCell value={totals.avgDayEUR} className="text-[10px]" /> / <ReturnCell value={totals.avgDayPct} className="text-[10px]" /></span>
+          <span>Ø Woche: <EURCell value={totals.avgWeekEUR} className="text-[10px]" /> / <ReturnCell value={totals.avgWeekPct} className="text-[10px]" /></span>
+          <span>Ø Monat: <EURCell value={totals.avgMonthEUR} className="text-[10px]" /> / <ReturnCell value={totals.avgMonthPct} className="text-[10px]" /></span>
+          <span>p.a.: <EURCell value={totals.annualEUR} className="text-[10px]" /> / <ReturnCell value={totals.annualPct} className="text-[10px]" /></span>
         </div>
       </div>
 

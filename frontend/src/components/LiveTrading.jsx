@@ -1,19 +1,75 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { useReactTable, getCoreRowModel, getSortedRowModel, getFilteredRowModel, flexRender, createColumnHelper } from '@tanstack/react-table'
 import { useCurrency } from '../context/CurrencyContext'
 import ArenaChart from './ArenaChart'
 import ArenaIndicatorChart from './ArenaIndicatorChart'
 import ArenaBacktestPanel from './ArenaBacktestPanel'
+import { STRATEGIES } from '../utils/arenaConfig'
 
-const STRATEGY_LABELS = {
-  regression_scalping: 'Regression Scalping',
-  hybrid_ai_trend: 'NW Bollinger Bands',
-  gmma_pullback: 'GMMA Pullback',
-}
+const STRATEGY_LABELS = Object.fromEntries(STRATEGIES.map(s => [s.value, s.label]))
 
 const BETA_STRATEGIES = new Set(['regression_scalping'])
 
-function TestOrderPanel({ headers, onOrderPlaced, tradeAmount, currency }) {
+const symColHelper = createColumnHelper()
+
+const symbolsColumns = [
+  symColHelper.accessor('symbol', {
+    header: 'Symbol',
+    cell: info => <span className="font-medium text-accent-400">{info.getValue()}</span>,
+    size: 80,
+  }),
+  symColHelper.accessor('price', {
+    header: 'Preis',
+    cell: info => {
+      const v = info.getValue()
+      return v != null ? <span className="text-gray-400">{v}</span> : <span className="text-gray-600">-</span>
+    },
+    size: 80,
+    enableSorting: false,
+  }),
+  symColHelper.accessor('openPos', {
+    header: 'Offen',
+    cell: info => {
+      const pos = info.getValue()
+      if (!pos) return <span className="text-gray-600">-</span>
+      return (
+        <span className="flex items-center gap-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+          <span className={pos.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}>
+            {pos.profit_loss_pct >= 0 ? '+' : ''}{pos.profit_loss_pct.toFixed(1)}%
+          </span>
+        </span>
+      )
+    },
+    size: 80,
+    sortingFn: (a, b) => {
+      const pa = a.original.openPos
+      const pb = b.original.openPos
+      if (!pa && !pb) return 0
+      if (!pa) return -1
+      if (!pb) return 1
+      return pa.profit_loss_pct - pb.profit_loss_pct
+    },
+  }),
+  symColHelper.accessor('totalReturn', {
+    header: 'Total',
+    cell: info => {
+      const v = info.getValue()
+      const trades = info.row.original.trades
+      if (trades === 0) return <span className="text-gray-600">-</span>
+      return <span className={v >= 0 ? 'text-green-400' : 'text-red-400'}>{v >= 0 ? '+' : ''}{v.toFixed(1)}%</span>
+    },
+    size: 70,
+  }),
+  symColHelper.accessor('trades', {
+    header: 'Trades',
+    cell: info => <span className="text-gray-400">{info.getValue()}</span>,
+    size: 60,
+  }),
+]
+
+function TestOrderPanel({ headers, onOrderPlaced, tradeAmount }) {
   const [symbol, setSymbol] = useState('AAPL')
   const [side, setSide] = useState('buy')
   const [sl, setSl] = useState('')
@@ -50,7 +106,7 @@ function TestOrderPanel({ headers, onOrderPlaced, tradeAmount, currency }) {
     <div className="border-t border-dark-600 pt-3 mt-1">
       <div className="flex items-center gap-2 mb-2">
         <span className="text-xs text-gray-400 font-medium">Test-Order (Paper)</span>
-        <span className="text-[10px] text-gray-600">Einsatz: {tradeAmount} {currency} pro Trade</span>
+        <span className="text-[10px] text-gray-600">Einsatz: ${tradeAmount} pro Trade</span>
       </div>
       <div className="flex flex-wrap items-end gap-2">
         <div>
@@ -88,7 +144,7 @@ function TestOrderPanel({ headers, onOrderPlaced, tradeAmount, currency }) {
         <div className={`mt-2 text-xs p-2 rounded ${result.ok ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
           {result.ok ? (
             <div>
-              <div>Order platziert — {result.side.toUpperCase()} {result.qty}x {result.symbol} ({result.trade_amount} {result.currency})</div>
+              <div>Order platziert — {result.side.toUpperCase()} {result.qty}x {result.symbol} (${result.trade_amount})</div>
               <div>Status: {result.status} | Typ: {result.order_class || 'simple'} | ID: {result.order_id?.slice(0, 8)}...</div>
               {result.stop_loss > 0 && <div>SL: ${result.stop_loss.toFixed(2)} | TP: ${result.take_profit?.toFixed(2)}</div>}
               {result.legs?.length > 0 && <div>Legs: {result.legs.map(l => `${l.type} (${l.status})`).join(', ')}</div>}
@@ -96,6 +152,68 @@ function TestOrderPanel({ headers, onOrderPlaced, tradeAmount, currency }) {
           ) : `Fehler: ${result.error}`}
         </div>
       )}
+    </div>
+  )
+}
+
+function getNextMarketOpen() {
+  const now = new Date()
+  const et = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false, weekday: 'short', year: 'numeric', month: 'numeric', day: 'numeric' })
+  const parts = Object.fromEntries(et.formatToParts(now).map(p => [p.type, p.value]))
+  const dayOfWeek = parts.weekday // Mon, Tue, ...
+  const hour = Number(parts.hour)
+  const minute = Number(parts.minute)
+  const second = Number(parts.second)
+  const etMinutes = hour * 60 + minute
+  const marketOpen = 9 * 60 + 30 // 9:30 ET
+
+  // Find next market open (skip weekends)
+  let daysAhead = 0
+  const dayMap = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 0 }
+  const dayNum = dayMap[dayOfWeek] ?? 0
+
+  if (dayNum >= 1 && dayNum <= 5 && etMinutes < marketOpen) {
+    daysAhead = 0 // Today before open
+  } else if (dayNum === 5) {
+    daysAhead = 3 // Friday after close → Monday
+  } else if (dayNum === 6) {
+    daysAhead = 2 // Saturday → Monday
+  } else if (dayNum === 0) {
+    daysAhead = 1 // Sunday → Monday
+  } else {
+    daysAhead = 1 // Weekday after close → next day
+  }
+
+  // Calculate seconds until next open
+  const secondsToday = hour * 3600 + minute * 60 + second
+  const openSeconds = 9 * 3600 + 30 * 60
+  if (daysAhead === 0) {
+    return openSeconds - secondsToday
+  }
+  return (daysAhead - 1) * 86400 + (86400 - secondsToday) + openSeconds
+}
+
+function MarketClosedBanner() {
+  const [secondsLeft, setSecondsLeft] = useState(() => getNextMarketOpen())
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setSecondsLeft(getNextMarketOpen())
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  const h = Math.floor(secondsLeft / 3600)
+  const m = Math.floor((secondsLeft % 3600) / 60)
+  const s = secondsLeft % 60
+
+  return (
+    <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-4 py-3 mb-3 flex items-center gap-3">
+      <svg className="w-4 h-4 text-yellow-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+      <span className="text-yellow-400 font-medium text-sm">Börse geschlossen</span>
+      <span className="text-yellow-400/70 text-xs">Nächste Öffnung in {String(h).padStart(2, '0')}:{String(m).padStart(2, '0')}:{String(s).padStart(2, '0')}</span>
     </div>
   )
 }
@@ -138,8 +256,11 @@ function LiveTrading({ isAdmin, token }) {
   const [analysisSymbol, setAnalysisSymbol] = useState(null)
   const [analysisData, setAnalysisData] = useState(null)
   const [analysisLoading, setAnalysisLoading] = useState(false)
-  const [symbolsVisible, setSymbolsVisible] = useState(60)
+  const [analysisStrategyId, setAnalysisStrategyId] = useState(null)
   const [symbolSearch, setSymbolSearch] = useState('')
+  const [tradeHistorySearch, setTradeHistorySearch] = useState('')
+  const [botActionSearch, setBotActionSearch] = useState('')
+  const [symbolsSorting, setSymbolsSorting] = useState([{ id: 'trades', desc: true }])
   const [strategies, setStrategies] = useState([])
   const [showStrategies, setShowStrategies] = useState(false)
   const [strategyFilter, setStrategyFilter] = useState('')
@@ -152,19 +273,24 @@ function LiveTrading({ isAdmin, token }) {
 
   const headers = token ? { 'Authorization': `Bearer ${token}` } : {}
 
-  const openAnalysis = useCallback(async (symbol) => {
+  const openAnalysis = useCallback(async (symbol, strategyId) => {
     if (!urlSessionId) return
     setAnalysisSymbol(symbol)
     setAnalysisLoading(true)
     setAnalysisData(null)
+    if (strategyId != null) setAnalysisStrategyId(strategyId)
     try {
+      const body = { session_id: Number(urlSessionId), symbol }
+      if (strategyId) body.strategy_id = strategyId
       const res = await fetch('/api/trading/live/analyze', {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: Number(urlSessionId), symbol }),
+        body: JSON.stringify(body),
       })
       if (res.ok) {
-        setAnalysisData(await res.json())
+        const data = await res.json()
+        setAnalysisData(data)
+        if (data.active_strategy?.id) setAnalysisStrategyId(data.active_strategy.id)
       }
     } catch (err) {
       console.error('[LiveTrading] Analysis error:', err)
@@ -566,6 +692,33 @@ function LiveTrading({ isAdmin, token }) {
     }
   })
 
+  const symbolsTableData = useMemo(() =>
+    symbols.map(sym => {
+      const stat = symbolStats[sym] || { totalReturn: 0, trades: 0, openPos: null }
+      return {
+        symbol: sym,
+        price: symbolPrices[sym] != null ? formatPrice(symbolPrices[sym], sym) : null,
+        priceRaw: symbolPrices[sym] ?? 0,
+        openPos: stat.openPos,
+        totalReturn: stat.totalReturn,
+        trades: stat.trades,
+      }
+    }),
+  [symbols, symbolStats, symbolPrices, formatPrice])
+
+  const symbolsTable = useReactTable({
+    data: symbolsTableData,
+    columns: symbolsColumns,
+    state: { sorting: symbolsSorting, globalFilter: symbolSearch },
+    onSortingChange: setSymbolsSorting,
+    onGlobalFilterChange: setSymbolSearch,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+    globalFilterFn: (row, _columnId, filterValue) =>
+      row.original.symbol.toLowerCase().includes(filterValue.toLowerCase()),
+  })
+
   const totalPnlEur = positions.reduce((s, p) => s + (p.profit_loss_amt || 0), 0)
   const totalInvested = positions.reduce((s, p) => s + (p.invested_amount || 0), 0)
   const totalRenditePct = totalInvested > 0 ? (totalPnlEur / totalInvested) * 100 : 0
@@ -625,7 +778,7 @@ function LiveTrading({ isAdmin, token }) {
   // No session selected and no sessions exist — show empty state
   if (!urlSessionId && sessions.length === 0) {
     return (
-      <div className="min-h-screen bg-dark-900 p-4 md:p-6 max-w-7xl mx-auto flex items-center justify-center">
+      <div className="flex-1 bg-dark-900 p-4 md:p-6 max-w-7xl mx-auto flex items-center justify-center">
         <div className="text-center">
           <h2 className="text-lg text-gray-400 mb-2">Keine Sessions vorhanden</h2>
           <p className="text-sm text-gray-500 mb-4">Erstelle eine neue Session in der Trading Arena.</p>
@@ -638,7 +791,7 @@ function LiveTrading({ isAdmin, token }) {
   }
 
   return (
-    <div className="min-h-screen bg-dark-900 p-4 md:p-6 max-w-7xl mx-auto">
+    <div className="flex-1 bg-dark-900 p-4 md:p-6 max-w-7xl mx-auto overflow-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
@@ -650,7 +803,7 @@ function LiveTrading({ isAdmin, token }) {
                 <span className="text-gray-600">|</span>
                 <span>{symbols.length} Aktien</span>
                 <span className="text-gray-600">|</span>
-                <span>{config.trade_amount} {config.currency || 'EUR'}/Trade</span>
+                <span>${config.trade_amount}/Trade</span>
                 <span className="text-gray-600">|</span>
                 <span>{strategies.filter(s => s.is_enabled).length}/{strategies.length} Strategien aktiv</span>
               </div>
@@ -827,6 +980,10 @@ function LiveTrading({ isAdmin, token }) {
               )}
             </div>
 
+        {status && status.market_open === false && (
+          <MarketClosedBanner />
+        )}
+
         {isSessionActive && status && (() => {
           const sess = status.active_sessions?.find(s => String(s.session_id) === String(urlSessionId)) || status
           const isWS = sess.mode === 'websocket'
@@ -996,7 +1153,7 @@ function LiveTrading({ isAdmin, token }) {
                 </div>
               </div>
               <div>
-                <label className="text-xs text-gray-500 block mb-1">Betrag pro Trade ({currency || 'EUR'})</label>
+                <label className="text-xs text-gray-500 block mb-1">Betrag pro Trade (USD)</label>
                 <input
                   type="number"
                   value={tradeAmount}
@@ -1091,7 +1248,7 @@ function LiveTrading({ isAdmin, token }) {
                 </button>
               </div>
               {alpacaEnabled && alpacaPaper && (
-                <TestOrderPanel headers={headers} tradeAmount={tradeAmount} currency={config?.currency || 'EUR'} onOrderPlaced={() => {
+                <TestOrderPanel headers={headers} tradeAmount={tradeAmount} onOrderPlaced={() => {
                   if (urlSessionId) fetchAlpacaPortfolio(urlSessionId)
                   if (urlSessionId) fetchPositions(urlSessionId)
                 }} />
@@ -1820,84 +1977,88 @@ function LiveTrading({ isAdmin, token }) {
         </div>
       )}
 
-      {/* Symbols Grid */}
-      {symbols.length > 0 && (() => {
-        const q = symbolSearch.trim().toUpperCase()
-        const filtered = q ? symbols.filter(s => s.toUpperCase().includes(q)) : symbols
-        const sorted = [...filtered].sort((a, b) => {
-          const sa = symbolStats[a] || { trades: 0 }
-          const sb = symbolStats[b] || { trades: 0 }
-          return sb.trades - sa.trades
-        })
-        const visible = sorted.slice(0, symbolsVisible)
-        return (
-          <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-medium text-white">Aktien ({filtered.length}{q ? ` / ${symbols.length}` : ''})</h3>
-              <div className="relative">
-                <input
-                  type="text"
-                  value={symbolSearch}
-                  onChange={e => { setSymbolSearch(e.target.value); setSymbolsVisible(60) }}
-                  placeholder="Suche..."
-                  className="w-36 bg-dark-700 border border-dark-500 rounded px-2 py-1 pl-7 text-xs text-white placeholder-gray-500 focus:border-accent-500 focus:outline-none"
-                />
-                <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-              </div>
+      {/* Symbols Table */}
+      {symbols.length > 0 && (
+        <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-medium text-white">Aktien ({symbolsTable.getFilteredRowModel().rows.length}{symbolSearch ? ` / ${symbols.length}` : ''})</h3>
+            <div className="relative">
+              <input
+                type="text"
+                value={symbolSearch}
+                onChange={e => setSymbolSearch(e.target.value)}
+                placeholder="Suche..."
+                className="w-36 bg-dark-700 border border-dark-500 rounded px-2 py-1 pl-7 text-xs text-white placeholder-gray-500 focus:border-accent-500 focus:outline-none"
+              />
+              <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+              {symbolSearch && (
+                <button onClick={() => setSymbolSearch('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white">
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+              )}
             </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-2">
-              {visible.map(sym => {
-                const stat = symbolStats[sym] || { totalReturn: 0, trades: 0, openPos: null }
-                return (
-                  <div key={sym} onClick={() => openAnalysis(sym)} className="bg-dark-700 rounded p-2 border border-transparent hover:border-accent-500/30 transition-colors cursor-pointer">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-medium text-white truncate">{sym}</span>
-                      {stat.openPos && <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />}
-                    </div>
-                    {symbolPrices[sym] != null && (
-                      <div className="text-[10px] text-gray-400 mt-0.5">{formatPrice(symbolPrices[sym], sym)}</div>
-                    )}
-                    <div className="flex justify-between mt-1 text-[10px]">
-                      {stat.trades > 0 ? (
-                        <span className={stat.totalReturn >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {stat.totalReturn >= 0 ? '+' : ''}{stat.totalReturn.toFixed(1)}%
-                        </span>
-                      ) : (
-                        <span className="text-gray-600">-</span>
-                      )}
-                      <span className="text-gray-500">{stat.trades}T</span>
-                      {stat.openPos && (
-                        <span className={stat.openPos.profit_loss_pct >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {stat.openPos.profit_loss_pct >= 0 ? '+' : ''}{stat.openPos.profit_loss_pct.toFixed(1)}%
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-            {filtered.length > symbolsVisible && (
-              <button
-                onClick={() => setSymbolsVisible(v => v + 60)}
-                className="w-full mt-2 py-1.5 text-xs text-gray-400 hover:text-white bg-dark-700 hover:bg-dark-600 rounded transition-colors"
-              >
-                Mehr anzeigen ({symbolsVisible}/{filtered.length})
-              </button>
-            )}
           </div>
-        )
-      })()}
+          <div className="max-h-80 overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-dark-800 z-10">
+                {symbolsTable.getHeaderGroups().map(hg => (
+                  <tr key={hg.id} className="text-left text-gray-500 border-b border-dark-600">
+                    {hg.headers.map(header => (
+                      <th
+                        key={header.id}
+                        className="pb-1 pr-2 cursor-pointer hover:text-white select-none"
+                        onClick={header.column.getToggleSortingHandler()}
+                        style={{ width: header.getSize() }}
+                      >
+                        {flexRender(header.column.columnDef.header, header.getContext())}
+                        {{ asc: ' ▲', desc: ' ▼' }[header.column.getIsSorted()] ?? ''}
+                      </th>
+                    ))}
+                  </tr>
+                ))}
+              </thead>
+              <tbody>
+                {symbolsTable.getRowModel().rows.map(row => (
+                  <tr
+                    key={row.id}
+                    className="border-b border-dark-700/50 last:border-0 cursor-pointer hover:bg-dark-700 transition-colors"
+                    onClick={() => openAnalysis(row.original.symbol)}
+                  >
+                    {row.getVisibleCells().map(cell => (
+                      <td key={cell.id} className="py-1 pr-2">
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Closed Trades */}
       {closedPositions.length > 0 && (
         <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
             <h3 className="text-sm font-medium text-white">Trade History ({closedPositions.length})</h3>
-            <div className="flex items-center gap-3 text-[10px] text-gray-500">
-              <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-green-400 mr-1" />TP = Take Profit</span>
-              <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-red-400 mr-1" />SL = Stop Loss</span>
-              <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-yellow-400 mr-1" />SIGNAL = Strategie-Signal</span>
-              <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-gray-400 mr-1" />MANUAL = Manuell geschlossen</span>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1">
+                <input
+                  type="text"
+                  placeholder="Symbol suchen..."
+                  value={tradeHistorySearch}
+                  onChange={e => setTradeHistorySearch(e.target.value)}
+                  className="bg-dark-700 border border-dark-600 rounded px-2 py-1 text-xs text-gray-300 w-32 focus:outline-none focus:border-accent-500 placeholder-gray-600"
+                />
+                {tradeHistorySearch && <button onClick={() => setTradeHistorySearch('')} className="text-[10px] text-gray-500 hover:text-gray-300">✕</button>}
+              </div>
+              <div className="hidden md:flex items-center gap-3 text-[10px] text-gray-500">
+                <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-green-400 mr-1" />TP</span>
+                <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-red-400 mr-1" />SL</span>
+                <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-yellow-400 mr-1" />SIGNAL</span>
+                <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-gray-400 mr-1" />MANUAL</span>
+              </div>
             </div>
           </div>
           <div className="overflow-auto max-h-96">
@@ -1915,7 +2076,9 @@ function LiveTrading({ isAdmin, token }) {
                 </tr>
               </thead>
               <tbody>
-                {[...closedPositions].sort((a, b) => new Date(b.close_time) - new Date(a.close_time)).map(p => (
+                {[...closedPositions]
+                  .filter(p => !tradeHistorySearch || p.symbol?.toLowerCase().includes(tradeHistorySearch.toLowerCase()) || p.close_reason?.toLowerCase().includes(tradeHistorySearch.toLowerCase()) || p.strategy_name?.toLowerCase().includes(tradeHistorySearch.toLowerCase()))
+                  .sort((a, b) => new Date(b.close_time) - new Date(a.close_time)).map(p => (
                   <tr key={p.id} className="border-b border-dark-700/50">
                     <td className="py-1.5 pr-2 font-medium text-accent-400">
                       {p.symbol}
@@ -1957,13 +2120,28 @@ function LiveTrading({ isAdmin, token }) {
       )}
 
       {/* Letzte Bot Aktionen */}
-      {botActions.length > 0 && (
+      {botActions.length > 0 && (() => {
+        const filteredBotActions = botActions.filter(a => !botActionSearch || a.symbol?.toLowerCase().includes(botActionSearch.toLowerCase()) || a.type?.toLowerCase().includes(botActionSearch.toLowerCase()))
+        return (
         <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mb-4">
-          <h3 className="text-sm font-medium text-white mb-3">Letzte Bot Aktionen ({botActions.length})</h3>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-medium text-white">Letzte Bot Aktionen ({botActions.length})</h3>
+            <div className="flex items-center gap-1">
+              <input
+                type="text"
+                placeholder="Symbol suchen..."
+                value={botActionSearch}
+                onChange={e => setBotActionSearch(e.target.value)}
+                className="bg-dark-700 border border-dark-600 rounded px-2 py-1 text-xs text-gray-300 w-32 focus:outline-none focus:border-accent-500 placeholder-gray-600"
+              />
+              {botActionSearch && <button onClick={() => setBotActionSearch('')} className="text-[10px] text-gray-500 hover:text-gray-300">✕</button>}
+              {botActionSearch && <span className="text-[10px] text-gray-600 ml-1">{filteredBotActions.length}/{botActions.length}</span>}
+            </div>
+          </div>
 
           {/* Mobile: Cards */}
           <div className="md:hidden space-y-2">
-            {botActions.map((a, i) => (
+            {filteredBotActions.map((a, i) => (
               <div key={i} className="bg-dark-700 rounded-lg p-3 border border-dark-600">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
@@ -2018,7 +2196,7 @@ function LiveTrading({ isAdmin, token }) {
                 </tr>
               </thead>
               <tbody>
-                {botActions.map((a, i) => (
+                {filteredBotActions.map((a, i) => (
                   <tr key={i} className={`border-b border-dark-700/50 ${a.type === 'OPEN' ? 'bg-dark-800' : 'bg-dark-750'}`}>
                     <td className="py-1.5 pr-2 text-gray-500 whitespace-nowrap">{formatTime(a.time)}</td>
                     <td className="py-1.5 pr-2">
@@ -2050,7 +2228,8 @@ function LiveTrading({ isAdmin, token }) {
             </table>
           </div>
         </div>
-      )}
+        )
+      })()}
 
       {/* Debug-Log */}
       {urlSessionId && (
@@ -2305,7 +2484,7 @@ function LiveTrading({ isAdmin, token }) {
                       <div className="flex items-center gap-4 text-[10px]">
                         <span className="text-gray-400">{s.total_trades} Trades</span>
                         <span className={s.total_pnl >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {s.total_pnl >= 0 ? '+' : ''}{s.total_pnl?.toFixed(2)} {s.currency || 'EUR'}
+                          {s.total_pnl >= 0 ? '+' : ''}${s.total_pnl?.toFixed(2)}
                         </span>
                         <span className={s.win_rate >= 50 ? 'text-green-400' : 'text-red-400'}>
                           {s.win_rate?.toFixed(0)}% Win
@@ -2369,7 +2548,23 @@ function LiveTrading({ isAdmin, token }) {
           <div className="sticky top-0 z-10 bg-dark-800 border-b border-dark-600 px-6 py-3 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <h2 className="text-lg font-bold text-white">{analysisSymbol}</h2>
-              <span className="text-xs text-gray-500">{STRATEGY_LABELS[config?.strategy] || config?.strategy} | {config?.interval}</span>
+              {analysisData?.strategies?.filter(s => s.is_enabled).length > 1 ? (
+                <select
+                  value={analysisStrategyId || ''}
+                  onChange={e => { const id = Number(e.target.value); setAnalysisStrategyId(id); openAnalysis(analysisSymbol, id) }}
+                  className="bg-dark-700 border border-dark-500 rounded px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-accent-500"
+                >
+                  {analysisData.strategies.filter(s => s.is_enabled).map(s => (
+                    <option key={s.id} value={s.id}>{STRATEGY_LABELS[s.name] || s.name}</option>
+                  ))}
+                </select>
+              ) : (
+                <span className="text-xs text-gray-500">
+                  {analysisData?.active_strategy?.name ? (STRATEGY_LABELS[analysisData.active_strategy.name] || analysisData.active_strategy.name) : (STRATEGY_LABELS[config?.strategy] || config?.strategy)}
+                </span>
+              )}
+              <span className="text-xs text-gray-600">|</span>
+              <span className="text-xs text-gray-500">{config?.interval}</span>
               {analysisData?.comparison?.mismatches > 0 && (
                 <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-orange-500/20 border border-orange-500/30 text-orange-400 animate-pulse">
                   {analysisData.comparison.mismatches} MISMATCH{analysisData.comparison.mismatches !== 1 ? 'ES' : ''}
@@ -2406,7 +2601,7 @@ function LiveTrading({ isAdmin, token }) {
                   <ArenaIndicatorChart
                     indicators={analysisData.indicators}
                     markers={analysisData.markers}
-                    strategyName={STRATEGY_LABELS[config?.strategy] || config?.strategy}
+                    strategyName={analysisData?.active_strategy?.name ? (STRATEGY_LABELS[analysisData.active_strategy.name] || analysisData.active_strategy.name) : (STRATEGY_LABELS[config?.strategy] || config?.strategy)}
                   />
                 )}
 

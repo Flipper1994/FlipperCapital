@@ -179,7 +179,7 @@ function Dashboard({ isAdmin, token }) {
       </div>
 
       {/* Right Sidebar - Desktop: fixed sidebar, Mobile: collapsible sections */}
-      <aside className="md:w-80 bg-dark-800 border-t md:border-t-0 md:border-l border-dark-600 flex flex-col">
+      <aside className="md:w-80 bg-dark-800 border-t md:border-t-0 md:border-l border-dark-600 flex flex-col overflow-hidden">
         {/* System Performance Section - Now ABOVE Watchlist, collapsible on both mobile and PC */}
         <div className="border-b border-dark-600 flex flex-col">
           {/* Collapsible Header */}

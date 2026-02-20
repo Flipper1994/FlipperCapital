@@ -43,6 +43,7 @@ function AdminPanel() {
   const [editingItem, setEditingItem] = useState(null)
   const [fixingDB, setFixingDB] = useState(false)
   const [fixResult, setFixResult] = useState(null)
+  const [vacuuming, setVacuuming] = useState(false)
   const [backfillDate, setBackfillDate] = useState('')
   const [backfilling, setBackfilling] = useState(false)
   const [backfillResult, setBackfillResult] = useState(null)
@@ -2106,6 +2107,95 @@ function AdminPanel() {
             {/* Dashboard Tab */}
             {activeTab === 'dashboard' && stats && (
               <div className="space-y-6">
+                {/* DB Health */}
+                {stats.db_health && (() => {
+                  const h = stats.db_health
+                  const sizeMB = h.size_mb || 0
+                  const warn = sizeMB > 500
+                  const critical = sizeMB > 2000
+                  const tables = (h.tables || []).sort((a, b) => b.size_mb - a.size_mb)
+                  const fmtSize = mb => mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : mb >= 1 ? `${mb.toFixed(1)} MB` : `${(mb * 1024).toFixed(0)} KB`
+                  return (
+                    <div className={`rounded-xl border p-4 ${
+                      critical ? 'bg-red-500/10 border-red-500/30' : warn ? 'bg-yellow-500/10 border-yellow-500/30' : 'bg-dark-700/50 border-dark-600'
+                    }`}>
+                      <div className="flex items-center justify-between mb-3">
+                        <h3 className="text-sm font-medium text-white flex items-center gap-2">
+                          Datenbank
+                          {critical && <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-red-500/20 text-red-400">KRITISCH</span>}
+                          {warn && !critical && <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-yellow-500/20 text-yellow-400">WARNUNG</span>}
+                        </h3>
+                        <div className="flex items-center gap-3">
+                          <div className="text-right text-xs text-gray-400">
+                            <span>Frag: <span className={h.fragmentation_pct > 30 ? 'text-yellow-400' : 'text-gray-300'}>{(h.fragmentation_pct || 0).toFixed(1)}%</span></span>
+                            <span className="ml-3">Freelist: {(h.freelist_count || 0).toLocaleString()}</span>
+                          </div>
+                          <span className={`text-lg font-bold ${critical ? 'text-red-400' : warn ? 'text-yellow-400' : 'text-white'}`}>
+                            {fmtSize(sizeMB)}
+                          </span>
+                        </div>
+                      </div>
+                      {tables.length > 0 && (
+                        <div className="max-h-64 overflow-y-auto">
+                          <table className="w-full text-xs">
+                            <thead className="sticky top-0 bg-dark-800 z-10">
+                              <tr className="text-left text-gray-500 border-b border-dark-600">
+                                <th className="pb-1 pr-2">Tabelle</th>
+                                <th className="pb-1 pr-2 text-right">Eintraege</th>
+                                <th className="pb-1 pr-2 text-right">Groesse</th>
+                                <th className="pb-1 text-right">Anteil</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {tables.map(t => (
+                                <tr key={t.name} className="border-b border-dark-700/50 last:border-0">
+                                  <td className="py-1 pr-2 text-gray-300 font-mono">{t.name}</td>
+                                  <td className="py-1 pr-2 text-right text-gray-400">{t.count.toLocaleString()}</td>
+                                  <td className={`py-1 pr-2 text-right ${t.size_mb > 100 ? 'text-yellow-400' : 'text-gray-400'}`}>{fmtSize(t.size_mb)}</td>
+                                  <td className="py-1 text-right text-gray-500">{sizeMB > 0 ? `${(t.size_mb / sizeMB * 100).toFixed(0)}%` : '-'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                      {(warn || critical) && (
+                        <div className="mt-3 flex items-center justify-between">
+                          <span className={`text-xs ${critical ? 'text-red-400' : 'text-yellow-400'}`}>
+                            {critical ? 'DB ist sehr gross — VACUUM empfohlen.' : 'DB waechst — grosse Tabellen pruefen.'}
+                          </span>
+                          <button
+                            onClick={async () => {
+                              if (!confirm('VACUUM kann bei grossen DBs mehrere Minuten dauern. Fortfahren?')) return
+                              setVacuuming(true)
+                              try {
+                                const res = await fetch('/api/admin/db-vacuum', {
+                                  method: 'POST',
+                                  headers: { 'Authorization': `Bearer ${token}` }
+                                })
+                                const data = await res.json()
+                                if (res.ok) {
+                                  alert(`VACUUM abgeschlossen. Neue Groesse: ${data.size_mb?.toFixed(0)} MB`)
+                                  fetchStats()
+                                } else {
+                                  alert('VACUUM fehlgeschlagen: ' + (data.error || 'Unbekannter Fehler'))
+                                }
+                              } catch (err) {
+                                alert('VACUUM fehlgeschlagen: ' + err.message)
+                              } finally {
+                                setVacuuming(false)
+                              }
+                            }}
+                            disabled={vacuuming}
+                            className="px-3 py-1 text-xs font-medium rounded bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 disabled:opacity-50 transition-colors"
+                          >
+                            {vacuuming ? 'VACUUM laeuft...' : 'VACUUM'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
                 {/* Bulk Update Section */}
                 <div className={`rounded-xl border p-4 ${
                   isAggressive

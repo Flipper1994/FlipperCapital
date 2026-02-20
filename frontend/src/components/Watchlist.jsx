@@ -566,7 +566,7 @@ function Watchlist({ stocks, loading, isAdmin, onAdd, onDelete, onSelectStock, o
         {loading ? (
           <div className="text-center py-8">
             <div className="w-8 h-8 border-2 border-accent-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
-            <p className="text-gray-500 text-sm mt-2">Loading...</p>
+            <p className="text-gray-500 text-sm mt-2">Watchlist wird geladen...</p>
           </div>
         ) : stocks.length === 0 ? (
           <div className="text-center py-8">

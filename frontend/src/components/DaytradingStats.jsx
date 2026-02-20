@@ -454,7 +454,7 @@ ${sorted.map(p => {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-dark-900 flex items-center justify-center">
+      <div className="flex-1 bg-dark-900 flex items-center justify-center">
         <div className="text-gray-500 text-sm animate-pulse">Lade Sessions...</div>
       </div>
     )
@@ -462,7 +462,7 @@ ${sorted.map(p => {
 
   if (sessions.length === 0) {
     return (
-      <div className="min-h-screen bg-dark-900 flex items-center justify-center p-4">
+      <div className="flex-1 bg-dark-900 flex items-center justify-center p-4">
         <div className="text-center">
           <div className="text-4xl mb-3 opacity-30">&#x1F4CA;</div>
           <div className="text-gray-400 text-lg font-medium mb-1">Keine Trading Sessions</div>
@@ -473,7 +473,7 @@ ${sorted.map(p => {
   }
 
   return (
-    <div className="min-h-screen bg-dark-900 p-4 md:p-6 max-w-7xl mx-auto">
+    <div className="flex-1 bg-dark-900 p-4 md:p-6 max-w-7xl mx-auto overflow-auto">
       {/* Header */}
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-white">Daytrading Statistiken</h1>

@@ -336,7 +336,7 @@ function BacktestLab({ token, isAdmin }) {
   }, [history, selectedHistory])
 
   return (
-    <div className="flex-1 flex flex-col p-4 max-w-7xl mx-auto w-full">
+    <div className="flex-1 flex flex-col p-4 max-w-7xl mx-auto w-full overflow-auto">
       <h1 className="text-2xl font-bold text-white mb-4">Backtest Lab</h1>
 
       {/* Mode Toggle */}

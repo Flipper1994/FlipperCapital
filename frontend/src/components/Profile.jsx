@@ -163,7 +163,7 @@ function Profile() {
   }
 
   return (
-    <div className="flex-1 p-4 md:p-6 max-w-4xl">
+    <div className="flex-1 p-4 md:p-6 max-w-4xl overflow-auto">
       <h1 className="text-2xl font-bold text-white mb-6">Mein Profil</h1>
 
       {/* Tabs */}

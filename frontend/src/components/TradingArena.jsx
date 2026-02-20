@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback, useMemo, useTransition } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, useTransition, Component } from 'react'
+import { useReactTable, getCoreRowModel, getSortedRowModel, getFilteredRowModel, flexRender, createColumnHelper } from '@tanstack/react-table'
 import ArenaChart from './ArenaChart'
 import ArenaBacktestPanel from './ArenaBacktestPanel'
 import ArenaIndicatorChart from './ArenaIndicatorChart'
@@ -161,17 +162,160 @@ const STRATEGY_INFO = {
   },
 }
 
-function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSelectStock, filterSymbols, timeRange, formatTimeRange, tradeAmount, tradesFrom }) {
+const stockColumnHelper = createColumnHelper()
+
+const stockColumns = [
+  stockColumnHelper.accessor('symbol', {
+    header: 'Symbol',
+    cell: info => <span className="font-medium text-accent-400">{info.getValue()}</span>,
+    size: 80,
+  }),
+  stockColumnHelper.accessor('win_rate', {
+    header: 'WinRate',
+    cell: info => {
+      const v = info.getValue()
+      return <span className={v >= 50 ? 'text-green-400' : 'text-red-400'}>{v?.toFixed(0)}%</span>
+    },
+    size: 70,
+  }),
+  stockColumnHelper.accessor('total_return', {
+    header: 'Total',
+    cell: info => {
+      const v = info.getValue()
+      return <span className={v >= 0 ? 'text-green-400' : 'text-red-400'}>{v >= 0 ? '+' : ''}{v?.toFixed(1)}%</span>
+    },
+    size: 80,
+  }),
+  stockColumnHelper.accessor('avg_return', {
+    header: '\u00D8/Trade',
+    cell: info => {
+      const v = info.getValue()
+      if (v == null) return '-'
+      return <span className={v >= 0 ? 'text-green-400' : 'text-red-400'}>{v >= 0 ? '+' : ''}{v?.toFixed(1)}%</span>
+    },
+    size: 80,
+  }),
+  stockColumnHelper.accessor('risk_reward', {
+    header: 'R/R',
+    cell: info => {
+      const v = info.getValue() || 0
+      return <span className={v >= 1 ? 'text-green-400' : 'text-red-400'}>{v?.toFixed(1)}</span>
+    },
+    size: 60,
+  }),
+  stockColumnHelper.accessor('max_drawdown', {
+    header: 'MaxDD',
+    cell: info => {
+      const v = info.getValue()
+      if (v == null) return '-'
+      return <span className="text-red-400">-{v?.toFixed(1)}%</span>
+    },
+    size: 70,
+  }),
+  stockColumnHelper.accessor('total_trades', {
+    header: 'Trades',
+    cell: info => <span className="text-gray-400">{info.getValue()}</span>,
+    size: 60,
+  }),
+]
+
+function StockPerformanceTable({ perStock, totalPerStock, cardSearch, setCardSearch, onSelectStock }) {
+  const [sorting, setSorting] = useState([{ id: 'total_return', desc: true }])
+
+  const data = useMemo(() => {
+    return Object.entries(perStock).map(([sym, sm]) => ({
+      symbol: sym,
+      win_rate: sm.win_rate,
+      total_return: sm.total_return,
+      avg_return: sm.total_trades > 0 ? sm.total_return / sm.total_trades : 0,
+      risk_reward: sm.risk_reward,
+      max_drawdown: sm.max_drawdown,
+      total_trades: sm.total_trades,
+    }))
+  }, [perStock])
+
+  const table = useReactTable({
+    data,
+    columns: stockColumns,
+    state: { sorting, globalFilter: cardSearch },
+    onSortingChange: setSorting,
+    onGlobalFilterChange: setCardSearch,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+    globalFilterFn: (row, _columnId, filterValue) => {
+      return row.original.symbol.toLowerCase().includes(filterValue.toLowerCase())
+    },
+  })
+
+  return (
+    <div className="mb-4">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-gray-500">Performance pro Aktie ({Object.keys(perStock).length}/{Object.keys(totalPerStock || {}).length})</span>
+        <div className="relative">
+          <input
+            type="text"
+            value={cardSearch}
+            onChange={e => setCardSearch(e.target.value)}
+            placeholder="Aktie suchen..."
+            className="w-32 bg-dark-700 border border-dark-500 rounded px-2 py-1 text-xs text-white placeholder-gray-600 focus:border-accent-500 focus:outline-none"
+          />
+          {cardSearch && (
+            <button onClick={() => setCardSearch('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white">
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="max-h-80 overflow-y-auto">
+        <table className="w-full text-xs">
+          <thead className="sticky top-0 bg-dark-800 z-10">
+            {table.getHeaderGroups().map(hg => (
+              <tr key={hg.id} className="text-left text-gray-500 border-b border-dark-600">
+                {hg.headers.map(header => (
+                  <th
+                    key={header.id}
+                    className="pb-1 pr-2 cursor-pointer hover:text-white select-none"
+                    onClick={header.column.getToggleSortingHandler()}
+                    style={{ width: header.getSize() }}
+                  >
+                    {flexRender(header.column.columnDef.header, header.getContext())}
+                    {{ asc: ' \u25B2', desc: ' \u25BC' }[header.column.getIsSorted()] ?? ''}
+                  </th>
+                ))}
+              </tr>
+            ))}
+          </thead>
+          <tbody>
+            {table.getRowModel().rows.map(row => (
+              <tr
+                key={row.id}
+                className="border-b border-dark-700/50 last:border-0 cursor-pointer hover:bg-dark-700 transition-colors"
+                onClick={() => onSelectStock && onSelectStock(row.original.symbol, null, true)}
+              >
+                {row.getVisibleCells().map(cell => (
+                  <td key={cell.id} className="py-1 pr-2">
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSelectStock, filterSymbols, timeRange, formatTimeRange, tradeAmount, tradesFrom, noDataSymbols = [] }) {
   const [sortCol, setSortCol] = useState('entry_time')
   const [sortDir, setSortDir] = useState('desc')
-  const [stocksVisible, setStocksVisible] = useState(60)
   const [tradesVisible, setTradesVisible] = useState(100)
   const [filterUpdating, setFilterUpdating] = useState(false)
   const [cardSearch, setCardSearch] = useState('')
 
   // Reset pagination when filters change
   useEffect(() => {
-    setStocksVisible(60)
     setTradesVisible(100)
     setFilterUpdating(true)
     const t = setTimeout(() => setFilterUpdating(false), 0)
@@ -217,7 +361,7 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
   }, [batchResults?.trades, sortCol, sortDir, longOnly, filterSymbols, tradesFromUnix])
 
   const batchMetrics = useMemo(() => {
-    if (!longOnly && !filterSymbols && !tradesFromUnix) return batchResults.metrics
+    if (!longOnly && !filterSymbols && !tradesFromUnix) return batchResults?.metrics || null
 
     // Filter trades for recalculation
     let trades = batchResults?.trades || []
@@ -225,7 +369,7 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
     if (filterSymbols) { const set = new Set(filterSymbols); trades = trades.filter(t => set.has(t.symbol)) }
     if (tradesFromUnix > 0) trades = trades.filter(t => t.entry_time >= tradesFromUnix)
     trades = trades.filter(t => !t.is_open)
-    if (trades.length === 0) return batchResults.metrics
+    if (trades.length === 0) return batchResults?.metrics || null
 
     let wins = 0, losses = 0, totalReturn = 0, totalWinReturn = 0, totalLossReturn = 0
     let equity = 100, peak = 100, maxDD = 0
@@ -251,7 +395,7 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
   }, [batchResults, longOnly, filterSymbols, tradesFromUnix])
 
   const batchPerStock = useMemo(() => {
-    const ps = batchResults.per_stock || {}
+    const ps = batchResults?.per_stock || {}
 
     // No filters active → use backend metrics directly
     if (!longOnly && !filterSymbols && !tradesFromUnix) return ps
@@ -315,7 +459,7 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
   const m = batchMetrics
   const perStock = batchPerStock
 
-  // Portfolio return on invested capital
+  // Portfolio return on invested capital (must be before any early return — Rules of Hooks)
   const portfolioStats = useMemo(() => {
     const closedTrades = filteredBatchTrades.filter(t => !t.is_open)
     const sorted = [...closedTrades].sort((a, b) => a.entry_time - b.entry_time)
@@ -337,6 +481,12 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
 
     return { portfolioReturn, maxParallel, requiredCapital, totalProfit, posSize }
   }, [filteredBatchTrades, tradeAmount])
+
+  if (!m) return (
+    <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mt-4">
+      <div className="text-sm text-gray-500">Keine Backtest-Daten verfügbar.</div>
+    </div>
+  )
 
   return (
     <div className="bg-dark-800 rounded-lg border border-dark-600 p-4 mt-4 relative">
@@ -419,59 +569,16 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
         </div>
       </div>
 
-      {/* Per-Stock Grid */}
-      {Object.keys(perStock).length > 0 && (() => {
-        const all = Object.entries(perStock).sort((a, b) => b[1].total_return - a[1].total_return)
-        const searched = cardSearch ? all.filter(([sym]) => sym.toLowerCase().includes(cardSearch.toLowerCase())) : all
-        const totalStocks = all.length
-        const visible = cardSearch ? searched : all.slice(0, stocksVisible)
-        return (
-          <div className="mb-4">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs text-gray-500">Performance pro Aktie ({totalStocks}/{Object.keys(batchResults?.per_stock || {}).length})</span>
-              <div className="relative">
-                <input
-                  type="text"
-                  value={cardSearch}
-                  onChange={e => setCardSearch(e.target.value)}
-                  placeholder="Aktie suchen..."
-                  className="w-32 bg-dark-700 border border-dark-500 rounded px-2 py-1 text-xs text-white placeholder-gray-600 focus:border-accent-500 focus:outline-none"
-                />
-                {cardSearch && (
-                  <button onClick={() => setCardSearch('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white">
-                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-                  </button>
-                )}
-              </div>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
-              {visible.map(([sym, sm]) => (
-                <div
-                  key={sym}
-                  className="bg-dark-700 rounded p-2 cursor-pointer hover:bg-dark-600 transition-colors border border-transparent hover:border-accent-500/30"
-                  onClick={() => onSelectStock && onSelectStock(sym, null, true)}
-                >
-                  <div className="text-xs font-medium text-white truncate">{sym}</div>
-                  <div className="flex justify-between mt-1 text-[10px]">
-                    <span className={sm.win_rate >= 50 ? 'text-green-400' : 'text-red-400'}>{sm.win_rate?.toFixed(0)}%</span>
-                    <span className={sm.total_return >= 0 ? 'text-green-400' : 'text-red-400'}>{sm.total_return >= 0 ? '+' : ''}{sm.total_return?.toFixed(0)}%</span>
-                    <span className={`${(sm.risk_reward || 0) >= 1 ? 'text-green-400' : 'text-red-400'}`}>R/R {sm.risk_reward?.toFixed(1) || '-'}</span>
-                    <span className="text-gray-500">{sm.total_trades}T</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-            {!cardSearch && totalStocks > stocksVisible && (
-              <button
-                onClick={() => setStocksVisible(v => v + 60)}
-                className="w-full mt-2 py-1.5 text-xs text-gray-400 hover:text-white bg-dark-700 hover:bg-dark-600 rounded transition-colors"
-              >
-                Mehr anzeigen ({stocksVisible}/{totalStocks})
-              </button>
-            )}
-          </div>
-        )
-      })()}
+      {/* Skipped symbols warning */}
+      {noDataSymbols.length > 0 && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-xs mb-2">
+          <span className="font-medium">{noDataSymbols.length} Aktien ohne Daten übersprungen</span>
+          <span className="text-yellow-500/60">— Kursdaten konnten nicht geladen werden (API-Limit oder Symbol nicht verfügbar)</span>
+        </div>
+      )}
+
+      {/* Per-Stock Table */}
+      {Object.keys(perStock).length > 0 && <StockPerformanceTable perStock={perStock} totalPerStock={batchResults?.per_stock} cardSearch={cardSearch} setCardSearch={setCardSearch} onSelectStock={onSelectStock} />}
 
       {/* Sortable Trades Table */}
       <div className="text-xs text-gray-500 mb-2">Alle Trades ({filteredBatchTrades.length})</div>
@@ -555,8 +662,9 @@ function TradingArena({ isAdmin, token }) {
   const [backtestResults, setBacktestResults] = useState(null)
   const [backtestLoading, setBacktestLoading] = useState(false)
   const [backtestError, setBacktestError] = useState(null)
-  const [backtestStrategy, setBacktestStrategy] = useState('hybrid_ai_trend')
+  const [backtestStrategy, setBacktestStrategy] = useState(() => localStorage.getItem('arena_strategy') || 'hybrid_ai_trend')
   const [tradingWatchlist, setTradingWatchlist] = useState([])
+  const [watchlistLoading, setWatchlistLoading] = useState(true)
   const [addSymbol, setAddSymbol] = useState('')
   const [addError, setAddError] = useState('')
   const [importProgress, setImportProgress] = useState(null)
@@ -569,7 +677,7 @@ function TradingArena({ isAdmin, token }) {
   const [noDataSymbols, setNoDataSymbols] = useState([])
   const [longOnly, setLongOnly] = useState(true)
   const [usOnly, setUsOnly] = useState(true)
-  const [dataSource, setDataSource] = useState('alpaca') // 'alpaca' or 'yahoo'
+  const dataSource = 'yahoo'
   const [hideFiltered, setHideFiltered] = useState(true)
   const [isFilterPending, startFilterTransition] = useTransition()
   const [showSimulation, setShowSimulation] = useState(false)
@@ -587,6 +695,13 @@ function TradingArena({ isAdmin, token }) {
   const [availableSessions, setAvailableSessions] = useState([])
   const [addToSessionLoading, setAddToSessionLoading] = useState(false)
 
+  // Alpaca Broker Config (admin)
+  const [showBrokerConfig, setShowBrokerConfig] = useState(false)
+  const [brokerKey, setBrokerKey] = useState('')
+  const [brokerSecret, setBrokerSecret] = useState('')
+  const [brokerSaving, setBrokerSaving] = useState(false)
+  const [brokerLoaded, setBrokerLoaded] = useState(false)
+
   // When clicking from batch results, override single backtest with batch data
   const batchOverrideRef = useRef(null)
 
@@ -594,6 +709,7 @@ function TradingArena({ isAdmin, token }) {
   const [prefetchStatus, setPrefetchStatus] = useState(null) // null | 'fetching' | 'done'
   const [prefetchProgress, setPrefetchProgress] = useState(null)
   const prefetchAbortRef = useRef(null)
+  const batchAbortRef = useRef(null) // also used by skipLoading + runBatchBacktest
   const [manualRefresh, setManualRefresh] = useState(false) // true when admin clicks refresh button
   const [lastUpdated, setLastUpdated] = useState(null) // { time: Date, source: 'auto'|'manual' }
 
@@ -612,20 +728,41 @@ function TradingArena({ isAdmin, token }) {
   // Debounce ref for param changes
   const paramDebounce = useRef(null)
 
-  const batchAbortRef = useRef(null) // also used by skipLoading + runBatchBacktest
-
-  // Load default settings on mount
+  // Load settings on mount — respect persisted strategy choice
   useEffect(() => {
+    let strat = backtestStrategy
     // Non-admins: force allowed strategy
-    if (!isAdmin && backtestStrategy !== 'hybrid_ai_trend') {
-      setBacktestStrategy('hybrid_ai_trend')
-      setStrategyParams(getDefaultParams('hybrid_ai_trend'))
+    if (!isAdmin && strat !== 'hybrid_ai_trend') {
+      strat = 'hybrid_ai_trend'
+      setBacktestStrategy(strat)
     }
-    // Always start with defaults — no saved settings loaded
-    const strat = (!isAdmin && backtestStrategy !== 'hybrid_ai_trend') ? 'hybrid_ai_trend' : backtestStrategy
     setStrategyParams(getDefaultParams(strat))
     setInterval(STRATEGY_DEFAULT_INTERVAL[strat] || '4h')
-  }, [token])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load Alpaca Broker Config (admin only)
+  useEffect(() => {
+    if (!isAdmin || !token || brokerLoaded) return
+    fetch('/api/admin/settings', {
+      headers: { 'Authorization': `Bearer ${token}` },
+    }).then(r => r.ok ? r.json() : {}).then(data => {
+      if (data.alpaca_broker_key) setBrokerKey(data.alpaca_broker_key)
+      if (data.alpaca_broker_secret) setBrokerSecret(data.alpaca_broker_secret)
+      setBrokerLoaded(true)
+    }).catch(() => {})
+  }, [isAdmin, token])
+
+  const saveBrokerConfig = async () => {
+    setBrokerSaving(true)
+    try {
+      await fetch('/api/admin/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ alpaca_broker_key: brokerKey, alpaca_broker_secret: brokerSecret }),
+      })
+    } catch { /* ignore */ }
+    setBrokerSaving(false)
+  }
 
   // Load trading watchlist and auto-select first stock
   const tradingWatchlistLoaded = useRef(false)
@@ -644,6 +781,7 @@ function TradingArena({ isAdmin, token }) {
         }
       }
     } catch { /* ignore */ }
+    setWatchlistLoading(false)
   }
   useEffect(() => { fetchTradingWatchlist() }, [token])
 
@@ -873,6 +1011,39 @@ function TradingArena({ isAdmin, token }) {
     return null
   }, [backtestResults?.chart_data])
 
+  const handleBacktestExport = useCallback(() => {
+    if (!filteredMetrics || !filteredTrades) return
+    const strat = STRATEGIES.find(s => s.value === backtestStrategy)
+    const data = {
+      exported_at: new Date().toISOString(),
+      symbol: selectedSymbol,
+      strategy: { key: backtestStrategy, label: strat?.label || backtestStrategy, interval },
+      params: { ...strategyParams },
+      settings: { trade_amount: simTradeAmount, long_only: longOnly },
+      time_range: backtestTimeRange,
+      metrics: filteredMetrics,
+      trades: filteredTrades.map(t => ({
+        direction: t.direction,
+        entry_time: t.entry_time,
+        entry_price: t.entry_price,
+        exit_time: t.exit_time || null,
+        exit_price: t.exit_price || null,
+        return_pct: t.return_pct,
+        exit_reason: t.exit_reason || null,
+        is_open: !!t.is_open,
+      })),
+    }
+    const json = JSON.stringify(data, null, 2)
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const date = new Date().toISOString().slice(0, 10)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `backtest_${selectedSymbol}_${backtestStrategy}_${interval}_${date}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }, [filteredMetrics, filteredTrades, backtestStrategy, selectedSymbol, interval, strategyParams, simTradeAmount, longOnly, backtestTimeRange])
+
   const batchTimeRange = useMemo(() => {
     if (!batchResults?.trades?.length) return null
     let min = Infinity, max = -Infinity
@@ -906,7 +1077,7 @@ function TradingArena({ isAdmin, token }) {
       ...t, invested: amt, profitEUR: amt * (t.return_pct / 100),
     })).sort((a, b) => a.entry_time - b.entry_time)
     const events = []
-    simTrades.forEach(t => { events.push({ time: t.entry_time, type: 1 }); events.push({ time: t.exit_time, type: -1 }) })
+    simTrades.forEach(t => { events.push({ time: t.entry_time, type: 1 }); if (t.exit_time) events.push({ time: t.exit_time, type: -1 }) })
     events.sort((a, b) => a.time - b.time || a.type - b.type)
     let open = 0, maxParallel = 0
     events.forEach(e => { open += e.type; if (open > maxParallel) maxParallel = open })
@@ -959,6 +1130,8 @@ function TradingArena({ isAdmin, token }) {
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
+        // If this call was superseded, stop processing
+        if (controller.signal.aborted) break
         buffer += decoder.decode(value, { stream: true })
         const lines = buffer.split('\n')
         buffer = lines.pop()
@@ -968,10 +1141,14 @@ function TradingArena({ isAdmin, token }) {
               const msg = JSON.parse(line.slice(6))
               if (msg.type === 'init') {
                 latestProgress = { phase: 'init', current: 0, total: msg.total, startedAt: Date.now() }
+              } else if (msg.type === 'cache_loaded') {
+                latestProgress = { phase: 'cache', cached: msg.cached, total: msg.total, uncached: msg.uncached, startedAt: Date.now() }
               } else if (msg.type === 'prefetch') {
-                latestProgress = { phase: 'prefetch', current: 0, total: msg.total, prefetching: true, uncached: msg.uncached, source: msg.source, startedAt: Date.now() }
+                latestProgress = { ...latestProgress, phase: 'prefetch', current: 0, total: msg.total, prefetching: true, uncached: msg.uncached, source: msg.source, startedAt: Date.now() }
               } else if (msg.type === 'prefetch_progress') {
                 latestProgress = { ...latestProgress, phase: 'prefetch', prefetching: true, prefetchCurrent: msg.current, prefetchTotal: msg.total, source: msg.source || latestProgress?.source }
+              } else if (msg.type === 'prefetch_warning') {
+                latestProgress = { ...latestProgress, prefetchWarning: { yahooFailed: msg.yahoo_failed, yahooTotal: msg.yahoo_total, alpacaFailed: msg.alpaca_failed } }
               } else if (msg.type === 'progress') {
                 latestProgress = { ...latestProgress, phase: 'backtest', prefetching: false, current: msg.current, total: msg.total, symbol: msg.symbol }
               } else if (msg.type === 'result') {
@@ -989,15 +1166,18 @@ function TradingArena({ isAdmin, token }) {
           lastFlush = now
         }
       }
-      if (latestProgress) setBatchProgress({ ...latestProgress })
+      if (latestProgress && !controller.signal.aborted) setBatchProgress({ ...latestProgress })
     } catch (err) {
       if (err.name !== 'AbortError') {
         console.error('[TradingArena] Batch backtest error:', err)
       }
     }
-    setBatchProgress(null)
-    setBatchLoading(false)
-    batchAbortRef.current = null
+    // Only clean up if THIS call is still the active one (prevents aborted call from resetting new call's state)
+    if (batchAbortRef.current === controller) {
+      setBatchProgress(null)
+      setBatchLoading(false)
+      batchAbortRef.current = null
+    }
   }, [token])
 
   // Shared SSE prefetch reader — used by manual refresh button
@@ -1053,7 +1233,7 @@ function TradingArena({ isAdmin, token }) {
     setPrefetchStatus('done')
   }, [token])
 
-  // Manual refresh: force-fetch all base intervals (5m + 60m) for all strategies
+  // Manual refresh: force-fetch current interval, then re-run batch
   const runManualRefresh = useCallback(async () => {
     if (!isAdmin || !token) return
     if (prefetchAbortRef.current) prefetchAbortRef.current.abort()
@@ -1061,7 +1241,7 @@ function TradingArena({ isAdmin, token }) {
     const controller = new AbortController()
     prefetchAbortRef.current = controller
     setManualRefresh(true)
-    await runPrefetch({ intervals: ['5m', '60m'], us_only: usOnly, force: true }, controller)
+    await runPrefetch({ intervals: [interval], us_only: usOnly, force: true }, controller)
     setManualRefresh(false)
     setLastUpdated({ time: new Date(), source: 'manual' })
     if (controller.signal.aborted) return
@@ -1072,7 +1252,10 @@ function TradingArena({ isAdmin, token }) {
   // Auto-backtest on strategy change — always reset to defaults
   const handleStrategyChange = (newStrategy) => {
     if (!isAdmin && newStrategy !== 'hybrid_ai_trend') return
+    const stratDef = STRATEGIES.find(s => s.value === newStrategy)
+    if (stratDef?.disabled) return
     setBacktestStrategy(newStrategy)
+    localStorage.setItem('arena_strategy', newStrategy)
     const newParams = getDefaultParams(newStrategy)
     setStrategyParams(newParams)
     const newIv = STRATEGY_DEFAULT_INTERVAL[newStrategy] || '4h'
@@ -1327,7 +1510,7 @@ function TradingArena({ isAdmin, token }) {
             try {
               const data = JSON.parse(line.slice(6))
               if (data.done) {
-                setImportProgress({ ...data, current: data.added + data.skipped + data.failed, total: data.added + data.skipped + data.failed })
+                setImportProgress({ ...data, current: data.added + (data.not_tradable || 0) + data.skipped + data.failed, total: data.added + (data.not_tradable || 0) + data.skipped + data.failed })
                 fetchTradingWatchlist()
                 setTimeout(() => setImportProgress(null), 5000)
               } else if (data.type === 'phase' && data.phase === 'alpaca_check') {
@@ -1358,7 +1541,7 @@ function TradingArena({ isAdmin, token }) {
   }
   const loadingInfo = useMemo(() => {
     if (prefetchStatus === 'fetching') {
-      const lbl = manualRefresh ? 'Kurse aktualisieren (alle Strategien)' : 'Aktualisiere Kursdaten'
+      const lbl = manualRefresh ? `Kurse aktualisieren (${interval})` : 'Aktualisiere Kursdaten'
       const p = prefetchProgress
       if (!p) return { label: lbl, pct: 0, detail: 'Verbinde...' }
       if (p.current === 0) {
@@ -1366,7 +1549,7 @@ function TradingArena({ isAdmin, token }) {
         if (p.cached > 0) return { label: lbl, pct: 0, detail: `${p.cached} im Cache, lade ${p.fetchTotal} Aktien...` }
         return { label: lbl, pct: 0, detail: `Lade ${p.fetchTotal} Aktien...` }
       }
-      const pct = Math.round((p.current / p.total) * 100)
+      const pct = p.total > 0 ? Math.round((p.current / p.total) * 100) : 0
       let eta = ''
       if (p.current > 3 && p.startedAt) {
         const elapsed = (Date.now() - p.startedAt) / 1000
@@ -1380,18 +1563,22 @@ function TradingArena({ isAdmin, token }) {
     if (batchLoading) {
       const p = batchProgress
       if (!p) return { label: 'Starte Backtest', pct: 0, detail: 'Verbinde...' }
+      if (p.phase === 'cache') {
+        return { label: 'Cache geladen', pct: p.uncached === 0 ? 100 : 5, detail: `${p.cached} im Cache, ${p.uncached} fehlen (${p.total} gesamt)` }
+      }
       if (p.prefetching) {
         const src = p.source || 'Alpaca'
         if (p.prefetchCurrent != null) {
-          const pct = Math.round((p.prefetchCurrent / p.prefetchTotal) * 100)
-          return { label: `Lade Kursdaten via ${src}`, pct, detail: `${p.prefetchCurrent}/${p.prefetchTotal} Aktien` }
+          const pct = p.prefetchTotal > 0 ? Math.round((p.prefetchCurrent / p.prefetchTotal) * 100) : 0
+          const warn = p.prefetchWarning ? ` (${p.prefetchWarning.yahooFailed} fehlgeschlagen)` : ''
+          return { label: `Lade Kursdaten via ${src}`, pct, detail: `${p.prefetchCurrent}/${p.prefetchTotal} Aktien${warn}` }
         }
         return { label: `Lade Kursdaten (${src})`, pct: 0, detail: `${p.uncached || '?'} Aktien nicht im Cache` }
       }
       if (p.phase === 'init') {
         return { label: 'Backtest läuft', pct: 0, detail: `0/${p.total} Aktien` }
       }
-      const pct = Math.round((p.current / p.total) * 100)
+      const pct = p.total > 0 ? Math.round((p.current / p.total) * 100) : 0
       let eta = ''
       if (p.current > 5 && p.startedAt) {
         const elapsed = (Date.now() - p.startedAt) / 1000
@@ -1479,8 +1666,8 @@ function TradingArena({ isAdmin, token }) {
             {STRATEGIES.map(s => {
               const locked = !isAdmin && s.value !== 'hybrid_ai_trend'
               return (
-                <option key={s.value} value={s.value} disabled={locked}>
-                  {s.label}{s.beta ? ' [BETA]' : ''}{locked ? ' (gesperrt)' : ''}
+                <option key={s.value} value={s.value} disabled={locked || s.disabled}>
+                  {s.label}{s.beta ? ' [BETA]' : ''}{s.disabled ? ` (${s.disabledReason})` : ''}{locked ? ' (gesperrt)' : ''}
                 </option>
               )
             })}
@@ -1527,7 +1714,7 @@ function TradingArena({ isAdmin, token }) {
                   ? 'bg-amber-500/20 text-amber-400 border-amber-500/30 cursor-wait'
                   : 'bg-dark-700 text-gray-400 hover:text-white hover:bg-dark-600 border-dark-600'
               }`}
-              title="Kurse für alle Strategien neu laden (5m + 1h)"
+              title={`Kursdaten neu laden (${interval}) und Backtest starten`}
             >
               <svg className={`w-4 h-4 ${manualRefresh ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -1563,20 +1750,6 @@ function TradingArena({ isAdmin, token }) {
             />
             <span className={`text-xs font-medium ${usOnly ? 'text-accent-400' : 'text-gray-400'}`}>US Only</span>
           </label>
-
-          {/* Data source toggle */}
-          {isAdmin && (
-            <div className="flex items-center rounded-lg bg-dark-700 border border-dark-600 overflow-hidden">
-              <button
-                onClick={() => setDataSource('alpaca')}
-                className={`px-2.5 py-2 text-xs font-medium transition-colors ${dataSource === 'alpaca' ? 'bg-accent-500/20 text-accent-400' : 'text-gray-500 hover:text-gray-300'}`}
-              >Alpaca</button>
-              <button
-                onClick={() => setDataSource('yahoo')}
-                className={`px-2.5 py-2 text-xs font-medium transition-colors ${dataSource === 'yahoo' ? 'bg-amber-500/20 text-amber-400' : 'text-gray-500 hover:text-gray-300'}`}
-              >Yahoo</button>
-            </div>
-          )}
 
           {/* Trades ab Datum */}
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-dark-700 border border-dark-600">
@@ -1811,6 +1984,7 @@ function TradingArena({ isAdmin, token }) {
             symbol={selectedSymbol}
             timeRange={backtestTimeRange}
             tradeAmount={simTradeAmount}
+            onExport={handleBacktestExport}
           />
         ) : backtestLoading ? (
           <div className="bg-dark-800 rounded-lg border border-dark-600 p-4">
@@ -1855,6 +2029,17 @@ function TradingArena({ isAdmin, token }) {
               {STRATEGIES.map(strat => {
                 const locked = !isAdmin && strat.value !== 'hybrid_ai_trend'
                 const data = allStrategyResults[strat.value]
+                if (strat.disabled) return (
+                  <div key={strat.value} className="bg-dark-700 rounded-lg p-3 opacity-30 relative">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <svg className="w-3 h-3 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                      </svg>
+                      <span className="text-xs text-gray-500 line-through">{strat.label}</span>
+                    </div>
+                    <div className="text-gray-600 text-[10px]">{strat.disabledReason}</div>
+                  </div>
+                )
                 if (locked) return (
                   <div key={strat.value} className="bg-dark-700 rounded-lg p-3 opacity-40 relative">
                     <div className="flex items-center gap-1.5 mb-1">
@@ -1994,7 +2179,7 @@ function TradingArena({ isAdmin, token }) {
           </div>
         )}
 
-        {batchResults && !batchLoading && <WatchlistBatchPanel batchResults={batchResults} strategy={backtestStrategy} interval={interval} longOnly={longOnly} onSelectStock={selectStock} filterSymbols={perfFilteredSymbols} timeRange={batchTimeRange} formatTimeRange={formatTimeRange} tradeAmount={simTradeAmount} tradesFrom={tradesFrom} />}
+        {batchResults && !batchLoading && <WatchlistBatchPanel batchResults={batchResults} strategy={backtestStrategy} interval={interval} longOnly={longOnly} onSelectStock={selectStock} filterSymbols={perfFilteredSymbols} timeRange={batchTimeRange} formatTimeRange={formatTimeRange} tradeAmount={simTradeAmount} tradesFrom={tradesFrom} noDataSymbols={noDataSymbols} />}
 
         {/* Calendar Heatmap Section */}
         {batchResults && !batchLoading && heatmapTrades.length > 0 && (
@@ -2051,7 +2236,7 @@ function TradingArena({ isAdmin, token }) {
                           ...t, invested: amt, profitEUR: amt * (t.return_pct / 100),
                         })).sort((a, b) => a.entry_time - b.entry_time)
                         const events = []
-                        simTrades.forEach(t => { events.push({ time: t.entry_time, type: 1 }); events.push({ time: t.exit_time, type: -1 }) })
+                        simTrades.forEach(t => { events.push({ time: t.entry_time, type: 1 }); if (t.exit_time) events.push({ time: t.exit_time, type: -1 }) })
                         events.sort((a, b) => a.time - b.time || a.type - b.type)
                         let open = 0, maxParallel = 0
                         events.forEach(e => { open += e.type; if (open > maxParallel) maxParallel = open })
@@ -2198,7 +2383,7 @@ function TradingArena({ isAdmin, token }) {
                     <span>{importProgress.phase === 'alpaca_check' ? 'Alpaca-Prüfung...' : (importProgress.symbol || 'Starte...')}</span>
                     <span>
                       {importProgress.done
-                        ? `+${importProgress.added}${importProgress.not_tradeable ? ` | ${importProgress.not_tradeable} nicht handelbar` : ''}${importProgress.failed ? ` | ${importProgress.failed} fehlgeschlagen` : ''}`
+                        ? `+${importProgress.added}${importProgress.not_tradable ? ` | ${importProgress.not_tradable} nicht handelbar` : ''}${importProgress.failed ? ` | ${importProgress.failed} fehlgeschlagen` : ''}`
                         : `${importProgress.current}/${importProgress.total}`
                       }
                     </span>
@@ -2209,6 +2394,45 @@ function TradingArena({ isAdmin, token }) {
                       style={{ width: importProgress.total > 0 ? `${(importProgress.current / importProgress.total) * 100}%` : '0%' }}
                     />
                   </div>
+                </div>
+              )}
+            </div>
+          )}
+          {/* Alpaca Broker Config (admin only) */}
+          {isAdmin && (
+            <div className="border-b border-dark-600">
+              <button
+                onClick={() => setShowBrokerConfig(!showBrokerConfig)}
+                className="w-full flex items-center justify-between px-3 py-1.5 text-[11px] text-gray-500 hover:text-gray-300 transition-colors"
+              >
+                <span>Alpaca Broker Config</span>
+                <svg className={`w-3 h-3 transition-transform ${showBrokerConfig ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              {showBrokerConfig && (
+                <div className="px-3 pb-2 space-y-1.5">
+                  <input
+                    type="password"
+                    value={brokerKey}
+                    onChange={e => setBrokerKey(e.target.value)}
+                    placeholder="API Key"
+                    className="w-full bg-dark-700 border border-dark-600 rounded px-2 py-1 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-accent-500"
+                  />
+                  <input
+                    type="password"
+                    value={brokerSecret}
+                    onChange={e => setBrokerSecret(e.target.value)}
+                    placeholder="Secret Key"
+                    className="w-full bg-dark-700 border border-dark-600 rounded px-2 py-1 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-accent-500"
+                  />
+                  <button
+                    onClick={saveBrokerConfig}
+                    disabled={brokerSaving}
+                    className="w-full px-2 py-1 bg-accent-500/20 text-accent-400 rounded text-xs hover:bg-accent-500/30 transition-colors disabled:opacity-50"
+                  >
+                    {brokerSaving ? 'Speichern...' : 'Speichern'}
+                  </button>
                 </div>
               )}
             </div>
@@ -2267,7 +2491,12 @@ function TradingArena({ isAdmin, token }) {
               </div>
             )})}
             {tradingWatchlist.length === 0 && (
-              isGlobalLoading ? <SidebarSkeleton /> : <div className="text-gray-600 text-sm text-center py-8">Keine Trading-Symbole</div>
+              (watchlistLoading || isGlobalLoading) ? (
+                <div className="flex flex-col items-center py-8 gap-2">
+                  <svg className="animate-spin h-6 w-6 text-accent-500" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                  <span className="text-gray-500 text-xs">Watchlist wird geladen...</span>
+                </div>
+              ) : <div className="text-gray-600 text-sm text-center py-8">Keine Trading-Symbole</div>
             )}
           </div>
         </div>
@@ -2354,4 +2583,26 @@ function TradingArena({ isAdmin, token }) {
   )
 }
 
-export default TradingArena
+class ArenaErrorBoundary extends Component {
+  state = { hasError: false, error: null }
+  static getDerivedStateFromError(error) { return { hasError: true, error } }
+  componentDidCatch(err, info) { console.error('[TradingArena] Crash:', err, info) }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="bg-dark-800 border border-red-500/30 rounded-lg p-6 max-w-lg">
+            <h2 className="text-red-400 font-medium mb-2">Trading Arena Fehler</h2>
+            <pre className="text-xs text-gray-400 bg-dark-900 rounded p-3 overflow-auto max-h-40 mb-4">{this.state.error?.message || 'Unbekannter Fehler'}{'\n'}{this.state.error?.stack}</pre>
+            <button onClick={() => this.setState({ hasError: false, error: null })} className="px-4 py-2 bg-accent-600 text-white rounded text-sm hover:bg-accent-500">Neu laden</button>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+export default function TradingArenaWrapped(props) {
+  return <ArenaErrorBoundary><TradingArena {...props} /></ArenaErrorBoundary>
+}

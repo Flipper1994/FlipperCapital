@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,9 +11,10 @@ import (
 	"math"
 	"net/http"
 	"net/http/cookiejar"
+	"os"
+	"path/filepath"
 	"sort"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -734,12 +736,18 @@ type SignalListVisibility struct {
 }
 
 type TradingWatchlistItem struct {
-	ID        uint      `json:"id" gorm:"primaryKey"`
-	Symbol    string    `json:"symbol" gorm:"uniqueIndex;not null"`
-	Name      string    `json:"name"`
-	AddedBy   uint      `json:"added_by"`
-	IsLive    bool      `json:"is_live" gorm:"default:false"`
-	CreatedAt time.Time `json:"created_at"`
+	ID           uint      `json:"id" gorm:"primaryKey"`
+	Symbol       string    `json:"symbol" gorm:"uniqueIndex;not null"`
+	Name         string    `json:"name"`
+	AddedBy      uint      `json:"added_by"`
+	IsLive       bool      `json:"is_live" gorm:"default:false"`
+	Fractionable bool      `json:"fractionable" gorm:"default:true"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type GlobalSetting struct {
+	Key   string `json:"key" gorm:"primaryKey"`
+	Value string `json:"value"`
 }
 
 type TradingVirtualPosition struct {
@@ -841,7 +849,7 @@ type LiveTradingConfig struct {
 	TradeAmount   float64   `json:"trade_amount" gorm:"default:500"`
 	FiltersJSON   string    `json:"filters_json" gorm:"type:text"`
 	FiltersActive   bool      `json:"filters_active"`
-	Currency        string    `json:"currency" gorm:"default:'EUR'"`
+	Currency        string    `json:"currency" gorm:"default:'USD'"`
 	AlpacaApiKey    string    `json:"alpaca_api_key" gorm:"type:text"`
 	AlpacaSecretKey string    `json:"alpaca_secret_key" gorm:"type:text"`
 	AlpacaEnabled   bool      `json:"alpaca_enabled" gorm:"default:false"`
@@ -861,7 +869,7 @@ type LiveTradingSession struct {
 	Symbols     string     `json:"symbols" gorm:"type:text"`
 	LongOnly    bool       `json:"long_only"`
 	TradeAmount float64    `json:"trade_amount"`
-	Currency    string     `json:"currency" gorm:"default:'EUR'"`
+	Currency    string     `json:"currency" gorm:"default:'USD'"`
 	IsActive    bool       `json:"is_active" gorm:"index"`
 	StartedAt   time.Time  `json:"started_at"`
 	StoppedAt   *time.Time `json:"stopped_at"`
@@ -1010,6 +1018,7 @@ type BacktestLabResponse struct {
 var db *gorm.DB
 var latestPriceCache sync.Map // key: symbol (string), value: float64
 var sessions = make(map[string]Session) // Legacy in-memory cache, DB is source of truth
+var sessionsMu sync.RWMutex
 var httpClient = &http.Client{Timeout: 10 * time.Second}
 var twelveDataAPIKey string
 
@@ -1019,6 +1028,343 @@ var (
 	alpacaDataSecret string // env: ALPACA_DATA_SECRET
 	alpacaRateTicker *time.Ticker
 )
+
+// Alpaca tradable assets cache (for watchlist validation)
+type AlpacaAssetInfo struct {
+	Tradable     bool
+	Fractionable bool
+}
+
+var (
+	tradableAssetsCache   map[string]AlpacaAssetInfo
+	tradableAssetsCacheMu sync.RWMutex
+)
+
+// File-based OHLCV Cache with lazy-loading LRU memory cache
+// Files: data/ohlcv/SYMBOL_INTERVAL.json.gz
+// Memory: only loaded on demand, evicted after 30 min of no access
+var (
+	ohlcvMemCache   map[string]map[string]*ohlcvCacheEntry
+	ohlcvMemCacheMu sync.RWMutex
+	ohlcvCacheDir   string // set in initDB
+)
+
+type ohlcvCacheEntry struct {
+	Bars       []OHLCV
+	LastAccess time.Time
+}
+
+// Live-Trading: serialized position writes to avoid SQLite lock contention
+var livePositionWriteCh = make(chan func(), 256)
+
+// Live-Trading: in-memory guard to prevent duplicate position opens (race condition with async writes)
+// Key: "sessionID:strategyID:symbol" → true if position is open
+var liveOpenPosGuard sync.Map
+
+// Live-Trading: separate Alpaca rate limiter (doesn't interfere with prefetch)
+var (
+	liveAlpacaLimiterMu   sync.Mutex
+	liveAlpacaLimiterLast time.Time
+)
+
+func liveAlpacaThrottle() {
+	liveAlpacaLimiterMu.Lock()
+	defer liveAlpacaLimiterMu.Unlock()
+	elapsed := time.Since(liveAlpacaLimiterLast)
+	if elapsed < 350*time.Millisecond {
+		time.Sleep(350*time.Millisecond - elapsed)
+	}
+	liveAlpacaLimiterLast = time.Now()
+}
+
+func livePositionWriter() {
+	for fn := range livePositionWriteCh {
+		fn()
+	}
+}
+
+// initOpenPosGuard loads all open positions for a session into the in-memory guard
+func initOpenPosGuard(sessionID uint) {
+	var openPos []LiveTradingPosition
+	db.Where("session_id = ? AND is_closed = ?", sessionID, false).Find(&openPos)
+	for _, p := range openPos {
+		key := fmt.Sprintf("%d:%d:%s", p.SessionID, p.StrategyID, p.Symbol)
+		liveOpenPosGuard.Store(key, true)
+	}
+	if len(openPos) > 0 {
+		log.Printf("[LiveTrading] OpenPosGuard: %d offene Positionen für Session #%d geladen", len(openPos), sessionID)
+	}
+}
+
+// openPosGuardKey generates the key for the in-memory guard
+func openPosGuardKey(sessionID, strategyID uint, symbol string) string {
+	return fmt.Sprintf("%d:%d:%s", sessionID, strategyID, symbol)
+}
+
+// initOHLCVFileCache sets up the file cache directory and migrates DB→files if needed
+func initOHLCVFileCache() {
+	ohlcvMemCacheMu.Lock()
+	ohlcvMemCache = make(map[string]map[string]*ohlcvCacheEntry)
+	ohlcvMemCacheMu.Unlock()
+
+	// Ensure cache dir exists
+	os.MkdirAll(ohlcvCacheDir, 0755)
+
+	// One-time migration: if DB has entries but files don't exist yet, export to files
+	var dbCount int64
+	db.Model(&OHLCVCache{}).Count(&dbCount)
+	files, _ := filepath.Glob(filepath.Join(ohlcvCacheDir, "*.json.gz"))
+	if dbCount > 0 && len(files) == 0 {
+		log.Printf("[OHLCVCache] Migrating %d DB entries to gzip files...", dbCount)
+		var entries []OHLCVCache
+		db.Find(&entries)
+		migrated := 0
+		for _, e := range entries {
+			var bars []OHLCV
+			if json.Unmarshal([]byte(e.DataJSON), &bars) == nil && len(bars) > 0 {
+				writeOHLCVFile(e.Symbol, e.Interval, bars)
+				migrated++
+			}
+		}
+		log.Printf("[OHLCVCache] Migrated %d entries to files", migrated)
+		// Clear DB cache to free space (files are the source of truth now)
+		db.Exec("DELETE FROM ohlcv_caches")
+		log.Println("[OHLCVCache] Cleared ohlcv_caches table")
+	} else if dbCount > 0 && len(files) > 0 {
+		// Files exist, clear remaining DB entries
+		db.Exec("DELETE FROM ohlcv_caches")
+	}
+
+	fileCount := 0
+	files, _ = filepath.Glob(filepath.Join(ohlcvCacheDir, "*.json.gz"))
+	fileCount = len(files)
+	log.Printf("[OHLCVCache] File cache ready: %d files in %s (lazy-load, nothing in RAM yet)", fileCount, ohlcvCacheDir)
+
+	// Start LRU evictor
+	go ohlcvLRUEvictor()
+}
+
+// ohlcvLRUEvictor removes entries not accessed for 30 minutes
+func ohlcvLRUEvictor() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		ohlcvMemCacheMu.Lock()
+		evicted := 0
+		cutoff := time.Now().Add(-30 * time.Minute)
+		for sym, intervals := range ohlcvMemCache {
+			for iv, entry := range intervals {
+				if entry.LastAccess.Before(cutoff) {
+					delete(intervals, iv)
+					evicted++
+				}
+			}
+			if len(intervals) == 0 {
+				delete(ohlcvMemCache, sym)
+			}
+		}
+		ohlcvMemCacheMu.Unlock()
+		if evicted > 0 {
+			log.Printf("[OHLCVCache] LRU evicted %d entries", evicted)
+		}
+	}
+}
+
+// ohlcvFilePath returns the gzip file path for a symbol+interval
+func ohlcvFilePath(symbol, interval string) string {
+	// Sanitize symbol for filesystem (e.g., BRK.B → BRK_B)
+	safe := strings.ReplaceAll(symbol, "/", "_")
+	safe = strings.ReplaceAll(safe, "\\", "_")
+	return filepath.Join(ohlcvCacheDir, safe+"_"+interval+".json.gz")
+}
+
+// writeOHLCVFile saves OHLCV data as a gzip JSON file
+func writeOHLCVFile(symbol, interval string, bars []OHLCV) error {
+	data, err := json.Marshal(bars)
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	gz.Write(data)
+	gz.Close()
+	return os.WriteFile(ohlcvFilePath(symbol, interval), buf.Bytes(), 0644)
+}
+
+// readOHLCVFile loads OHLCV data from a gzip JSON file
+func readOHLCVFile(symbol, interval string) ([]OHLCV, time.Time, error) {
+	path := ohlcvFilePath(symbol, interval)
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	defer gz.Close()
+	data, err := io.ReadAll(gz)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	var bars []OHLCV
+	if err := json.Unmarshal(data, &bars); err != nil {
+		return nil, time.Time{}, err
+	}
+	return bars, fi.ModTime(), nil
+}
+
+// getOHLCVFromMemCache reads from memory, lazy-loads from file on miss
+func getOHLCVFromMemCache(symbol, interval string) ([]OHLCV, bool) {
+	// Fast path: check memory
+	ohlcvMemCacheMu.RLock()
+	if m, ok := ohlcvMemCache[symbol]; ok {
+		if entry, ok := m[interval]; ok && len(entry.Bars) > 0 {
+			entry.LastAccess = time.Now()
+			ohlcvMemCacheMu.RUnlock()
+			return entry.Bars, true
+		}
+	}
+	ohlcvMemCacheMu.RUnlock()
+
+	// Slow path: load from file
+	bars, _, err := readOHLCVFile(symbol, interval)
+	if err != nil || len(bars) == 0 {
+		return nil, false
+	}
+
+	// Store in memory cache
+	ohlcvMemCacheMu.Lock()
+	if ohlcvMemCache[symbol] == nil {
+		ohlcvMemCache[symbol] = make(map[string]*ohlcvCacheEntry)
+	}
+	ohlcvMemCache[symbol][interval] = &ohlcvCacheEntry{Bars: bars, LastAccess: time.Now()}
+	ohlcvMemCacheMu.Unlock()
+	return bars, true
+}
+
+// setOHLCVInMemCache writes to memory cache + gzip file
+func setOHLCVInMemCache(symbol, interval string, bars []OHLCV) {
+	ohlcvMemCacheMu.Lock()
+	if ohlcvMemCache == nil {
+		ohlcvMemCache = make(map[string]map[string]*ohlcvCacheEntry)
+	}
+	if ohlcvMemCache[symbol] == nil {
+		ohlcvMemCache[symbol] = make(map[string]*ohlcvCacheEntry)
+	}
+	ohlcvMemCache[symbol][interval] = &ohlcvCacheEntry{Bars: bars, LastAccess: time.Now()}
+	ohlcvMemCacheMu.Unlock()
+
+	// Persist to file (async, don't block caller)
+	go writeOHLCVFile(symbol, interval, bars)
+}
+
+// getOHLCVMemCacheSymbols returns all symbols that have cached data for a given interval
+// Checks both memory and files on disk
+func getOHLCVMemCacheSymbols(interval string) map[string]bool {
+	result := make(map[string]bool)
+	// Memory
+	ohlcvMemCacheMu.RLock()
+	for sym, intervals := range ohlcvMemCache {
+		if _, ok := intervals[interval]; ok {
+			result[sym] = true
+		}
+	}
+	ohlcvMemCacheMu.RUnlock()
+	// Files on disk
+	pattern := filepath.Join(ohlcvCacheDir, "*_"+interval+".json.gz")
+	files, _ := filepath.Glob(pattern)
+	for _, f := range files {
+		base := filepath.Base(f)
+		sym := strings.TrimSuffix(base, "_"+interval+".json.gz")
+		sym = strings.ReplaceAll(sym, "_", ".") // BRK_B → BRK.B (reverse sanitize — only for dots)
+		result[sym] = true
+	}
+	return result
+}
+
+func getGlobalSetting(key string) string {
+	var s GlobalSetting
+	if db.Where("`key` = ?", key).First(&s).Error == nil {
+		return s.Value
+	}
+	return ""
+}
+
+func setGlobalSetting(key, value string) {
+	var s GlobalSetting
+	if db.Where("`key` = ?", key).First(&s).Error == nil {
+		db.Model(&s).Update("value", value)
+	} else {
+		db.Create(&GlobalSetting{Key: key, Value: value})
+	}
+}
+
+func alpacaFetchTradableAssets() (map[string]AlpacaAssetInfo, error) {
+	brokerKey := getGlobalSetting("alpaca_broker_key")
+	brokerSecret := getGlobalSetting("alpaca_broker_secret")
+	if brokerKey == "" || brokerSecret == "" {
+		return nil, fmt.Errorf("alpaca broker keys not configured")
+	}
+
+	req, err := http.NewRequest("GET", "https://paper-api.alpaca.markets/v2/assets?status=active&asset_class=us_equity", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("APCA-API-KEY-ID", brokerKey)
+	req.Header.Set("APCA-API-SECRET-KEY", brokerSecret)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("alpaca assets request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("alpaca assets error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var assets []struct {
+		Symbol       string `json:"symbol"`
+		Tradable     bool   `json:"tradable"`
+		Fractionable bool   `json:"fractionable"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&assets); err != nil {
+		return nil, fmt.Errorf("alpaca assets decode error: %v", err)
+	}
+
+	result := make(map[string]AlpacaAssetInfo, len(assets))
+	for _, a := range assets {
+		if a.Tradable {
+			result[a.Symbol] = AlpacaAssetInfo{Tradable: true, Fractionable: a.Fractionable}
+		}
+	}
+	log.Printf("[Alpaca] Loaded %d tradable assets from Alpaca", len(result))
+	return result, nil
+}
+
+func refreshTradableAssetsCache() error {
+	assets, err := alpacaFetchTradableAssets()
+	if err != nil {
+		return err
+	}
+	tradableAssetsCacheMu.Lock()
+	tradableAssetsCache = assets
+	tradableAssetsCacheMu.Unlock()
+	return nil
+}
+
+func isAlpacaTradable(symbol string) (AlpacaAssetInfo, bool) {
+	tradableAssetsCacheMu.RLock()
+	defer tradableAssetsCacheMu.RUnlock()
+	info, ok := tradableAssetsCache[symbol]
+	return info, ok
+}
 
 // TwelveData daily call counter (800/day limit)
 var (
@@ -1110,6 +1456,7 @@ type AlpacaOrderLeg struct {
 }
 
 func alpacaPlaceOrder(symbol string, qty float64, side string, config LiveTradingConfig, opts ...map[string]float64) (*AlpacaOrderResult, error) {
+	liveAlpacaThrottle() // Rate-limit live-trading Alpaca calls
 	if qty <= 0 {
 		return nil, fmt.Errorf("alpaca: qty must be > 0, got %.6f", qty)
 	}
@@ -1289,23 +1636,30 @@ func createSession(userID uint, isAdmin bool) string {
 	db.Create(&dbSession)
 
 	// Also cache in memory for performance
+	sessionsMu.Lock()
 	sessions[token] = Session{
 		UserID:  userID,
 		IsAdmin: isAdmin,
 		Expiry:  expiry,
 	}
+	sessionsMu.Unlock()
 
 	return token
 }
 
 func getSession(token string) (*Session, bool) {
 	// Try memory cache first
-	if session, exists := sessions[token]; exists {
+	sessionsMu.RLock()
+	session, exists := sessions[token]
+	sessionsMu.RUnlock()
+	if exists {
 		if time.Now().Before(session.Expiry) {
 			return &session, true
 		}
 		// Expired in cache, remove it
+		sessionsMu.Lock()
 		delete(sessions, token)
+		sessionsMu.Unlock()
 	}
 
 	// Check database
@@ -1325,18 +1679,22 @@ func getSession(token string) (*Session, bool) {
 	db.Model(&dbSession).Update("expiry", newExpiry)
 
 	// Update memory cache
-	session := Session{
+	sess := Session{
 		UserID:  dbSession.UserID,
 		IsAdmin: dbSession.IsAdmin,
 		Expiry:  newExpiry,
 	}
-	sessions[token] = session
+	sessionsMu.Lock()
+	sessions[token] = sess
+	sessionsMu.Unlock()
 
-	return &session, true
+	return &sess, true
 }
 
 func deleteSession(token string) {
+	sessionsMu.Lock()
 	delete(sessions, token)
+	sessionsMu.Unlock()
 	db.Where("token = ?", token).Delete(&DBSession{})
 }
 
@@ -1368,6 +1726,19 @@ func main() {
 	db.Exec("PRAGMA journal_mode=WAL")
 	db.Exec("PRAGMA busy_timeout=5000")
 	db.Exec("PRAGMA synchronous=NORMAL")
+	// DB health check on startup
+	if fi, err := os.Stat(dbPath); err == nil {
+		sizeMB := float64(fi.Size()) / 1024 / 1024
+		var freelistCount int64
+		db.Raw("PRAGMA freelist_count").Scan(&freelistCount)
+		if sizeMB > 500 {
+			log.Printf("[DB] WARNING: Database is %.0f MB (freelist: %d pages) — consider VACUUM", sizeMB, freelistCount)
+		} else {
+			log.Printf("[DB] Size: %.0f MB, freelist: %d pages", sizeMB, freelistCount)
+		}
+	}
+	// incremental_vacuum: reclaim freelist pages if auto_vacuum is already enabled
+	db.Exec("PRAGMA incremental_vacuum(500)")
 
 	// Drop unique indexes before AutoMigrate to prevent table recreation.
 	// GORM SQLite migrator's parseDDL marks columns with UNIQUE INDEX as Unique=true,
@@ -1392,7 +1763,7 @@ func main() {
 	db.Exec("DROP INDEX IF EXISTS idx_b_xtrender_configs_mode")
 	db.Exec("DROP INDEX IF EXISTS idx_v2_sym_strat_iv")
 
-	db.AutoMigrate(&User{}, &Stock{}, &Category{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{}, &DBSession{}, &BotLog{}, &BotTodo{}, &BXtrenderConfig{}, &BXtrenderQuantConfig{}, &QuantStockPerformance{}, &QuantTrade{}, &QuantPosition{}, &BXtrenderDitzConfig{}, &DitzStockPerformance{}, &DitzTrade{}, &DitzPosition{}, &BXtrenderTraderConfig{}, &TraderStockPerformance{}, &TraderTrade{}, &TraderPosition{}, &SystemSetting{}, &BotStockAllowlist{}, &BotFilterConfig{}, &SignalListFilterConfig{}, &SignalListVisibility{}, &UserNotification{}, &TradingWatchlistItem{}, &TradingVirtualPosition{}, &ArenaBacktestHistory{}, &ArenaStrategySettings{}, &WeeklyOHLCVCache{}, &OHLCVCache{}, &BacktestLabHistory{}, &LiveTradingConfig{}, &LiveTradingSession{}, &LiveTradingPosition{}, &LiveTradingLog{}, &LiveSessionStrategy{}, &ArenaV2BatchResult{})
+	db.AutoMigrate(&User{}, &Stock{}, &Category{}, &PortfolioPosition{}, &PortfolioTradeHistory{}, &StockPerformance{}, &ActivityLog{}, &FlipperBotTrade{}, &FlipperBotPosition{}, &AggressiveStockPerformance{}, &LutzTrade{}, &LutzPosition{}, &DBSession{}, &BotLog{}, &BotTodo{}, &BXtrenderConfig{}, &BXtrenderQuantConfig{}, &QuantStockPerformance{}, &QuantTrade{}, &QuantPosition{}, &BXtrenderDitzConfig{}, &DitzStockPerformance{}, &DitzTrade{}, &DitzPosition{}, &BXtrenderTraderConfig{}, &TraderStockPerformance{}, &TraderTrade{}, &TraderPosition{}, &SystemSetting{}, &BotStockAllowlist{}, &BotFilterConfig{}, &SignalListFilterConfig{}, &SignalListVisibility{}, &UserNotification{}, &TradingWatchlistItem{}, &TradingVirtualPosition{}, &ArenaBacktestHistory{}, &ArenaStrategySettings{}, &WeeklyOHLCVCache{}, &OHLCVCache{}, &BacktestLabHistory{}, &LiveTradingConfig{}, &LiveTradingSession{}, &LiveTradingPosition{}, &LiveTradingLog{}, &LiveSessionStrategy{}, &ArenaV2BatchResult{}, &GlobalSetting{})
 
 	// Migrate WeeklyOHLCVCache → OHLCVCache (one-time)
 	var weeklyCount int64
@@ -1427,6 +1798,55 @@ func main() {
 	if db.Where("key = ?", "invite_code").First(&inviteSetting).Error != nil {
 		db.Create(&SystemSetting{Key: "invite_code", Value: "KommInDieGruppe"})
 	}
+
+	// Seed Alpaca broker keys (only if not yet present)
+	if getGlobalSetting("alpaca_broker_key") == "" {
+		brokerKey := os.Getenv("ALPACA_BROKER_KEY")
+		if brokerKey == "" {
+			brokerKey = alpacaDataKey // fallback to data key
+		}
+		if brokerKey != "" {
+			setGlobalSetting("alpaca_broker_key", brokerKey)
+		}
+	}
+	if getGlobalSetting("alpaca_broker_secret") == "" {
+		brokerSecret := os.Getenv("ALPACA_BROKER_SECRET")
+		if brokerSecret == "" {
+			brokerSecret = alpacaDataSecret // fallback to data secret
+		}
+		if brokerSecret != "" {
+			setGlobalSetting("alpaca_broker_secret", brokerSecret)
+		}
+	}
+
+	// Startup: Load Alpaca tradable assets + clean trading watchlist
+	if err := refreshTradableAssetsCache(); err != nil {
+		log.Printf("[Alpaca] Warning: Could not load tradable assets: %v", err)
+	} else {
+		var allItems []TradingWatchlistItem
+		db.Find(&allItems)
+		var removeIDs []uint
+		for _, item := range allItems {
+			asset, ok := isAlpacaTradable(item.Symbol)
+			if !ok {
+				removeIDs = append(removeIDs, item.ID)
+			} else {
+				db.Model(&item).Update("fractionable", asset.Fractionable)
+			}
+		}
+		if len(removeIDs) > 0 {
+			db.Where("id IN ?", removeIDs).Delete(&TradingWatchlistItem{})
+			log.Printf("[Alpaca] Removed %d non-Alpaca symbols from trading watchlist", len(removeIDs))
+		}
+		log.Printf("[Alpaca] Trading watchlist: %d symbols remaining", len(allItems)-len(removeIDs))
+	}
+
+	// Init file-based OHLCV cache (lazy-load, no startup RAM usage)
+	ohlcvCacheDir = filepath.Join(filepath.Dir(dbPath), "ohlcv")
+	initOHLCVFileCache()
+
+	// Start live-trading position writer (serialized DB writes)
+	go livePositionWriter()
 
 	// Ensure "Sonstiges" category exists
 	ensureSonstigesCategory()
@@ -1532,6 +1952,8 @@ func main() {
 			}
 			var symbols []string
 			json.Unmarshal([]byte(session.Symbols), &symbols)
+			// Initialize in-memory open position guard from DB
+			initOpenPosGuard(session.ID)
 			state := &liveSessionState{
 				StopChan: make(chan struct{}),
 			}
@@ -1944,6 +2366,13 @@ func main() {
 		api.GET("/signal-list/filter-config", getSignalListFilterConfig)
 		api.PUT("/admin/signal-list/filter-config", authMiddleware(), adminOnly(), updateSignalListFilterConfig)
 		api.PUT("/admin/signal-list/visibility", authMiddleware(), adminOnly(), toggleSignalListVisibility)
+
+		// Global Settings (Alpaca Broker Keys etc.)
+		api.GET("/admin/settings", authMiddleware(), adminOnly(), getGlobalSettings)
+		api.POST("/admin/settings", authMiddleware(), adminOnly(), saveGlobalSettings)
+
+		// DB maintenance
+		api.POST("/admin/db-vacuum", authMiddleware(), adminOnly(), runDBVacuum)
 	}
 
 	// Start the daily stock update scheduler
@@ -5408,6 +5837,74 @@ func getAdminStats(c *gin.Context) {
 	var newUsers int64
 	db.Model(&User{}).Where("created_at > ?", sevenDaysAgo).Count(&newUsers)
 
+	// DB health info
+	dbHealth := gin.H{}
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = "./data/watchlist.db"
+	}
+	if fi, err := os.Stat(dbPath); err == nil {
+		dbHealth["size_bytes"] = fi.Size()
+		dbHealth["size_mb"] = float64(fi.Size()) / 1024 / 1024
+	}
+	var pageCount, freelistCount int64
+	db.Raw("PRAGMA page_count").Scan(&pageCount)
+	db.Raw("PRAGMA freelist_count").Scan(&freelistCount)
+	var pageSize int64
+	db.Raw("PRAGMA page_size").Scan(&pageSize)
+	dbHealth["page_count"] = pageCount
+	dbHealth["freelist_count"] = freelistCount
+	dbHealth["fragmentation_pct"] = 0.0
+	if pageCount > 0 {
+		dbHealth["fragmentation_pct"] = float64(freelistCount) / float64(pageCount) * 100
+	}
+	// All tables: name, row count, size
+	type TableInfo struct {
+		Name   string  `json:"name"`
+		Count  int64   `json:"count"`
+		SizeMB float64 `json:"size_mb"`
+	}
+	var tableNames []string
+	db.Raw("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").Scan(&tableNames)
+	var tables []TableInfo
+	for _, tbl := range tableNames {
+		var cnt int64
+		db.Raw("SELECT COUNT(*) FROM `" + tbl + "`").Scan(&cnt)
+		// Get column names, then estimate size via SUM(LENGTH()) on a sample
+		var sizeMB float64
+		if cnt > 0 {
+			var colNames []string
+			rows, err := db.Raw("PRAGMA table_info(`" + tbl + "`)").Rows()
+			if err == nil {
+				for rows.Next() {
+					var cid int
+					var name, ctype string
+					var notnull int
+					var dfltValue *string
+					var pk int
+					rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk)
+					colNames = append(colNames, name)
+				}
+				rows.Close()
+			}
+			// Build SUM(COALESCE(LENGTH(col1),0) + COALESCE(LENGTH(col2),0) + ...) query
+			if len(colNames) > 0 {
+				lenExprs := ""
+				for i, col := range colNames {
+					if i > 0 {
+						lenExprs += "+"
+					}
+					lenExprs += "COALESCE(LENGTH(`" + col + "`),0)"
+				}
+				var sampleAvg float64
+				db.Raw("SELECT AVG(row_len) FROM (SELECT " + lenExprs + " AS row_len FROM `" + tbl + "` LIMIT 200)").Scan(&sampleAvg)
+				sizeMB = float64(cnt) * sampleAvg / 1024 / 1024
+			}
+		}
+		tables = append(tables, TableInfo{Name: tbl, Count: cnt, SizeMB: sizeMB})
+	}
+	dbHealth["tables"] = tables
+
 	c.JSON(http.StatusOK, gin.H{
 		"users":          userCount,
 		"stocks":         stockCount,
@@ -5422,7 +5919,30 @@ func getAdminStats(c *gin.Context) {
 		"most_active":    mostActive,
 		"most_searched":  mostSearched,
 		"recent_stocks":  recentStocks,
+		"db_health":      dbHealth,
 	})
+}
+
+// runDBVacuum runs VACUUM to compact the database and enable auto_vacuum
+func runDBVacuum(c *gin.Context) {
+	log.Println("[DB] Admin triggered VACUUM...")
+	db.Exec("PRAGMA auto_vacuum=INCREMENTAL")
+	if err := db.Exec("VACUUM").Error; err != nil {
+		log.Printf("[DB] VACUUM failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	log.Println("[DB] VACUUM complete")
+	// Return new size
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = "./data/watchlist.db"
+	}
+	var sizeMB float64
+	if fi, err := os.Stat(dbPath); err == nil {
+		sizeMB = float64(fi.Size()) / 1024 / 1024
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "size_mb": sizeMB})
 }
 
 // getAdminTraffic returns traffic statistics grouped by IP and device
@@ -15532,6 +16052,9 @@ type HannTrendStrategy struct {
 	SwingLookback int     `json:"swing_lookback"`
 	RiskReward    float64 `json:"risk_reward"`
 	SLBuffer      float64 `json:"sl_buffer"` // percent
+	HybridFilter      bool    `json:"hybrid_filter"`
+	HybridLongThresh  float64 `json:"hybrid_long_thresh"`
+	HybridShortThresh float64 `json:"hybrid_short_thresh"`
 }
 
 func (s *HannTrendStrategy) defaults() {
@@ -15542,6 +16065,8 @@ func (s *HannTrendStrategy) defaults() {
 	if s.SwingLookback <= 0 { s.SwingLookback = 5 }
 	if s.RiskReward <= 0 { s.RiskReward = 2.0 }
 	if s.SLBuffer <= 0 { s.SLBuffer = 0.3 }
+	if s.HybridLongThresh <= 0 { s.HybridLongThresh = 75 }
+	if s.HybridShortThresh <= 0 { s.HybridShortThresh = 25 }
 }
 
 func (s *HannTrendStrategy) Name() string     { return "hann_trend" }
@@ -15662,6 +16187,12 @@ func (s *HannTrendStrategy) Analyze(ohlcv []OHLCV) []StrategySignal {
 	dmh := computeDMH(ohlcv, s.DMHLength)
 	sar := computeParabolicSAR(ohlcv, s.SARStart, s.SARIncrement, s.SARMax)
 
+	var oscillator []float64
+	if s.HybridFilter {
+		closes := extractCloses(ohlcv)
+		oscillator = calculateHybridEMA(closes, 50, 200, 5, 100, 400)
+	}
+
 	var signals []StrategySignal
 
 	const (
@@ -15727,6 +16258,9 @@ func (s *HannTrendStrategy) Analyze(ohlcv []OHLCV) []StrategySignal {
 				}
 			case phWaitConfirm:
 				if ohlcv[i].Close > swingHigh {
+					if s.HybridFilter && (i >= len(oscillator) || oscillator[i] < s.HybridLongThresh) {
+						break
+					}
 					entry := ohlcv[i+1].Open
 					sl := pullbackExtreme * (1 - s.SLBuffer/100)
 					risk := entry - sl
@@ -15757,6 +16291,9 @@ func (s *HannTrendStrategy) Analyze(ohlcv []OHLCV) []StrategySignal {
 				}
 			case phWaitConfirm:
 				if ohlcv[i].Close < swingLow {
+					if s.HybridFilter && (i >= len(oscillator) || oscillator[i] > s.HybridShortThresh) {
+						break
+					}
 					entry := ohlcv[i+1].Open
 					sl := pullbackExtreme * (1 + s.SLBuffer/100)
 					risk := sl - entry
@@ -16191,6 +16728,620 @@ func (s *GMMAPullbackStrategy) ComputeOverlays(ohlcv []OHLCV) []OverlaySeries {
 	return overlays
 }
 
+// ========== MACD + S/R Strategy ==========
+
+type MACDSRStrategy struct {
+	MACDFast          int
+	MACDSlow          int
+	MACDSignal        int
+	EMAPeriod         int
+	SLBuffer          float64
+	RiskReward        float64
+	SRFilter          bool
+	FractalPeriods    int
+	ZoneCount         int
+	SRTolerance       float64
+	HybridFilter      bool
+	HybridLongThresh  float64
+	HybridShortThresh float64
+}
+
+func (s *MACDSRStrategy) defaults() {
+	if s.MACDFast <= 0 {
+		s.MACDFast = 12
+	}
+	if s.MACDSlow <= 0 {
+		s.MACDSlow = 26
+	}
+	if s.MACDSignal <= 0 {
+		s.MACDSignal = 9
+	}
+	if s.EMAPeriod <= 0 {
+		s.EMAPeriod = 200
+	}
+	if s.SLBuffer <= 0 {
+		s.SLBuffer = 1.5
+	}
+	if s.RiskReward <= 0 {
+		s.RiskReward = 1.5
+	}
+	if s.FractalPeriods <= 0 {
+		s.FractalPeriods = 5
+	}
+	if s.ZoneCount <= 0 {
+		s.ZoneCount = 5
+	}
+	if s.SRTolerance <= 0 {
+		s.SRTolerance = 1.5
+	}
+	if s.HybridLongThresh <= 0 {
+		s.HybridLongThresh = 75
+	}
+	if s.HybridShortThresh <= 0 {
+		s.HybridShortThresh = 25
+	}
+}
+
+func (s *MACDSRStrategy) Name() string      { return "macd_sr" }
+func (s *MACDSRStrategy) RequiredBars() int  { s.defaults(); return s.EMAPeriod + s.MACDSignal + 50 }
+
+func (s *MACDSRStrategy) Analyze(ohlcv []OHLCV) []StrategySignal {
+	s.defaults()
+	var signals []StrategySignal
+	n := len(ohlcv)
+	minBars := s.EMAPeriod + s.MACDSignal + 10
+	if n < minBars {
+		return signals
+	}
+
+	closes := extractCloses(ohlcv)
+
+	// MACD calculation
+	emaFast := calculateEMAServer(closes, s.MACDFast)
+	emaSlow := calculateEMAServer(closes, s.MACDSlow)
+	macdLine := make([]float64, n)
+	for i := 0; i < n; i++ {
+		macdLine[i] = emaFast[i] - emaSlow[i]
+	}
+	signalLine := calculateEMAServer(macdLine, s.MACDSignal)
+
+	// 200 EMA trend filter
+	ema200 := calculateEMAServer(closes, s.EMAPeriod)
+
+	// Optional Hybrid AlgoAI filter
+	var hybridOsc []float64
+	if s.HybridFilter {
+		hybridOsc = calculateHybridEMA(closes, 50, 200, 5, 100, 400)
+	}
+
+	startBar := s.EMAPeriod + s.MACDSignal
+	if startBar < s.MACDSlow+s.MACDSignal {
+		startBar = s.MACDSlow + s.MACDSignal
+	}
+
+	zoneBreach := 0.5
+
+	for i := startBar; i < n-1; i++ {
+		// MACD crossover detection — cross must happen below zero (LONG) / above zero (SHORT)
+		bullishCross := macdLine[i-1] <= signalLine[i-1] && macdLine[i] > signalLine[i] && macdLine[i-1] < 0 && signalLine[i-1] < 0
+		bearishCross := macdLine[i-1] >= signalLine[i-1] && macdLine[i] < signalLine[i] && macdLine[i-1] > 0 && signalLine[i-1] > 0
+
+		if !bullishCross && !bearishCross {
+			continue
+		}
+
+		cl := ohlcv[i].Close
+
+		// EMA(200) trend filter
+		isAboveEMA := cl > ema200[i]
+		isBelowEMA := cl < ema200[i]
+
+		// Hybrid AlgoAI filter
+		if s.HybridFilter && hybridOsc != nil {
+			if bullishCross && hybridOsc[i] < s.HybridLongThresh {
+				bullishCross = false
+			}
+			if bearishCross && hybridOsc[i] > s.HybridShortThresh {
+				bearishCross = false
+			}
+		}
+
+		// S/R zones (computed on-the-fly)
+		var activeSup, activeRes []srZone
+		if s.SRFilter {
+			maxPivotIdx := i - s.FractalPeriods
+			if maxPivotIdx < s.FractalPeriods {
+				continue
+			}
+			for pi := s.FractalPeriods; pi <= maxPivotIdx; pi++ {
+				// Pivot Low → Support
+				isPL := true
+				for j := 1; j <= s.FractalPeriods; j++ {
+					if ohlcv[pi].Low >= ohlcv[pi-j].Low || ohlcv[pi].Low >= ohlcv[pi+j].Low {
+						isPL = false
+						break
+					}
+				}
+				if isPL {
+					body := ohlcv[pi].Open
+					if ohlcv[pi].Close < body {
+						body = ohlcv[pi].Close
+					}
+					breached := false
+					threshold := ohlcv[pi].Low * (1 - zoneBreach/100)
+					for bi := pi + s.FractalPeriods + 1; bi <= i; bi++ {
+						if ohlcv[bi].Close < threshold {
+							breached = true
+							break
+						}
+					}
+					if !breached {
+						activeSup = append(activeSup, srZone{top: body, bottom: ohlcv[pi].Low, time: ohlcv[pi].Time})
+					}
+				}
+
+				// Pivot High → Resistance
+				isPH := true
+				for j := 1; j <= s.FractalPeriods; j++ {
+					if ohlcv[pi].High <= ohlcv[pi-j].High || ohlcv[pi].High <= ohlcv[pi+j].High {
+						isPH = false
+						break
+					}
+				}
+				if isPH {
+					body := ohlcv[pi].Open
+					if ohlcv[pi].Close > body {
+						body = ohlcv[pi].Close
+					}
+					breached := false
+					threshold := ohlcv[pi].High * (1 + zoneBreach/100)
+					for bi := pi + s.FractalPeriods + 1; bi <= i; bi++ {
+						if ohlcv[bi].Close > threshold {
+							breached = true
+							break
+						}
+					}
+					if !breached {
+						activeRes = append(activeRes, srZone{top: ohlcv[pi].High, bottom: body, time: ohlcv[pi].Time})
+					}
+				}
+			}
+			if len(activeSup) > s.ZoneCount {
+				activeSup = activeSup[len(activeSup)-s.ZoneCount:]
+			}
+			if len(activeRes) > s.ZoneCount {
+				activeRes = activeRes[len(activeRes)-s.ZoneCount:]
+			}
+		}
+
+		// LONG signal
+		if bullishCross && isAboveEMA {
+			passedSR := true
+			if s.SRFilter {
+				passedSR = false
+				tol := cl * s.SRTolerance / 100
+				for _, z := range activeSup {
+					if cl >= z.bottom-tol && cl <= z.top+tol {
+						passedSR = true
+						break
+					}
+				}
+			}
+			if passedSR {
+				entryPrice := ohlcv[i+1].Open
+				// SL below 200 EMA — the EMA acts as a wall
+				sl := ema200[i] * (1 - s.SLBuffer/100)
+				risk := entryPrice - sl
+				if risk > 0 {
+					signals = append(signals, StrategySignal{
+						Index: i + 1, Direction: "LONG", EntryPrice: entryPrice,
+						StopLoss: sl, TakeProfit: entryPrice + s.RiskReward*risk,
+					})
+				}
+			}
+		}
+
+		// SHORT signal
+		if bearishCross && isBelowEMA {
+			passedSR := true
+			if s.SRFilter {
+				passedSR = false
+				tol := cl * s.SRTolerance / 100
+				for _, z := range activeRes {
+					if cl >= z.bottom-tol && cl <= z.top+tol {
+						passedSR = true
+						break
+					}
+				}
+			}
+			if passedSR {
+				entryPrice := ohlcv[i+1].Open
+				// SL above 200 EMA — the EMA acts as a wall
+				sl := ema200[i] * (1 + s.SLBuffer/100)
+				risk := sl - entryPrice
+				if risk > 0 {
+					signals = append(signals, StrategySignal{
+						Index: i + 1, Direction: "SHORT", EntryPrice: entryPrice,
+						StopLoss: sl, TakeProfit: entryPrice - s.RiskReward*risk,
+					})
+				}
+			}
+		}
+	}
+	return signals
+}
+
+func (s *MACDSRStrategy) ComputeIndicators(ohlcv []OHLCV) []IndicatorSeries {
+	s.defaults()
+	n := len(ohlcv)
+	if n < s.MACDSlow+s.MACDSignal {
+		return nil
+	}
+
+	closes := extractCloses(ohlcv)
+	emaFast := calculateEMAServer(closes, s.MACDFast)
+	emaSlow := calculateEMAServer(closes, s.MACDSlow)
+	macdLine := make([]float64, n)
+	for i := 0; i < n; i++ {
+		macdLine[i] = emaFast[i] - emaSlow[i]
+	}
+	signalLine := calculateEMAServer(macdLine, s.MACDSignal)
+
+	macdData := make([]IndicatorPoint, n)
+	sigData := make([]IndicatorPoint, n)
+	histData := make([]IndicatorPoint, n)
+	for i, bar := range ohlcv {
+		hist := macdLine[i] - signalLine[i]
+		color := "#22c55e"
+		if hist < 0 {
+			color = "#ef4444"
+		}
+		macdData[i] = IndicatorPoint{Time: bar.Time, Value: macdLine[i]}
+		sigData[i] = IndicatorPoint{Time: bar.Time, Value: signalLine[i]}
+		histData[i] = IndicatorPoint{Time: bar.Time, Value: hist, Color: color}
+	}
+
+	series := []IndicatorSeries{
+		{Name: "MACD Histogram", Type: "histogram", Color: "#22c55e", Data: histData},
+		{Name: "MACD", Type: "line", Color: "#3b82f6", Data: macdData},
+		{Name: "Signal", Type: "line", Color: "#f59e0b", Data: sigData},
+	}
+
+	if s.HybridFilter {
+		hybridOsc := calculateHybridEMA(closes, 50, 200, 5, 100, 400)
+		hybData := make([]IndicatorPoint, n)
+		for i, bar := range ohlcv {
+			hybData[i] = IndicatorPoint{Time: bar.Time, Value: hybridOsc[i]}
+		}
+		series = append(series, IndicatorSeries{Name: "Hybrid AlgoAI", Type: "line", Color: "#a855f7", Data: hybData})
+	}
+
+	return series
+}
+
+func (s *MACDSRStrategy) ComputeOverlays(ohlcv []OHLCV) []OverlaySeries {
+	s.defaults()
+	n := len(ohlcv)
+	if n < s.EMAPeriod {
+		return nil
+	}
+
+	closes := extractCloses(ohlcv)
+	ema200 := calculateEMAServer(closes, s.EMAPeriod)
+
+	// EMA(200) overlay
+	emaPoints := make([]OverlayPoint, n)
+	for i, bar := range ohlcv {
+		emaPoints[i] = OverlayPoint{Time: bar.Time, Value: ema200[i]}
+	}
+	overlays := []OverlaySeries{
+		{Name: fmt.Sprintf("EMA(%d)", s.EMAPeriod), Type: "line", Color: "#f59e0b", Data: emaPoints},
+	}
+
+	// S/R zones
+	if s.SRFilter {
+		sup, res := computeSRZones(ohlcv, s.FractalPeriods, s.ZoneCount, 0.5)
+		for idx, z := range sup {
+			topPts := []OverlayPoint{{Time: z.time, Value: z.top}, {Time: ohlcv[n-1].Time, Value: z.top}}
+			botPts := []OverlayPoint{{Time: z.time, Value: z.bottom}, {Time: ohlcv[n-1].Time, Value: z.bottom}}
+			name := "S" + fmt.Sprintf("%d", idx+1)
+			overlays = append(overlays,
+				OverlaySeries{Name: name + " Top", Type: "line", Color: "rgba(34,197,94,0.4)", Data: topPts, Style: 2,
+					FillColor: "rgba(34,197,94,0.06)"},
+				OverlaySeries{Name: name + " Bot", Type: "line", Color: "rgba(34,197,94,0.4)", Data: botPts, Style: 2,
+					InvertFill: true, FillColor: "rgba(34,197,94,0.06)"},
+			)
+		}
+		for idx, z := range res {
+			topPts := []OverlayPoint{{Time: z.time, Value: z.top}, {Time: ohlcv[n-1].Time, Value: z.top}}
+			botPts := []OverlayPoint{{Time: z.time, Value: z.bottom}, {Time: ohlcv[n-1].Time, Value: z.bottom}}
+			name := "R" + fmt.Sprintf("%d", idx+1)
+			overlays = append(overlays,
+				OverlaySeries{Name: name + " Top", Type: "line", Color: "rgba(239,68,68,0.4)", Data: topPts, Style: 2,
+					FillColor: "rgba(239,68,68,0.06)"},
+				OverlaySeries{Name: name + " Bot", Type: "line", Color: "rgba(239,68,68,0.4)", Data: botPts, Style: 2,
+					InvertFill: true, FillColor: "rgba(239,68,68,0.06)"},
+			)
+		}
+	}
+
+	return overlays
+}
+
+// TrippaTrade — Regression Slope Oscillator + EMA Pullback (BigBeluga RSO)
+type TrippaTrade struct {
+	MaxRange     int
+	MinRange     int
+	Step         int
+	SignalLen    int
+	EMAFast      int
+	EMASlow      int
+	RiskReward   float64
+	SLBuffer     float64
+	MinTrendBars int
+}
+
+func (s *TrippaTrade) Name() string     { return "trippa_trade" }
+func (s *TrippaTrade) RequiredBars() int { s.defaults(); return s.MaxRange + s.SignalLen + 20 }
+
+func (s *TrippaTrade) defaults() {
+	if s.MaxRange <= 0 {
+		s.MaxRange = 100
+	}
+	if s.MinRange <= 0 {
+		s.MinRange = 10
+	}
+	if s.Step <= 0 {
+		s.Step = 5
+	}
+	if s.SignalLen <= 0 {
+		s.SignalLen = 7
+	}
+	if s.EMAFast <= 0 {
+		s.EMAFast = 5
+	}
+	if s.EMASlow <= 0 {
+		s.EMASlow = 13
+	}
+	if s.RiskReward <= 0 {
+		s.RiskReward = 2.0
+	}
+	if s.SLBuffer < 0 {
+		s.SLBuffer = 0.5
+	}
+	if s.MinTrendBars <= 0 {
+		s.MinTrendBars = 3
+	}
+}
+
+// calcRegressionSlopeOscillator computes the averaged log-regression slope oscillator
+// based on BigBeluga's Regression Slope Oscillator indicator.
+func calcRegressionSlopeOscillator(closes []float64, minRange, maxRange, step int) []float64 {
+	n := len(closes)
+	osc := make([]float64, n)
+	if n == 0 || minRange < 2 {
+		return osc
+	}
+
+	// Collect all lengths
+	var lengths []int
+	for l := minRange; l <= maxRange; l += step {
+		lengths = append(lengths, l)
+	}
+	if len(lengths) == 0 {
+		return osc
+	}
+
+	for i := 0; i < n; i++ {
+		sumSlope := 0.0
+		count := 0
+		for _, length := range lengths {
+			if i < length-1 {
+				continue
+			}
+			// Log-regression slope over [i-length+1 .. i]
+			// f_log_regression from BigBeluga: sum_x, sum_y (log), sum_x_sqr, sum_xy → slope * -1
+			sumX := 0.0
+			sumY := 0.0
+			sumXSqr := 0.0
+			sumXY := 0.0
+			fLen := float64(length)
+			for j := 0; j < length; j++ {
+				idx := i - length + 1 + j
+				x := float64(j)
+				y := 0.0
+				if closes[idx] > 0 {
+					y = math.Log(closes[idx])
+				}
+				sumX += x
+				sumY += y
+				sumXSqr += x * x
+				sumXY += x * y
+			}
+			denom := fLen*sumXSqr - sumX*sumX
+			if denom != 0 {
+				slope := (fLen*sumXY - sumX*sumY) / denom
+				sumSlope += slope * -1
+				count++
+			}
+		}
+		if count > 0 {
+			osc[i] = sumSlope / float64(count)
+		}
+	}
+	return osc
+}
+
+func (s *TrippaTrade) Analyze(ohlcv []OHLCV) []StrategySignal {
+	s.defaults()
+	var signals []StrategySignal
+	n := len(ohlcv)
+	minBars := s.MaxRange + s.SignalLen + 5
+	if n < minBars {
+		return signals
+	}
+
+	closes := extractCloses(ohlcv)
+
+	// Regression Slope Oscillator
+	oscillator := calcRegressionSlopeOscillator(closes, s.MinRange, s.MaxRange, s.Step)
+	// Signal line = SMA of oscillator
+	signalLine := calculateSMAServer(oscillator, s.SignalLen)
+	// EMA ribbon
+	emaFast := calculateEMAServer(closes, s.EMAFast)
+	emaSlow := calculateEMAServer(closes, s.EMASlow)
+
+	// State machine: trend → pullback → confirmation → entry
+	startBar := s.MaxRange + s.SignalLen
+	trendDir := 0   // +1 bullish, -1 bearish
+	trendBars := 0
+	phase := 0       // 0=waiting for trend, 1=trend established, 2=pullback detected
+	pullbackLow := 0.0
+	pullbackHigh := 0.0
+
+	for i := startBar; i < n-1; i++ {
+		// Track trend: oscillator vs zero line
+		if oscillator[i] > 0 {
+			if trendDir == 1 {
+				trendBars++
+			} else {
+				trendDir = 1
+				trendBars = 1
+				phase = 0
+			}
+		} else if oscillator[i] < 0 {
+			if trendDir == -1 {
+				trendBars++
+			} else {
+				trendDir = -1
+				trendBars = 1
+				phase = 0
+			}
+		} else {
+			trendDir = 0
+			trendBars = 0
+			phase = 0
+			continue
+		}
+
+		// Phase 0→1: trend established after MinTrendBars
+		if phase == 0 && trendBars >= s.MinTrendBars {
+			phase = 1
+		}
+
+		if phase < 1 {
+			continue
+		}
+
+		// Phase 1→2: detect pullback
+		// LONG pullback: EMA5 < EMA13 AND osc < signal
+		// SHORT pullback: EMA5 > EMA13 AND osc > signal
+		if phase == 1 {
+			if trendDir == 1 && emaFast[i] < emaSlow[i] && oscillator[i] < signalLine[i] {
+				phase = 2
+				pullbackLow = ohlcv[i].Low
+			} else if trendDir == -1 && emaFast[i] > emaSlow[i] && oscillator[i] > signalLine[i] {
+				phase = 2
+				pullbackHigh = ohlcv[i].High
+			}
+		}
+
+		// Track pullback extremes
+		if phase == 2 && trendDir == 1 {
+			if ohlcv[i].Low < pullbackLow {
+				pullbackLow = ohlcv[i].Low
+			}
+		} else if phase == 2 && trendDir == -1 {
+			if ohlcv[i].High > pullbackHigh {
+				pullbackHigh = ohlcv[i].High
+			}
+		}
+
+		// Phase 2→entry: confirmation
+		// LONG: EMA5 > EMA13 AND osc > signal (back in trend direction)
+		// SHORT: EMA5 < EMA13 AND osc < signal
+		if phase == 2 {
+			if trendDir == 1 && emaFast[i] > emaSlow[i] && oscillator[i] > signalLine[i] {
+				entryPrice := ohlcv[i+1].Open
+				sl := pullbackLow * (1 - s.SLBuffer/100)
+				risk := entryPrice - sl
+				if risk > 0 {
+					signals = append(signals, StrategySignal{
+						Index: i + 1, Direction: "LONG", EntryPrice: entryPrice,
+						StopLoss: sl, TakeProfit: entryPrice + s.RiskReward*risk,
+					})
+				}
+				phase = 1
+			} else if trendDir == -1 && emaFast[i] < emaSlow[i] && oscillator[i] < signalLine[i] {
+				entryPrice := ohlcv[i+1].Open
+				sl := pullbackHigh * (1 + s.SLBuffer/100)
+				risk := sl - entryPrice
+				if risk > 0 {
+					signals = append(signals, StrategySignal{
+						Index: i + 1, Direction: "SHORT", EntryPrice: entryPrice,
+						StopLoss: sl, TakeProfit: entryPrice - s.RiskReward*risk,
+					})
+				}
+				phase = 1
+			}
+		}
+	}
+
+	return signals
+}
+
+func (s *TrippaTrade) ComputeIndicators(ohlcv []OHLCV) []IndicatorSeries {
+	s.defaults()
+	n := len(ohlcv)
+	if n < s.MaxRange+s.SignalLen {
+		return nil
+	}
+
+	closes := extractCloses(ohlcv)
+	oscillator := calcRegressionSlopeOscillator(closes, s.MinRange, s.MaxRange, s.Step)
+	signalLine := calculateSMAServer(oscillator, s.SignalLen)
+
+	histData := make([]IndicatorPoint, n)
+	sigData := make([]IndicatorPoint, n)
+	for i, bar := range ohlcv {
+		color := "#22c55e"
+		if oscillator[i] < 0 {
+			color = "#ef4444"
+		}
+		histData[i] = IndicatorPoint{Time: bar.Time, Value: oscillator[i], Color: color}
+		sigData[i] = IndicatorPoint{Time: bar.Time, Value: signalLine[i]}
+	}
+
+	return []IndicatorSeries{
+		{Name: "RSO", Type: "histogram", Color: "#22c55e", Data: histData},
+		{Name: "Signal", Type: "line", Color: "#f97316", Data: sigData},
+	}
+}
+
+func (s *TrippaTrade) ComputeOverlays(ohlcv []OHLCV) []OverlaySeries {
+	s.defaults()
+	n := len(ohlcv)
+	if n < s.EMASlow {
+		return nil
+	}
+
+	closes := extractCloses(ohlcv)
+	emaFast := calculateEMAServer(closes, s.EMAFast)
+	emaSlow := calculateEMAServer(closes, s.EMASlow)
+
+	fastData := make([]OverlayPoint, n)
+	slowData := make([]OverlayPoint, n)
+	for i, bar := range ohlcv {
+		fastData[i] = OverlayPoint{Time: bar.Time, Value: emaFast[i]}
+		slowData[i] = OverlayPoint{Time: bar.Time, Value: emaSlow[i]}
+	}
+
+	return []OverlaySeries{
+		{Name: fmt.Sprintf("EMA(%d)", s.EMAFast), Type: "line", Color: "#60a5fa", Data: fastData},
+		{Name: fmt.Sprintf("EMA(%d)", s.EMASlow), Type: "line", Color: "#f97316", Data: slowData},
+	}
+}
+
 type OverlaySeries struct {
 	Name       string         `json:"name"`
 	Type       string         `json:"type"` // "line"
@@ -16277,7 +17428,7 @@ func runArenaBacktest(ohlcv []OHLCV, strategy TradingStrategy) ArenaBacktestResu
 				trades = append(trades, *activeTrade)
 				activeTrade = nil
 			}
-			if activeTrade == nil {
+			if activeTrade == nil && sig.EntryPrice > 0 {
 				activeTrade = &ArenaBacktestTrade{
 					Direction:  sig.Direction,
 					EntryPrice: sig.EntryPrice,
@@ -22650,6 +23801,37 @@ func getTradingWatchlist(c *gin.Context) {
 	c.JSON(200, items)
 }
 
+func getGlobalSettings(c *gin.Context) {
+	var settings []GlobalSetting
+	db.Find(&settings)
+	result := make(map[string]string, len(settings))
+	for _, s := range settings {
+		val := s.Value
+		// Mask secrets — only show last 4 chars
+		if strings.Contains(s.Key, "secret") && len(val) > 4 {
+			val = "****" + val[len(val)-4:]
+		}
+		result[s.Key] = val
+	}
+	c.JSON(200, result)
+}
+
+func saveGlobalSettings(c *gin.Context) {
+	var req map[string]string
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "Ungültige Daten"})
+		return
+	}
+	for key, value := range req {
+		// Don't overwrite with masked value
+		if strings.HasPrefix(value, "****") {
+			continue
+		}
+		setGlobalSetting(key, value)
+	}
+	c.JSON(200, gin.H{"status": "ok"})
+}
+
 func addToTradingWatchlist(c *gin.Context) {
 	var req struct {
 		Symbol string `json:"symbol"`
@@ -22661,10 +23843,10 @@ func addToTradingWatchlist(c *gin.Context) {
 	}
 	symbol := strings.ToUpper(strings.TrimSpace(req.Symbol))
 
-	// Validate symbol exists via Yahoo
-	quotes := fetchQuotes([]string{symbol})
-	if _, ok := quotes[symbol]; !ok {
-		c.JSON(400, gin.H{"error": "Symbol nicht verfügbar"})
+	// Validate symbol is tradable on Alpaca
+	asset, ok := isAlpacaTradable(symbol)
+	if !ok || !asset.Tradable {
+		c.JSON(400, gin.H{"error": "Symbol nicht über Alpaca handelbar"})
 		return
 	}
 
@@ -22686,9 +23868,10 @@ func addToTradingWatchlist(c *gin.Context) {
 	}
 
 	item := TradingWatchlistItem{
-		Symbol:    symbol,
-		Name:      name,
-		CreatedAt: time.Now(),
+		Symbol:       symbol,
+		Name:         name,
+		Fractionable: asset.Fractionable,
+		CreatedAt:    time.Now(),
 	}
 	if err := db.Create(&item).Error; err != nil {
 		c.JSON(500, gin.H{"error": "Fehler beim Speichern"})
@@ -22709,6 +23892,20 @@ func removeFromTradingWatchlist(c *gin.Context) {
 func importWatchlistToTrading(c *gin.Context) {
 	userID, _ := c.Get("userID")
 	uid := userID.(uint)
+
+	// SSE streaming
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Flush()
+
+	// Refresh Alpaca cache for fresh data
+	if err := refreshTradableAssetsCache(); err != nil {
+		msg := fmt.Sprintf(`{"done":true,"added":0,"skipped":0,"failed":0,"not_tradable":0,"error":"%s"}`, err.Error())
+		fmt.Fprintf(c.Writer, "data: %s\n\n", msg)
+		c.Writer.Flush()
+		return
+	}
 
 	// Load all stocks from main watchlist
 	var allStocks []Stock
@@ -22734,103 +23931,40 @@ func importWatchlistToTrading(c *gin.Context) {
 		}
 	}
 
-	// SSE streaming
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.Flush()
-
 	total := len(candidates)
 	added := 0
-	failed := 0
 	skipped := len(allStocks) - total // already existing
+	notTradable := 0
 
-	// Phase 1: Split into cached (instant) vs uncached (need Yahoo validation)
-	var cached, uncached []candidate
-	for _, cand := range candidates {
-		var cache OHLCVCache
-		if db.Where("symbol = ? AND interval IN ?", cand.Symbol, []string{"5m", "15m", "60m", "1d", "1wk"}).First(&cache).Error == nil {
-			cached = append(cached, cand)
-		} else {
-			uncached = append(uncached, cand)
+	for i, cand := range candidates {
+		progress := i + 1
+		asset, ok := isAlpacaTradable(cand.Symbol)
+		if !ok {
+			notTradable++
+			msg := fmt.Sprintf(`{"current":%d,"total":%d,"symbol":"%s","status":"not_tradable"}`, progress, total, cand.Symbol)
+			fmt.Fprintf(c.Writer, "data: %s\n\n", msg)
+			c.Writer.Flush()
+			continue
 		}
-	}
-
-	// Phase 2: Add all cached symbols instantly (no Yahoo call needed)
-	for i, cand := range cached {
 		name := cand.Name
 		if name == "" {
 			name = cand.Symbol
 		}
 		db.Create(&TradingWatchlistItem{
-			Symbol:  cand.Symbol,
-			Name:    name,
-			AddedBy: uid,
-			IsLive:  true,
+			Symbol:       cand.Symbol,
+			Name:         name,
+			AddedBy:      uid,
+			IsLive:       true,
+			Fractionable: asset.Fractionable,
 		})
 		added++
-		msg := fmt.Sprintf(`{"current":%d,"total":%d,"symbol":"%s","status":"added"}`, i+1, total, cand.Symbol)
+		msg := fmt.Sprintf(`{"current":%d,"total":%d,"symbol":"%s","status":"added"}`, progress, total, cand.Symbol)
 		fmt.Fprintf(c.Writer, "data: %s\n\n", msg)
 		c.Writer.Flush()
 	}
 
-	// Phase 3: Validate uncached symbols with parallel workers
-	if len(uncached) > 0 {
-		const maxWorkers = 10
-		type result struct {
-			Index  int
-			Cand   candidate
-			Valid  bool
-		}
-		resultCh := make(chan result, len(uncached))
-		sem := make(chan struct{}, maxWorkers)
-		for idx, cand := range uncached {
-			sem <- struct{}{}
-			go func(i int, c candidate) {
-				defer func() { <-sem }()
-				_, err := fetchOHLCVFromYahoo(c.Symbol, "5d", "5m")
-				valid := err == nil
-				if valid {
-					// Save to cache so future imports are instant
-					ohlcv, err2 := fetchOHLCVFromYahoo(c.Symbol, "60d", "5m")
-					if err2 == nil && len(ohlcv) > 0 {
-						saveOHLCVCache(c.Symbol, "5m", ohlcv)
-					}
-				}
-				resultCh <- result{Index: i, Cand: c, Valid: valid}
-			}(idx, cand)
-		}
-
-		// Collect results as they arrive
-		baseProgress := len(cached)
-		for j := 0; j < len(uncached); j++ {
-			r := <-resultCh
-			progress := baseProgress + j + 1
-			if r.Valid {
-				name := r.Cand.Name
-				if name == "" {
-					name = r.Cand.Symbol
-				}
-				db.Create(&TradingWatchlistItem{
-					Symbol:  r.Cand.Symbol,
-					Name:    name,
-					AddedBy: uid,
-					IsLive:  true,
-				})
-				added++
-				msg := fmt.Sprintf(`{"current":%d,"total":%d,"symbol":"%s","status":"added"}`, progress, total, r.Cand.Symbol)
-				fmt.Fprintf(c.Writer, "data: %s\n\n", msg)
-			} else {
-				failed++
-				msg := fmt.Sprintf(`{"current":%d,"total":%d,"symbol":"%s","status":"failed"}`, progress, total, r.Cand.Symbol)
-				fmt.Fprintf(c.Writer, "data: %s\n\n", msg)
-			}
-			c.Writer.Flush()
-		}
-	}
-
 	// Final event
-	msg := fmt.Sprintf(`{"done":true,"added":%d,"skipped":%d,"failed":%d}`, added, skipped, failed)
+	msg := fmt.Sprintf(`{"done":true,"added":%d,"skipped":%d,"failed":0,"not_tradable":%d}`, added, skipped, notTradable)
 	fmt.Fprintf(c.Writer, "data: %s\n\n", msg)
 	c.Writer.Flush()
 }
@@ -22914,6 +24048,9 @@ func instantiateStrategy(strategyName string, params map[string]interface{}) (Tr
 			SARIncrement: pFloat("sar_increment", 0), SARMax: pFloat("sar_max", 0),
 			SwingLookback: pInt("swing_lookback", 0), RiskReward: pFloat("risk_reward", 0),
 			SLBuffer: pFloat("sl_buffer", 0),
+			HybridFilter: pBool("hybrid_filter"),
+			HybridLongThresh: pFloat("hybrid_long_thresh", 0),
+			HybridShortThresh: pFloat("hybrid_short_thresh", 0),
 		}, nil
 	case "gmma_pullback":
 		return &GMMAPullbackStrategy{
@@ -22921,6 +24058,25 @@ func instantiateStrategy(strategyName string, params map[string]interface{}) (Tr
 			FractalPeriods: pInt("fractal_periods", 0), ZoneCount: pInt("zone_count", 0),
 			RiskReward: pFloat("risk_reward", 0), SLLookback: pInt("sl_lookback", 0),
 			SLBuffer: pFloat("sl_buffer", 0),
+		}, nil
+	case "macd_sr":
+		return &MACDSRStrategy{
+			MACDFast: pInt("macd_fast", 0), MACDSlow: pInt("macd_slow", 0),
+			MACDSignal: pInt("macd_signal", 0), EMAPeriod: pInt("ema_period", 0),
+			SLBuffer: pFloat("sl_buffer", 0), RiskReward: pFloat("risk_reward", 0),
+			SRFilter: pInt("sr_filter", 1) == 1, FractalPeriods: pInt("fractal_periods", 0),
+			ZoneCount: pInt("zone_count", 0), SRTolerance: pFloat("sr_tolerance", 0),
+			HybridFilter: pInt("hybrid_filter", 0) == 1,
+			HybridLongThresh: pFloat("hybrid_long_thresh", 0),
+			HybridShortThresh: pFloat("hybrid_short_thresh", 0),
+		}, nil
+	case "trippa_trade":
+		return &TrippaTrade{
+			MaxRange: pInt("max_range", 0), MinRange: pInt("min_range", 0),
+			Step: pInt("reg_step", 0), SignalLen: pInt("signal_len", 0),
+			EMAFast: pInt("ema_fast", 0), EMASlow: pInt("ema_slow", 0),
+			RiskReward: pFloat("risk_reward", 0), SLBuffer: pFloat("sl_buffer", 0),
+			MinTrendBars: pInt("min_trend_bars", 0),
 		}, nil
 	default:
 		return nil, fmt.Errorf("unbekannte Strategie: %s", strategyName)
@@ -23048,6 +24204,16 @@ func getBacktestResultsHandler(c *gin.Context) {
 var arenaBatchMutex sync.Mutex
 var arenaBatchRunning bool
 
+// Watchlist batch: cancel-previous-run mechanism (used by backtestWatchlistHandler)
+var wlBatchMu sync.Mutex
+var wlBatchCancelFn context.CancelFunc
+var wlBatchGen uint64
+
+// V2 batch: cancel-previous-run mechanism
+var arenaV2BatchMu sync.Mutex
+var arenaV2CancelFn context.CancelFunc
+var arenaV2BatchGen uint64
+
 func backtestBatchHandler(c *gin.Context) {
 	arenaBatchMutex.Lock()
 	if arenaBatchRunning {
@@ -23061,7 +24227,7 @@ func backtestBatchHandler(c *gin.Context) {
 	var stocks []Stock
 	db.Select("symbol").Find(&stocks)
 
-	strategies := []string{"regression_scalping", "hybrid_ai_trend", "smart_money_flow", "hann_trend"}
+	strategies := []string{"regression_scalping", "hybrid_ai_trend", "smart_money_flow", "hann_trend", "macd_sr", "trippa_trade"}
 	count := len(stocks) * len(strategies)
 
 	go func() {
@@ -23092,6 +24258,10 @@ func backtestBatchHandler(c *gin.Context) {
 					strategy = &HannTrendStrategy{}
 				case "gmma_pullback":
 					strategy = &GMMAPullbackStrategy{}
+				case "macd_sr":
+					strategy = &MACDSRStrategy{}
+				case "trippa_trade":
+					strategy = &TrippaTrade{}
 				}
 
 				result := runArenaBacktest(ohlcv, strategy)
@@ -23319,10 +24489,42 @@ func recalcMetrics(trades []ArenaBacktestTrade) ArenaBacktestMetrics {
 			m.RiskReward = avgWin / avgLoss
 		}
 	}
+	// Sanitize NaN/Inf (can occur with bad data e.g. EntryPrice=0)
+	sanitize := func(v float64) float64 {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return 0
+		}
+		return v
+	}
+	m.WinRate = sanitize(m.WinRate)
+	m.TotalReturn = sanitize(m.TotalReturn)
+	m.AvgReturn = sanitize(m.AvgReturn)
+	m.MaxDrawdown = sanitize(m.MaxDrawdown)
+	m.NetProfit = sanitize(m.NetProfit)
+	m.RiskReward = sanitize(m.RiskReward)
 	return m
 }
 
 func backtestWatchlistHandler(c *gin.Context) {
+	// Cancel any previous running batch (prevents parallel Yahoo fetches / 429 errors)
+	wlBatchMu.Lock()
+	if wlBatchCancelFn != nil {
+		wlBatchCancelFn()
+	}
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	wlBatchCancelFn = cancel
+	wlBatchGen++
+	myGen := wlBatchGen
+	wlBatchMu.Unlock()
+	defer func() {
+		wlBatchMu.Lock()
+		if wlBatchGen == myGen {
+			wlBatchCancelFn = nil
+		}
+		wlBatchMu.Unlock()
+		cancel()
+	}()
+
 	var req struct {
 		Strategy   string                 `json:"strategy"`
 		Interval   string                 `json:"interval"`
@@ -23443,11 +24645,21 @@ func backtestWatchlistHandler(c *gin.Context) {
 			type yahooProgress struct{ Symbol string }
 			yCh := make(chan yahooProgress, len(uncached))
 			for _, sym := range uncached {
+				if ctx.Err() != nil {
+					break
+				}
 				ywg.Add(1)
 				go func(s string) {
 					defer ywg.Done()
-					ysem <- struct{}{}
+					select {
+					case ysem <- struct{}{}:
+					case <-ctx.Done():
+						return
+					}
 					defer func() { <-ysem }()
+					if ctx.Err() != nil {
+						return
+					}
 					ohlcv, err := fetchOHLCVFromYahoo(s, yahooPeriod, cacheInterval)
 					if err == nil && len(ohlcv) > 0 {
 						saveOHLCVCache(s, cacheInterval, ohlcv)
@@ -23501,11 +24713,21 @@ func backtestWatchlistHandler(c *gin.Context) {
 			type yahooProgress2 struct{ Symbol string }
 			yCh := make(chan yahooProgress2, len(uncached))
 			for _, sym := range uncached {
+				if ctx.Err() != nil {
+					break
+				}
 				ywg.Add(1)
 				go func(s string) {
 					defer ywg.Done()
-					ysem <- struct{}{}
+					select {
+					case ysem <- struct{}{}:
+					case <-ctx.Done():
+						return
+					}
 					defer func() { <-ysem }()
+					if ctx.Err() != nil {
+						return
+					}
 					ohlcv, err := fetchOHLCVFromYahoo(s, yahooPeriod, cacheInterval)
 					if err == nil && len(ohlcv) > 0 {
 						saveOHLCVCache(s, cacheInterval, ohlcv)
@@ -23529,7 +24751,7 @@ func backtestWatchlistHandler(c *gin.Context) {
 	var completed int64
 	results := make([]stockResult, total)
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 15) // max 15 concurrent
+	sem := make(chan struct{}, 50) // CPU-only with in-memory cache
 
 	// Progress channel
 	type progressMsg struct {
@@ -23540,6 +24762,9 @@ func backtestWatchlistHandler(c *gin.Context) {
 	progressCh := make(chan progressMsg, total)
 
 	for idx, item := range watchlist {
+		if ctx.Err() != nil {
+			break
+		}
 		wg.Add(1)
 		go func(i int, symbol string) {
 			defer wg.Done()
@@ -23549,10 +24774,17 @@ func backtestWatchlistHandler(c *gin.Context) {
 					progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true}
 				}
 			}()
-			sem <- struct{}{}
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
 			defer func() { <-sem }()
+			if ctx.Err() != nil {
+				return
+			}
 
-			ohlcv, err := getOHLCVCached(symbol, interval, 24*time.Hour)
+			ohlcv, err := getOHLCVCached(symbol, interval, 0) // cache only — pre-warm already fetched
 			if err != nil || len(ohlcv) < 50 {
 				progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true}
 				return
@@ -23581,6 +24813,9 @@ func backtestWatchlistHandler(c *gin.Context) {
 
 	var skippedSymbols []string
 	for msg := range progressCh {
+		if ctx.Err() != nil {
+			continue // drain without writing
+		}
 		completed++
 		if msg.Skipped {
 			skippedSymbols = append(skippedSymbols, msg.Symbol)
@@ -23593,6 +24828,10 @@ func backtestWatchlistHandler(c *gin.Context) {
 		})
 		fmt.Fprintf(c.Writer, "data: %s\n\n", progressJSON)
 		c.Writer.Flush()
+	}
+
+	if ctx.Err() != nil {
+		return
 	}
 
 	// Aggregate
@@ -23652,6 +24891,25 @@ func backtestWatchlistHandler(c *gin.Context) {
 // ==================== Arena v2 Handlers ====================
 
 func arenaV2BatchHandler(c *gin.Context) {
+	// Cancel any previous running batch (prevents parallel Yahoo fetches / 429 errors)
+	arenaV2BatchMu.Lock()
+	if arenaV2CancelFn != nil {
+		arenaV2CancelFn()
+	}
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	arenaV2CancelFn = cancel
+	arenaV2BatchGen++
+	myGen := arenaV2BatchGen
+	arenaV2BatchMu.Unlock()
+	defer func() {
+		arenaV2BatchMu.Lock()
+		if arenaV2BatchGen == myGen {
+			arenaV2CancelFn = nil
+		}
+		arenaV2BatchMu.Unlock()
+		cancel()
+	}()
+
 	var req struct {
 		Strategy     string                 `json:"strategy"`
 		Interval     string                 `json:"interval"`
@@ -23717,22 +24975,27 @@ func arenaV2BatchHandler(c *gin.Context) {
 	case "1W":
 		bulkCacheInterval = "1wk"
 	}
-	var bulkCacheEntries []OHLCVCache
-	db.Where("interval = ?", bulkCacheInterval).Find(&bulkCacheEntries)
-	bulkCacheJSON := make(map[string]string, len(bulkCacheEntries))
-	for _, ce := range bulkCacheEntries {
-		bulkCacheJSON[ce.Symbol] = ce.DataJSON
-	}
+
+	// Use in-memory cache to determine cached vs uncached symbols
+	// Validate that cached data has enough bars (≥50), otherwise re-fetch
+	cachedSymbols := getOHLCVMemCacheSymbols(bulkCacheInterval)
 
 	var uncachedSymbols []string
+	validCached := 0
 	for _, w := range watchlist {
-		if _, ok := bulkCacheJSON[w.Symbol]; !ok {
+		if cachedSymbols[w.Symbol] {
+			if bars, ok := getOHLCVFromMemCache(w.Symbol, bulkCacheInterval); ok && len(bars) >= 50 {
+				validCached++
+			} else {
+				uncachedSymbols = append(uncachedSymbols, w.Symbol)
+			}
+		} else {
 			uncachedSymbols = append(uncachedSymbols, w.Symbol)
 		}
 	}
 
 	cacheEvt, _ := json.Marshal(gin.H{
-		"type": "cache_loaded", "cached": len(bulkCacheJSON), "total": total, "uncached": len(uncachedSymbols),
+		"type": "cache_loaded", "cached": validCached, "total": total, "uncached": len(uncachedSymbols),
 	})
 	fmt.Fprintf(c.Writer, "data: %s\n\n", cacheEvt)
 	c.Writer.Flush()
@@ -23776,19 +25039,23 @@ func arenaV2BatchHandler(c *gin.Context) {
 				}
 				batch := uncachedUS[i:end]
 				batchWg.Add(1)
-				batchSem <- struct{}{}
+				select {
+				case batchSem <- struct{}{}:
+				case <-ctx.Done():
+					batchWg.Done()
+					continue
+				}
 				go func(b []string) {
 					defer batchWg.Done()
 					defer func() { <-batchSem }()
+					if ctx.Err() != nil {
+						return
+					}
 					batchResult, err := fetchOHLCVBatchFromAlpaca(b, interval)
 					for _, sym := range b {
 						if err == nil {
 							if bars, ok := batchResult[sym]; ok && len(bars) > 0 {
-								saveOHLCVCache(sym, bulkCacheInterval, bars)
-								bulkJSON, _ := json.Marshal(bars)
-								sseMu.Lock()
-								bulkCacheJSON[sym] = string(bulkJSON)
-								sseMu.Unlock()
+								saveOHLCVCache(sym, bulkCacheInterval, bars) // also writes to memory cache
 							} else {
 								failMu.Lock()
 								alpacaFailed = append(alpacaFailed, sym)
@@ -23812,31 +25079,67 @@ func arenaV2BatchHandler(c *gin.Context) {
 		allYahoo := append(alpacaFailed, uncachedNonUS...)
 		if len(allYahoo) > 0 {
 			var yahooWg sync.WaitGroup
-			yahooSem := make(chan struct{}, 20)
+			yahooSem := make(chan struct{}, 10) // reduced from 20 to avoid Yahoo rate-limiting
+			var yahooFailed int64
 			for _, sym := range allYahoo {
+				if ctx.Err() != nil {
+					break
+				}
 				yahooWg.Add(1)
 				go func(s string) {
 					defer yahooWg.Done()
-					yahooSem <- struct{}{}
+					select {
+					case yahooSem <- struct{}{}:
+					case <-ctx.Done():
+						return
+					}
 					defer func() { <-yahooSem }()
+					if ctx.Err() != nil {
+						return
+					}
 					yahooIv := bulkCacheInterval
 					period := backtestPeriodMap[yahooIv]
 					if period == "" {
 						period = "60d"
 					}
-					ohlcv, err := fetchOHLCVFromYahoo(s, period, yahooIv)
-					if err == nil && len(ohlcv) > 0 {
+					// Retry up to 3 times with backoff for rate-limiting
+					var ohlcv []OHLCV
+					var lastErr error
+					for attempt := 0; attempt < 3; attempt++ {
+						if ctx.Err() != nil {
+							return
+						}
+						if attempt > 0 {
+							backoff := time.Duration(attempt) * 2 * time.Second
+							time.Sleep(backoff)
+						}
+						ohlcv, lastErr = fetchOHLCVFromYahoo(s, period, yahooIv)
+						if lastErr == nil && len(ohlcv) > 0 {
+							break
+						}
+						// Only retry on rate-limit / auth errors
+						if lastErr != nil && !strings.Contains(lastErr.Error(), "status 4") {
+							break // non-retryable error (network, parse, etc.)
+						}
+					}
+					if lastErr == nil && len(ohlcv) > 0 {
 						saveOHLCVCache(s, bulkCacheInterval, ohlcv)
-						dataJSON, _ := json.Marshal(ohlcv)
-						sseMu.Lock()
-						bulkCacheJSON[s] = string(dataJSON)
-						sseMu.Unlock()
+					} else {
+						atomic.AddInt64(&yahooFailed, 1)
 					}
 					done := atomic.AddInt64(&prewarmDone, 1)
 					sendProgress(done)
 				}(sym)
 			}
 			yahooWg.Wait()
+			if yahooFailed > 0 {
+				log.Printf("[Arena Batch] Yahoo Prefetch: %d/%d fehlgeschlagen", yahooFailed, len(allYahoo))
+				sseMu.Lock()
+				failEvt, _ := json.Marshal(gin.H{"type": "prefetch_warning", "yahoo_failed": yahooFailed, "yahoo_total": len(allYahoo), "alpaca_failed": len(alpacaFailed)})
+				fmt.Fprintf(c.Writer, "data: %s\n\n", failEvt)
+				c.Writer.Flush()
+				sseMu.Unlock()
+			}
 		}
 	}
 
@@ -23865,7 +25168,7 @@ func arenaV2BatchHandler(c *gin.Context) {
 	var completed int64
 	results := make([]stockResult, total)
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 15)
+	sem := make(chan struct{}, 50) // CPU-only with in-memory cache
 
 	type progressMsg struct {
 		Index   int
@@ -23875,6 +25178,9 @@ func arenaV2BatchHandler(c *gin.Context) {
 	progressCh := make(chan progressMsg, total)
 
 	for idx, item := range watchlist {
+		if ctx.Err() != nil {
+			break
+		}
 		wg.Add(1)
 		go func(i int, symbol string) {
 			defer wg.Done()
@@ -23883,20 +25189,21 @@ func arenaV2BatchHandler(c *gin.Context) {
 					progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true}
 				}
 			}()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			var ohlcv []OHLCV
-			if raw, ok := bulkCacheJSON[symbol]; ok {
-				json.Unmarshal([]byte(raw), &ohlcv)
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
 			}
-			if len(ohlcv) < 50 {
-				var err error
-				ohlcv, err = getOHLCVCached(symbol, interval, 0) // cache only — no network
-				if err != nil || len(ohlcv) < 50 {
-					progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true}
-					return
-				}
+			defer func() { <-sem }()
+			if ctx.Err() != nil {
+				return
+			}
+
+			// Read directly from in-memory cache (no JSON unmarshal, no DB hit)
+			ohlcv, ok := getOHLCVFromMemCache(symbol, bulkCacheInterval)
+			if !ok || len(ohlcv) < 50 {
+				progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true}
+				return
 			}
 			strategy, _ := instantiateStrategy(req.Strategy, req.Params)
 			result := runArenaBacktest(ohlcv, strategy)
@@ -23934,6 +25241,10 @@ func arenaV2BatchHandler(c *gin.Context) {
 
 	var skippedSymbols []string
 	for msg := range progressCh {
+		if ctx.Err() != nil {
+			// Drain remaining messages without writing to cancelled client
+			continue
+		}
 		completed++
 		if msg.Skipped {
 			skippedSymbols = append(skippedSymbols, msg.Symbol)
@@ -23945,12 +25256,18 @@ func arenaV2BatchHandler(c *gin.Context) {
 		c.Writer.Flush()
 	}
 
+	// If cancelled (strategy switch or client disconnect), skip result/DB write
+	if ctx.Err() != nil {
+		return
+	}
+
 	var allTrades []WatchlistBacktestTrade
 	var allArena []ArenaBacktestTrade
 	perStock := make(map[string]ArenaBacktestMetrics)
 	var filteredCount int
 	var totalCount int
 
+	var batchInserts []ArenaV2BatchResult
 	for _, sr := range results {
 		if sr.Symbol == "" {
 			continue
@@ -23976,21 +25293,11 @@ func arenaV2BatchHandler(c *gin.Context) {
 		metricsJSON, _ := json.Marshal(sr.Metrics)
 		tradesJSON, _ := json.Marshal(sr.Trades)
 		mc := marketCaps[sr.Symbol]
-		var existing ArenaV2BatchResult
-		if db.Where("symbol = ? AND strategy = ? AND interval = ?", sr.Symbol, req.Strategy, interval).First(&existing).Error == nil {
-			db.Model(&existing).Updates(map[string]interface{}{
-				"metrics_json": string(metricsJSON),
-				"trades_json":  string(tradesJSON),
-				"market_cap":   mc,
-				"updated_at":   time.Now(),
-			})
-		} else {
-			db.Create(&ArenaV2BatchResult{
-				Symbol: sr.Symbol, Strategy: req.Strategy, Interval: interval,
-				MetricsJSON: string(metricsJSON), TradesJSON: string(tradesJSON),
-				MarketCap: mc, UpdatedAt: time.Now(),
-			})
-		}
+		batchInserts = append(batchInserts, ArenaV2BatchResult{
+			Symbol: sr.Symbol, Strategy: req.Strategy, Interval: interval,
+			MetricsJSON: string(metricsJSON), TradesJSON: string(tradesJSON),
+			MarketCap: mc, UpdatedAt: time.Now(),
+		})
 
 		for _, t := range sr.Trades {
 			allTrades = append(allTrades, WatchlistBacktestTrade{
@@ -24002,6 +25309,22 @@ func arenaV2BatchHandler(c *gin.Context) {
 			allArena = append(allArena, t)
 		}
 		perStock[sr.Symbol] = sr.Metrics
+	}
+
+	// Batch-INSERT: delete old results for this strategy+interval, then insert all at once
+	if len(batchInserts) > 0 {
+		db.Transaction(func(tx *gorm.DB) error {
+			tx.Where("strategy = ? AND interval = ?", req.Strategy, interval).Delete(&ArenaV2BatchResult{})
+			// Insert in chunks of 100 to stay within SQLite variable limits
+			for i := 0; i < len(batchInserts); i += 100 {
+				end := i + 100
+				if end > len(batchInserts) {
+					end = len(batchInserts)
+				}
+				tx.Create(batchInserts[i:end])
+			}
+			return nil
+		})
 	}
 
 	aggregated := calculateBacktestLabMetrics(allArena)
@@ -24245,7 +25568,7 @@ func fetchOHLCVFromYahoo(symbol, period, interval string) ([]OHLCV, error) {
 			yahooAuthClient = nil
 			yahooCrumbMu.Unlock()
 		}
-		return nil, fmt.Errorf("yahoo returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("yahoo %s status %d", symbol, resp.StatusCode)
 	}
 
 	var chartResp YahooChartResponse
@@ -24922,6 +26245,26 @@ func (a *BarAggregator) AddBar(bar OHLCV) {
 	}
 }
 
+func (a *BarAggregator) FlushIfExpired(buffer time.Duration) {
+	a.mu.Lock()
+	if a.currentCandle == nil {
+		a.mu.Unlock()
+		return
+	}
+	bucketEnd := a.candleStart + int64(a.interval.Seconds())
+	if time.Now().Unix() < bucketEnd+int64(buffer.Seconds()) {
+		a.mu.Unlock()
+		return
+	}
+	cc := *a.currentCandle
+	a.currentCandle = nil
+	a.candleStart = 0
+	a.mu.Unlock()
+	if a.onComplete != nil {
+		a.onComplete(cc)
+	}
+}
+
 func getTradingPositions(c *gin.Context) {
 	var positions []TradingVirtualPosition
 	db.Where("is_closed = ?", false).Find(&positions)
@@ -25431,6 +26774,9 @@ func createStrategyFromJSON(strategyName, paramsJSON string) TradingStrategy {
 			SARIncrement: pFloat("sar_increment", 0.03), SARMax: pFloat("sar_max", 0.3),
 			SwingLookback: pInt("swing_lookback", 5), RiskReward: pFloat("risk_reward", 2.0),
 			SLBuffer: pFloat("sl_buffer", 0.3),
+			HybridFilter: pBool("hybrid_filter"),
+			HybridLongThresh: pFloat("hybrid_long_thresh", 75),
+			HybridShortThresh: pFloat("hybrid_short_thresh", 25),
 		}
 	case "gmma_pullback":
 		return &GMMAPullbackStrategy{
@@ -25438,6 +26784,25 @@ func createStrategyFromJSON(strategyName, paramsJSON string) TradingStrategy {
 			FractalPeriods: pInt("fractal_periods", 5), ZoneCount: pInt("zone_count", 5),
 			RiskReward: pFloat("risk_reward", 2.0), SLLookback: pInt("sl_lookback", 10),
 			SLBuffer: pFloat("sl_buffer", 0.3),
+		}
+	case "macd_sr":
+		return &MACDSRStrategy{
+			MACDFast: pInt("macd_fast", 12), MACDSlow: pInt("macd_slow", 26),
+			MACDSignal: pInt("macd_signal", 9), EMAPeriod: pInt("ema_period", 200),
+			SLBuffer: pFloat("sl_buffer", 1.5), RiskReward: pFloat("risk_reward", 1.5),
+			SRFilter: pInt("sr_filter", 1) == 1, FractalPeriods: pInt("fractal_periods", 5),
+			ZoneCount: pInt("zone_count", 5), SRTolerance: pFloat("sr_tolerance", 1.5),
+			HybridFilter: pInt("hybrid_filter", 0) == 1,
+			HybridLongThresh: pFloat("hybrid_long_thresh", 75),
+			HybridShortThresh: pFloat("hybrid_short_thresh", 25),
+		}
+	case "trippa_trade":
+		return &TrippaTrade{
+			MaxRange: pInt("max_range", 100), MinRange: pInt("min_range", 10),
+			Step: pInt("reg_step", 5), SignalLen: pInt("signal_len", 7),
+			EMAFast: pInt("ema_fast", 5), EMASlow: pInt("ema_slow", 13),
+			RiskReward: pFloat("risk_reward", 2.0), SLBuffer: pFloat("sl_buffer", 0.5),
+			MinTrendBars: pInt("min_trend_bars", 3),
 		}
 	default:
 		return nil
@@ -25786,7 +27151,7 @@ func alpacaTestOrder(c *gin.Context) {
 			return
 		}
 		currentPrice = price
-		tradeAmountUSD := convertToUSD(config.TradeAmount, config.Currency)
+		tradeAmountUSD := config.TradeAmount // TradeAmount is always in USD
 		qty = math.Round(tradeAmountUSD/price*1000000) / 1000000
 		if qty <= 0 {
 			qty = 1
@@ -25836,7 +27201,7 @@ func alpacaTestOrder(c *gin.Context) {
 			Quantity:       qty,
 			StopLoss:       req.StopLoss,
 			TakeProfit:     req.TakeProfit,
-			InvestedAmount: convertFromUSD(estimatedPrice*qty, config.Currency),
+			InvestedAmount: estimatedPrice * qty, // USD — no currency conversion
 			NativeCurrency: "USD",
 			AlpacaOrderID:  orderResult.OrderID,
 			CreatedAt:      time.Now(),
@@ -25846,7 +27211,7 @@ func alpacaTestOrder(c *gin.Context) {
 		if orderResult.OrderClass == "bracket" {
 			bracketInfo = fmt.Sprintf(" [BRACKET SL:%.2f TP:%.2f]", req.StopLoss, req.TakeProfit)
 		}
-		logLiveEvent(session.ID, "TRADE", req.Symbol, fmt.Sprintf("TEST-BUY %g x %s @ $%.2f (Einsatz: %.0f %s)%s → Alpaca OrderID: %s, Status: %s", qty, req.Symbol, estimatedPrice, config.TradeAmount, config.Currency, bracketInfo, orderResult.OrderID, orderResult.Status))
+		logLiveEvent(session.ID, "TRADE", req.Symbol, fmt.Sprintf("TEST-BUY %g x %s @ $%.2f (Einsatz: $%.0f)%s → Alpaca OrderID: %s, Status: %s", qty, req.Symbol, estimatedPrice, config.TradeAmount, bracketInfo, orderResult.OrderID, orderResult.Status))
 	} else if hasSession && req.Side == "sell" {
 		var openPos LiveTradingPosition
 		if db.Where("session_id = ? AND symbol = ? AND is_closed = ?", session.ID, req.Symbol, false).First(&openPos).Error == nil {
@@ -26305,7 +27670,7 @@ func startLiveTrading(c *gin.Context) {
 		var sessionCount int64
 		db.Model(&LiveTradingSession{}).Where("user_id = ?", uid).Count(&sessionCount)
 		stratLabel := newConfig.Strategy
-		labels := map[string]string{"regression_scalping": "Regression", "hybrid_ai_trend": "NW Bollinger"}
+		labels := map[string]string{"regression_scalping": "Regression", "hybrid_ai_trend": "NW Bollinger", "macd_sr": "MACD S/R", "trippa_trade": "TrippaTrade"}
 		if l, ok := labels[newConfig.Strategy]; ok {
 			stratLabel = l
 		}
@@ -26387,11 +27752,12 @@ func stopLiveTrading(c *gin.Context) {
 		db.Where("user_id = ?", session.UserID).First(&stopConfig)
 	}
 
-	// Close all open positions
+	// Close all open positions and clear in-memory guards
 	var openPositions []LiveTradingPosition
 	db.Where("session_id = ? AND is_closed = ?", session.ID, false).Find(&openPositions)
 	now := time.Now()
 	for _, pos := range openPositions {
+		liveOpenPosGuard.Delete(openPosGuardKey(session.ID, pos.StrategyID, pos.Symbol))
 		pos.IsClosed = true
 		pos.ClosePrice = pos.CurrentPrice
 		pos.CloseTime = &now
@@ -26466,6 +27832,13 @@ func addLiveSessionStrategy(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "Ungültige Anfrage"})
+		return
+	}
+
+	// Check if same strategy+params already exists for this session
+	var existingStrat LiveSessionStrategy
+	if db.Where("session_id = ? AND name = ? AND params_json = ?", session.ID, req.Strategy, req.Params).First(&existingStrat).Error == nil {
+		c.JSON(400, gin.H{"error": fmt.Sprintf("Strategie '%s' mit gleichen Parametern existiert bereits in dieser Session", req.Strategy)})
 		return
 	}
 
@@ -26622,10 +27995,11 @@ func getLiveTradingStatus(c *gin.Context) {
 	}
 
 	result := gin.H{
-		"is_running":      hasRunning || len(activeSessions) > 0,
-		"active_sessions": sessionsStatus,
-		"alpaca_ws":       sharedWS != nil && sharedWS.IsConnected(),
+		"is_running":        hasRunning || len(activeSessions) > 0,
+		"active_sessions":   sessionsStatus,
+		"alpaca_ws":         sharedWS != nil && sharedWS.IsConnected(),
 		"alpaca_configured": alpacaDataKey != "",
+		"market_open":       isUSMarketOpen(),
 	}
 
 	// Backwards compat: if exactly 1 active session, flatten into top-level
@@ -26810,6 +28184,9 @@ func resumeLiveTrading(c *gin.Context) {
 	} else {
 		db.Where("user_id = ?", session.UserID).Order("updated_at DESC").First(&config)
 	}
+
+	// Initialize in-memory open position guard from DB
+	initOpenPosGuard(session.ID)
 
 	// Start scheduler
 	state := &liveSessionState{
@@ -27021,6 +28398,10 @@ func runLiveWebSocket(state *liveSessionState, sessionID uint, config LiveTradin
 				go flushDirtyOHLCV(state, cacheInterval)
 				lastOHLCVFlush = time.Now()
 			}
+			// Flush expired aggregator candles (prevents stale candles when no new bars arrive)
+			for _, agg := range state.Aggregators {
+				agg.FlushIfExpired(3 * time.Second)
+			}
 		}
 	}
 }
@@ -27224,12 +28605,27 @@ func runLiveScan(sessionID uint) {
 	priceMap := map[string]float64{}
 	skipped := 0
 
+	// Map interval to cache key
+	liveCacheInterval := session.Interval
+	switch liveCacheInterval {
+	case "1h":
+		liveCacheInterval = "60m"
+	case "1D":
+		liveCacheInterval = "1d"
+	case "1W":
+		liveCacheInterval = "1wk"
+	}
+
 	for i, sym := range symbols {
-		// Read from persistent OHLCV cache (no Yahoo calls) — ONCE per symbol
-		ohlcv, err := getOHLCVCached(sym, session.Interval, 0)
-		if err != nil || len(ohlcv) == 0 {
-			skipped++
-			continue
+		// Read from in-memory OHLCV cache first, fallback to DB cache
+		ohlcv, ok := getOHLCVFromMemCache(sym, liveCacheInterval)
+		if !ok || len(ohlcv) == 0 {
+			var err error
+			ohlcv, err = getOHLCVCached(sym, session.Interval, 0)
+			if err != nil || len(ohlcv) == 0 {
+				skipped++
+				continue
+			}
 		}
 
 		// Run each active strategy for this symbol
@@ -27311,12 +28707,12 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 
 	signals := strategy.Analyze(ohlcv)
 
-	// Debug: Log latest signal for this symbol
+	// Log signal detection (visible by default) vs. no-signal (DEBUG)
 	if len(signals) > 0 {
 		lastSig := signals[len(signals)-1]
 		sigBarTime := time.Unix(ohlcv[lastSig.Index].Time, 0).Format("15:04")
 		sigPrice := ohlcv[lastSig.Index].Close
-		logLiveEvent(session.ID, "DEBUG", symbol, fmt.Sprintf("Signal: %s @ %s (Kerze %s, Kurs: %.4f)", lastSig.Direction, time.Now().Format("15:04:05"), sigBarTime, sigPrice), strategyName)
+		logLiveEvent(session.ID, "SIGNAL", symbol, fmt.Sprintf("%s erkannt @ %s (Kerze %s, Kurs: %.4f)", lastSig.Direction, time.Now().Format("15:04:05"), sigBarTime, sigPrice), strategyName)
 	} else {
 		logLiveEvent(session.ID, "DEBUG", symbol, fmt.Sprintf("Kein Signal @ %s (Kerzen: %d)", time.Now().Format("15:04:05"), len(ohlcv)), strategyName)
 	}
@@ -27329,8 +28725,15 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 	sessionStartUnix := session.StartedAt.Unix()
 
 	// Get existing open position for this symbol in this session+strategy
+	posKey := openPosGuardKey(session.ID, strategyID, symbol)
 	var existingPos LiveTradingPosition
 	hasOpenPos := db.Where("session_id = ? AND strategy_id = ? AND symbol = ? AND is_closed = ?", session.ID, strategyID, symbol, false).First(&existingPos).Error == nil
+	// Also check in-memory guard (catches positions where async DB write is still pending)
+	if !hasOpenPos {
+		if _, guardOpen := liveOpenPosGuard.Load(posKey); guardOpen {
+			hasOpenPos = true
+		}
+	}
 
 	// Process new signals (only after session start)
 	for _, sig := range signals {
@@ -27342,13 +28745,19 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 			continue
 		}
 
-		// Check if this signal was already processed
+		// Check if this signal was already processed (DB check)
 		var duplicate LiveTradingPosition
 		if db.Where("session_id = ? AND strategy_id = ? AND symbol = ? AND signal_index = ?", session.ID, strategyID, symbol, sig.Index).First(&duplicate).Error == nil {
 			continue
 		}
 
 		if !hasOpenPos {
+			// Skip new entries outside US market hours
+			if !isUSMarketOpen() {
+				logLiveEvent(session.ID, "SKIP", symbol, fmt.Sprintf("%s Signal übersprungen (Markt geschlossen)", sig.Direction), strategyName)
+				continue
+			}
+
 			// LongOnly filter
 			if longOnly && sig.Direction == "SHORT" {
 				logLiveEvent(session.ID, "SKIP", symbol, "SHORT Signal übersprungen (Long Only)", strategyName)
@@ -27362,13 +28771,22 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 				entryPriceUSD = convertToUSD(entryPriceNative, nativeCurrency)
 			}
 
-			tradeAmountUSD := convertToUSD(session.TradeAmount, session.Currency)
+			tradeAmountUSD := session.TradeAmount // TradeAmount is always in USD
 			posQty := 0.0
 			if entryPriceUSD > 0 {
 				posQty = math.Round(tradeAmountUSD/entryPriceUSD*1000000) / 1000000
 			}
 			if posQty <= 0 {
 				posQty = 1
+			}
+			// Check if asset supports fractional shares — if not, round down to whole shares
+			var watchlistItem TradingWatchlistItem
+			if db.Where("symbol = ?", symbol).First(&watchlistItem).Error == nil && !watchlistItem.Fractionable {
+				posQty = math.Floor(posQty)
+				if posQty < 1 {
+					logLiveEvent(session.ID, "SKIP", symbol, fmt.Sprintf("Nicht fractionable, Preis $%.2f > Trade-Amount $%.0f — übersprungen", entryPriceUSD, tradeAmountUSD), strategyName)
+					continue
+				}
 			}
 
 			// Scale SL/TP from signal entry price to actual entry price (proportional)
@@ -27437,13 +28855,15 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 				TakeProfit:     actualTP,
 				CurrentPrice:   entryPriceNative,
 				NativeCurrency: nativeCurrency,
-				InvestedAmount: convertFromUSD(posQty*entryPriceUSD, session.Currency),
+				InvestedAmount: posQty * entryPriceUSD, // USD — no currency conversion
 				Quantity:       posQty,
 				SignalIndex:    sig.Index,
 				AlpacaOrderID:  alpacaOrderID,
 				CreatedAt:      time.Now(),
 			}
-			db.Create(&pos)
+			// Set in-memory guard BEFORE async DB write to prevent race condition
+			liveOpenPosGuard.Store(posKey, true)
+			livePositionWriteCh <- func() { db.Create(&pos) }
 
 			hasOpenPos = true
 			existingPos = pos
@@ -27461,6 +28881,7 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 			// Close on opposing signal
 			closePriceNative := ohlcv[sig.Index].Open
 			closeLivePosition(&existingPos, closePriceNative, "SIGNAL", nativeCurrency, config)
+			liveOpenPosGuard.Delete(posKey)
 			logLiveEvent(session.ID, "CLOSE", symbol, fmt.Sprintf("Gegensignal — %s geschlossen @ %.4f (%.2f%%, %.2f EUR)", existingPos.Direction, closePriceNative, existingPos.ProfitLossPct, existingPos.ProfitLossAmt), strategyName)
 			hasOpenPos = false
 		}
@@ -27493,6 +28914,7 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 				}
 			}
 			if closed {
+				liveOpenPosGuard.Delete(posKey)
 				hasOpenPos = false
 				break
 			}
@@ -27508,7 +28930,8 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 				existingPos.ProfitLossPct = (existingPos.EntryPrice - lastBar.Close) / existingPos.EntryPrice * 100
 			}
 			existingPos.ProfitLossAmt = existingPos.InvestedAmount * existingPos.ProfitLossPct / 100
-			db.Save(&existingPos)
+			posCopy := existingPos
+			livePositionWriteCh <- func() { db.Save(&posCopy) }
 		}
 	}
 	return lastPrice, true
@@ -27535,7 +28958,9 @@ func closeLivePosition(pos *LiveTradingPosition, closePriceNative float64, reaso
 	}
 	pos.ProfitLossAmt = pos.InvestedAmount * pos.ProfitLossPct / 100
 
-	db.Save(pos)
+	// Serialize DB write via channel to avoid lock contention
+	posCopy := *pos
+	livePositionWriteCh <- func() { db.Save(&posCopy) }
 	if reason == "SL" || reason == "TP" {
 		logLiveEvent(pos.SessionID, reason, pos.Symbol, fmt.Sprintf("%s ausgelöst — %s geschlossen @ %.4f (%.2f%%, %.2f EUR)", reason, pos.Direction, closePriceNative, pos.ProfitLossPct, pos.ProfitLossAmt))
 	}
@@ -27679,8 +29104,9 @@ func intervalToSeconds(interval string) float64 {
 
 func analyzeLiveSymbolHandler(c *gin.Context) {
 	var req struct {
-		SessionID uint   `json:"session_id"`
-		Symbol    string `json:"symbol"`
+		SessionID  uint   `json:"session_id"`
+		Symbol     string `json:"symbol"`
+		StrategyID uint   `json:"strategy_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "Ungültige Anfrage"})
@@ -27701,16 +29127,68 @@ func analyzeLiveSymbolHandler(c *gin.Context) {
 		return
 	}
 
-	// Parse strategy params from session
+	// Load all strategies for this session
+	var sessionStrategies []LiveSessionStrategy
+	db.Where("session_id = ?", session.ID).Order("id ASC").Find(&sessionStrategies)
+
+	// Build strategies list for response
+	strategiesList := []gin.H{}
+	for _, s := range sessionStrategies {
+		strategiesList = append(strategiesList, gin.H{
+			"id":         s.ID,
+			"name":       s.Name,
+			"is_enabled": s.IsEnabled,
+		})
+	}
+
+	// Determine which strategy to use
+	strategyName := session.Strategy
+	paramsJSON := session.ParamsJSON
+	longOnly := session.LongOnly
+	var activeStrategyID uint
+
+	if req.StrategyID > 0 {
+		// Specific strategy requested
+		for _, s := range sessionStrategies {
+			if s.ID == req.StrategyID {
+				strategyName = s.Name
+				paramsJSON = s.ParamsJSON
+				longOnly = s.LongOnly
+				activeStrategyID = s.ID
+				break
+			}
+		}
+	} else if len(sessionStrategies) > 0 {
+		// Use first enabled strategy
+		for _, s := range sessionStrategies {
+			if s.IsEnabled {
+				strategyName = s.Name
+				paramsJSON = s.ParamsJSON
+				longOnly = s.LongOnly
+				activeStrategyID = s.ID
+				break
+			}
+		}
+		// Fallback to first strategy if none enabled
+		if activeStrategyID == 0 {
+			s := sessionStrategies[0]
+			strategyName = s.Name
+			paramsJSON = s.ParamsJSON
+			longOnly = s.LongOnly
+			activeStrategyID = s.ID
+		}
+	}
+
+	// Parse strategy params
 	var params map[string]interface{}
-	if session.ParamsJSON != "" {
-		json.Unmarshal([]byte(session.ParamsJSON), &params)
+	if paramsJSON != "" {
+		json.Unmarshal([]byte(paramsJSON), &params)
 	}
 	if params == nil {
 		params = map[string]interface{}{}
 	}
 
-	strategy, err := instantiateStrategy(session.Strategy, params)
+	strategy, err := instantiateStrategy(strategyName, params)
 	if err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
@@ -27744,9 +29222,13 @@ func analyzeLiveSymbolHandler(c *gin.Context) {
 		result.Overlays = provider.ComputeOverlays(ohlcv)
 	}
 
-	// Load live positions for comparison
+	// Load live positions for comparison — filter by strategy_id if available
 	var livePositions []LiveTradingPosition
-	db.Where("session_id = ? AND symbol = ?", session.ID, symbol).Order("entry_time ASC").Find(&livePositions)
+	if activeStrategyID > 0 {
+		db.Where("session_id = ? AND strategy_id = ? AND symbol = ?", session.ID, activeStrategyID, symbol).Order("entry_time ASC").Find(&livePositions)
+	} else {
+		db.Where("session_id = ? AND symbol = ?", session.ID, symbol).Order("entry_time ASC").Find(&livePositions)
+	}
 
 	// Compare fresh backtest with live positions
 	comparison := compareTradesWithPositions(
@@ -27755,18 +29237,20 @@ func analyzeLiveSymbolHandler(c *gin.Context) {
 		session.ID,
 		symbol,
 		session.StartedAt,
-		session.LongOnly,
+		longOnly,
 		intervalToSeconds(session.Interval),
 	)
 
 	c.JSON(200, gin.H{
-		"metrics":    result.Metrics,
-		"trades":     result.Trades,
-		"markers":    result.Markers,
-		"indicators": result.Indicators,
-		"overlays":   result.Overlays,
-		"chart_data": result.ChartData,
-		"comparison": comparison,
+		"metrics":         result.Metrics,
+		"trades":          result.Trades,
+		"markers":         result.Markers,
+		"indicators":      result.Indicators,
+		"overlays":        result.Overlays,
+		"chart_data":      result.ChartData,
+		"comparison":      comparison,
+		"strategies":      strategiesList,
+		"active_strategy": gin.H{"id": activeStrategyID, "name": strategyName},
 	})
 }
 
@@ -28049,9 +29533,15 @@ func calculateBacktestLabMetrics(trades []ArenaBacktestTrade) ArenaBacktestMetri
 		avgReturn = totalReturn / float64(totalTrades)
 	}
 
+	sanitize := func(v float64) float64 {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return 0
+		}
+		return v
+	}
 	return ArenaBacktestMetrics{
-		WinRate: winRate, RiskReward: riskReward, TotalReturn: totalReturn,
-		AvgReturn: avgReturn, MaxDrawdown: maxDD, NetProfit: equity - 100,
+		WinRate: sanitize(winRate), RiskReward: sanitize(riskReward), TotalReturn: sanitize(totalReturn),
+		AvgReturn: sanitize(avgReturn), MaxDrawdown: sanitize(maxDD), NetProfit: sanitize(equity - 100),
 		TotalTrades: totalTrades, Wins: wins, Losses: losses,
 	}
 }
@@ -28455,7 +29945,7 @@ func evaluateBacktestLabRules(
 
 // ==================== Backtest Lab Batch ====================
 
-// getOHLCVCached returns OHLCV data from persistent DB cache.
+// getOHLCVCached returns OHLCV data from in-memory cache (fast path) or persistent DB cache.
 // freshness=0: always from cache (no Yahoo call). freshness>0: fetch from Yahoo if cache older than freshness.
 // For 2h/4h: reads 60m cache and aggregates via aggregateOHLCV.
 func getOHLCVCached(symbol, interval string, freshness time.Duration) ([]OHLCV, error) {
@@ -28484,28 +29974,21 @@ func getOHLCVCached(symbol, interval string, freshness time.Duration) ([]OHLCV, 
 		cacheInterval = "1wk"
 	}
 
-	var cache OHLCVCache
-	result := db.Where("symbol = ? AND interval = ?", symbol, cacheInterval).First(&cache)
-
-	// Cache hit
-	if result.Error == nil {
-		age := time.Since(cache.UpdatedAt)
-		if freshness == 0 || age < freshness {
-			var ohlcv []OHLCV
-			if err := json.Unmarshal([]byte(cache.DataJSON), &ohlcv); err == nil && len(ohlcv) > 0 {
-				return ohlcv, nil
+	// Fast path: memory cache (lazy-loads from file on miss)
+	if bars, ok := getOHLCVFromMemCache(symbol, cacheInterval); ok {
+		if freshness == 0 {
+			return bars, nil
+		}
+		// Check file freshness
+		if _, modTime, err := readOHLCVFile(symbol, cacheInterval); err == nil {
+			if time.Since(modTime) < freshness {
+				return bars, nil
 			}
 		}
 	}
 
 	// freshness=0 means "cache only, no fetch calls"
 	if freshness == 0 {
-		if result.Error == nil {
-			var ohlcv []OHLCV
-			if err := json.Unmarshal([]byte(cache.DataJSON), &ohlcv); err == nil && len(ohlcv) > 0 {
-				return ohlcv, nil
-			}
-		}
 		return nil, fmt.Errorf("no cache for %s/%s", symbol, interval)
 	}
 
@@ -28529,18 +30012,15 @@ func getOHLCVCached(symbol, interval string, freshness time.Duration) ([]OHLCV, 
 	}
 
 	// If we have cached data, try delta-fetch first
-	if result.Error == nil && cache.DataJSON != "" {
-		var cached []OHLCV
-		if json.Unmarshal([]byte(cache.DataJSON), &cached) == nil && len(cached) > 0 {
-			deltaPeriod := getOHLCVDeltaPeriod(yahooInterval)
-			freshBars, err := fetchOHLCVFromYahoo(symbol, deltaPeriod, yahooInterval)
-			if err == nil && len(freshBars) > 0 {
-				merged := mergeOHLCV(cached, freshBars)
-				saveOHLCVCache(symbol, yahooInterval, merged)
-				return merged, nil
-			}
-			return cached, nil
+	if cached, ok := getOHLCVFromMemCache(symbol, cacheInterval); ok && len(cached) > 0 {
+		deltaPeriod := getOHLCVDeltaPeriod(yahooInterval)
+		freshBars, err := fetchOHLCVFromYahoo(symbol, deltaPeriod, yahooInterval)
+		if err == nil && len(freshBars) > 0 {
+			merged := mergeOHLCV(cached, freshBars)
+			saveOHLCVCache(symbol, yahooInterval, merged)
+			return merged, nil
 		}
+		return cached, nil
 	}
 
 	// Full Yahoo fetch
@@ -28556,43 +30036,25 @@ func getOHLCVCached(symbol, interval string, freshness time.Duration) ([]OHLCV, 
 	return ohlcv, nil
 }
 
-// saveOHLCVCache upserts OHLCV data into the persistent cache
+// saveOHLCVCache writes to memory cache + gzip file (no DB)
 func saveOHLCVCache(symbol, interval string, ohlcv []OHLCV) {
-	dataBytes, _ := json.Marshal(ohlcv)
-	var existing OHLCVCache
-	if db.Where("symbol = ? AND interval = ?", symbol, interval).First(&existing).Error == nil {
-		db.Model(&existing).Updates(map[string]interface{}{
-			"data_json":  string(dataBytes),
-			"bar_count":  len(ohlcv),
-			"updated_at": time.Now(),
-		})
-	} else {
-		db.Create(&OHLCVCache{
-			Symbol:   symbol,
-			Interval: interval,
-			DataJSON: string(dataBytes),
-			BarCount: len(ohlcv),
-		})
-	}
+	setOHLCVInMemCache(symbol, interval, ohlcv)
 }
 
 // getMonthlyOHLCVCached returns monthly OHLCV data with persistent caching.
 // Uses fetchHistoricalDataServer (Yahoo→TwelveData→Aggregate fallback) on cache miss.
 func getMonthlyOHLCVCached(symbol string, freshness time.Duration) ([]OHLCV, error) {
-	// 1. Check persistent cache
-	if freshness > 0 {
-		var cache OHLCVCache
-		if db.Where("symbol = ? AND interval = ?", symbol, "1mo").First(&cache).Error == nil {
-			if time.Since(cache.UpdatedAt) < freshness {
-				var data []OHLCV
-				if json.Unmarshal([]byte(cache.DataJSON), &data) == nil && len(data) > 0 {
-					return data, nil
-				}
-			}
+	// 1. Check file/memory cache
+	if bars, ok := getOHLCVFromMemCache(symbol, "1mo"); ok {
+		if freshness <= 0 {
+			return bars, nil
+		}
+		if _, modTime, err := readOHLCVFile(symbol, "1mo"); err == nil && time.Since(modTime) < freshness {
+			return bars, nil
 		}
 	}
 
-	// 2. Cache miss/stale → full fallback chain (UNCHANGED)
+	// 2. Cache miss/stale → full fallback chain
 	data, err := fetchHistoricalDataServer(symbol)
 	if err != nil {
 		return nil, err

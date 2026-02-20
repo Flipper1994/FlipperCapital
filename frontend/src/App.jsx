@@ -117,7 +117,7 @@ function App() {
   return (
     <CurrencyProvider>
       <TradingModeProvider>
-        <div className="min-h-screen bg-dark-900 flex flex-col">
+        <div className="h-screen bg-dark-900 flex flex-col overflow-hidden">
           <Header
             isLoggedIn={isLoggedIn}
             isAdmin={isAdmin}
@@ -126,7 +126,7 @@ function App() {
             sidebarOpen={sidebarOpen}
             setSidebarOpen={setSidebarOpen}
           />
-          <div className="flex flex-1 overflow-x-hidden">
+          <div className="flex flex-1 overflow-hidden">
             <Sidebar
               isLoggedIn={isLoggedIn}
               isAdmin={isAdmin}

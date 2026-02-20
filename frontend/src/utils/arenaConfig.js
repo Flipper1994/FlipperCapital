@@ -17,7 +17,9 @@ export const STRATEGIES = [
   { value: 'hybrid_ai_trend', label: 'NW Bollinger Bands' },
   { value: 'smart_money_flow', label: 'Smart Money Flow', beta: true },
   { value: 'hann_trend', label: 'Hann Trend (DMH + SAR)' },
-  { value: 'gmma_pullback', label: 'GMMA Pullback' },
+  { value: 'gmma_pullback', label: 'GMMA Pullback', disabled: true, disabledReason: 'Nicht profitabel' },
+  { value: 'macd_sr', label: 'MACD + S/R' },
+  { value: 'trippa_trade', label: 'TrippaTrade RSO', beta: true },
 ]
 
 export const STRATEGY_PARAMS = {
@@ -70,6 +72,9 @@ export const STRATEGY_PARAMS = {
     { key: 'swing_lookback', label: 'Swing Lookback', default: 5, min: 2, max: 20, step: 1 },
     { key: 'risk_reward', label: 'Risk/Reward', default: 2.0, min: 1.0, max: 5.0, step: 0.1 },
     { key: 'sl_buffer', label: 'SL Buffer %', default: 0.3, min: 0, max: 3.0, step: 0.1 },
+    { key: 'hybrid_filter', label: 'Hybrid AlgoAI?', default: 0, min: 0, max: 1, step: 1, isToggle: true },
+    { key: 'hybrid_long_thresh', label: 'Threshold Long', default: 75, min: 0, max: 100, step: 1 },
+    { key: 'hybrid_short_thresh', label: 'Threshold Short', default: 25, min: 0, max: 100, step: 1 },
   ],
   gmma_pullback: [
     { key: 'signal_len', label: 'Signal EMA', default: 9, min: 3, max: 30, step: 1 },
@@ -80,6 +85,32 @@ export const STRATEGY_PARAMS = {
     { key: 'sl_lookback', label: 'SL Lookback', default: 10, min: 3, max: 30, step: 1 },
     { key: 'sl_buffer', label: 'SL Buffer %', default: 0.3, min: 0, max: 3.0, step: 0.1 },
   ],
+  macd_sr: [
+    { key: 'macd_fast', label: 'MACD Fast', default: 12, min: 2, max: 50, step: 1 },
+    { key: 'macd_slow', label: 'MACD Slow', default: 26, min: 10, max: 100, step: 1 },
+    { key: 'macd_signal', label: 'MACD Signal', default: 9, min: 2, max: 30, step: 1 },
+    { key: 'ema_period', label: 'EMA Period', default: 200, min: 50, max: 400, step: 10 },
+    { key: 'sl_buffer', label: 'SL Buffer %', default: 1.5, min: 0, max: 5.0, step: 0.1 },
+    { key: 'risk_reward', label: 'Risk/Reward', default: 1.5, min: 1.0, max: 5.0, step: 0.1 },
+    { key: 'sr_filter', label: 'S/R Filter?', default: 1, min: 0, max: 1, step: 1, isToggle: true },
+    { key: 'fractal_periods', label: 'Fractal Periods', default: 5, min: 2, max: 15, step: 1 },
+    { key: 'zone_count', label: 'S/R Zonen', default: 5, min: 1, max: 10, step: 1 },
+    { key: 'sr_tolerance', label: 'S/R Toleranz %', default: 1.5, min: 0.5, max: 5.0, step: 0.1 },
+    { key: 'hybrid_filter', label: 'Hybrid AlgoAI?', default: 0, min: 0, max: 1, step: 1, isToggle: true },
+    { key: 'hybrid_long_thresh', label: 'Threshold Long', default: 75, min: 0, max: 100, step: 1 },
+    { key: 'hybrid_short_thresh', label: 'Threshold Short', default: 25, min: 0, max: 100, step: 1 },
+  ],
+  trippa_trade: [
+    { key: 'max_range', label: 'Max Range', default: 100, min: 20, max: 300, step: 5 },
+    { key: 'min_range', label: 'Min Range', default: 10, min: 5, max: 50, step: 5 },
+    { key: 'reg_step', label: 'Step', default: 5, min: 1, max: 20, step: 1 },
+    { key: 'signal_len', label: 'Signal SMA', default: 7, min: 3, max: 30, step: 1 },
+    { key: 'ema_fast', label: 'EMA Fast', default: 5, min: 3, max: 20, step: 1 },
+    { key: 'ema_slow', label: 'EMA Slow', default: 13, min: 5, max: 50, step: 1 },
+    { key: 'risk_reward', label: 'Risk/Reward', default: 2.0, min: 1.0, max: 5.0, step: 0.1 },
+    { key: 'sl_buffer', label: 'SL Buffer %', default: 0.5, min: 0, max: 3.0, step: 0.1 },
+    { key: 'min_trend_bars', label: 'Min Trend Bars', default: 3, min: 1, max: 10, step: 1 },
+  ],
 }
 
 export const STRATEGY_DEFAULT_INTERVAL = {
@@ -88,6 +119,8 @@ export const STRATEGY_DEFAULT_INTERVAL = {
   smart_money_flow: '4h',
   hann_trend: '1h',
   gmma_pullback: '1h',
+  macd_sr: '1h',
+  trippa_trade: '1h',
 }
 
 export function getDefaultParams(strategy) {

@@ -50,7 +50,7 @@ function Register({ onLogin }) {
   }
 
   return (
-    <div className="flex-1 flex items-center justify-center p-6">
+    <div className="flex-1 flex items-center justify-center p-6 overflow-auto">
       <div className="w-full max-w-md">
         <div className="bg-dark-800 rounded-xl border border-dark-600 p-8">
           <div className="text-center mb-8">
