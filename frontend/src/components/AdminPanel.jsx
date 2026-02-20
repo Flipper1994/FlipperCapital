@@ -391,7 +391,11 @@ function AdminPanel() {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` }
       })
-      if (res.ok) fetchAlpacaAccounts()
+      if (res.ok) {
+        const data = await res.json()
+        fetchAlpacaAccounts()
+        setValidationResult(prev => ({ ...prev, [id]: { ok: true, ws: data.ws_status } }))
+      }
     } catch { alert('Verbindungsfehler') }
   }
 
@@ -7142,7 +7146,11 @@ function AdminPanel() {
                           <td className="px-4 py-3">
                             {validationResult[acc.id] && (
                               <span className={`text-xs ${validationResult[acc.id].ok ? 'text-green-400' : 'text-red-400'}`}>
-                                {validationResult[acc.id].ok ? `OK — $${Number(validationResult[acc.id].buying_power).toLocaleString('de-DE', {maximumFractionDigits: 0})}` : validationResult[acc.id].error}
+                                {validationResult[acc.id].ok
+                                  ? (validationResult[acc.id].ws
+                                    ? `WS: ${validationResult[acc.id].ws}`
+                                    : `OK — $${Number(validationResult[acc.id].buying_power).toLocaleString('de-DE', {maximumFractionDigits: 0})}`)
+                                  : validationResult[acc.id].error}
                               </span>
                             )}
                           </td>

@@ -27170,9 +27170,21 @@ func setDefaultAlpacaAccount(c *gin.Context) {
 	// Update global data keys (used for WS + REST data API)
 	alpacaDataKey = account.ApiKey
 	alpacaDataSecret = account.SecretKey
-	log.Printf("[Alpaca] Default Account gewechselt → '%s' (ID %d) — Neustart für WS-Reconnect empfohlen", account.Name, account.ID)
+	if alpacaRateTicker == nil {
+		alpacaRateTicker = time.NewTicker(350 * time.Millisecond)
+	}
+	log.Printf("[Alpaca] Default Account gewechselt → '%s' (ID %d)", account.Name, account.ID)
 
-	c.JSON(200, gin.H{"ok": true, "note": "WS-Reconnect erfordert Neustart"})
+	// (Re-)initialize SharedWS if not yet connected
+	if sharedWS == nil || !sharedWS.IsConnected() {
+		initSharedWS()
+	}
+
+	wsStatus := "disconnected"
+	if sharedWS != nil && sharedWS.IsConnected() {
+		wsStatus = "connected"
+	}
+	c.JSON(200, gin.H{"ok": true, "ws_status": wsStatus})
 }
 
 func validateAlpacaKeys(c *gin.Context) {
