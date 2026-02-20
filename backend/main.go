@@ -24634,14 +24634,15 @@ func backtestWatchlistHandler(c *gin.Context) {
 		c.Writer.Flush()
 
 		if useYahoo {
-			// Yahoo: parallel fetch with 20 concurrent workers
+			// Yahoo: parallel fetch with 10 concurrent workers (reduced to avoid rate-limiting)
 			yahooPeriod := backtestPeriodMap[cacheInterval]
 			if yahooPeriod == "" {
 				yahooPeriod = "60d"
 			}
 			var ywg sync.WaitGroup
-			ysem := make(chan struct{}, 20)
+			ysem := make(chan struct{}, 10)
 			var yahooDone int64
+			var yahooFailed int64
 			type yahooProgress struct{ Symbol string }
 			yCh := make(chan yahooProgress, len(uncached))
 			for _, sym := range uncached {
@@ -24660,9 +24661,30 @@ func backtestWatchlistHandler(c *gin.Context) {
 					if ctx.Err() != nil {
 						return
 					}
-					ohlcv, err := fetchOHLCVFromYahoo(s, yahooPeriod, cacheInterval)
-					if err == nil && len(ohlcv) > 0 {
+					// Retry up to 3 times with backoff for rate-limiting
+					var ohlcv []OHLCV
+					var lastErr error
+					for attempt := 0; attempt < 3; attempt++ {
+						if ctx.Err() != nil {
+							return
+						}
+						if attempt > 0 {
+							backoff := time.Duration(attempt) * 2 * time.Second
+							time.Sleep(backoff)
+						}
+						ohlcv, lastErr = fetchOHLCVFromYahoo(s, yahooPeriod, cacheInterval)
+						if lastErr == nil && len(ohlcv) > 0 {
+							break
+						}
+						// Only retry on rate-limit / auth errors
+						if lastErr != nil && !strings.Contains(lastErr.Error(), "status 4") {
+							break
+						}
+					}
+					if lastErr == nil && len(ohlcv) > 0 {
 						saveOHLCVCache(s, cacheInterval, ohlcv)
+					} else {
+						atomic.AddInt64(&yahooFailed, 1)
 					}
 					yCh <- yahooProgress{Symbol: s}
 				}(sym)
@@ -24674,6 +24696,12 @@ func backtestWatchlistHandler(c *gin.Context) {
 					"type": "prefetch_progress", "current": done, "total": len(uncached), "source": "Yahoo",
 				})
 				fmt.Fprintf(c.Writer, "data: %s\n\n", pJSON)
+				c.Writer.Flush()
+			}
+			if yahooFailed > 0 {
+				log.Printf("[Arena-Batch] Yahoo Prefetch: %d/%d fehlgeschlagen", yahooFailed, len(uncached))
+				failEvt, _ := json.Marshal(gin.H{"type": "prefetch_warning", "yahoo_failed": yahooFailed, "yahoo_total": len(uncached)})
+				fmt.Fprintf(c.Writer, "data: %s\n\n", failEvt)
 				c.Writer.Flush()
 			}
 		} else if alpacaDataKey != "" {
@@ -24708,8 +24736,9 @@ func backtestWatchlistHandler(c *gin.Context) {
 				yahooPeriod = "60d"
 			}
 			var ywg sync.WaitGroup
-			ysem := make(chan struct{}, 20)
+			ysem := make(chan struct{}, 10) // reduced from 20 to avoid Yahoo rate-limiting
 			var yahooDone int64
+			var yahooFailed2 int64
 			type yahooProgress2 struct{ Symbol string }
 			yCh := make(chan yahooProgress2, len(uncached))
 			for _, sym := range uncached {
@@ -24728,9 +24757,30 @@ func backtestWatchlistHandler(c *gin.Context) {
 					if ctx.Err() != nil {
 						return
 					}
-					ohlcv, err := fetchOHLCVFromYahoo(s, yahooPeriod, cacheInterval)
-					if err == nil && len(ohlcv) > 0 {
+					// Retry up to 3 times with backoff for rate-limiting
+					var ohlcv []OHLCV
+					var lastErr error
+					for attempt := 0; attempt < 3; attempt++ {
+						if ctx.Err() != nil {
+							return
+						}
+						if attempt > 0 {
+							backoff := time.Duration(attempt) * 2 * time.Second
+							time.Sleep(backoff)
+						}
+						ohlcv, lastErr = fetchOHLCVFromYahoo(s, yahooPeriod, cacheInterval)
+						if lastErr == nil && len(ohlcv) > 0 {
+							break
+						}
+						// Only retry on rate-limit / auth errors
+						if lastErr != nil && !strings.Contains(lastErr.Error(), "status 4") {
+							break
+						}
+					}
+					if lastErr == nil && len(ohlcv) > 0 {
 						saveOHLCVCache(s, cacheInterval, ohlcv)
+					} else {
+						atomic.AddInt64(&yahooFailed2, 1)
 					}
 					yCh <- yahooProgress2{Symbol: s}
 				}(sym)
@@ -24742,6 +24792,12 @@ func backtestWatchlistHandler(c *gin.Context) {
 					"type": "prefetch_progress", "current": done, "total": len(uncached), "source": "Yahoo",
 				})
 				fmt.Fprintf(c.Writer, "data: %s\n\n", pJSON)
+				c.Writer.Flush()
+			}
+			if yahooFailed2 > 0 {
+				log.Printf("[Arena-Batch] Yahoo Prefetch (fallback): %d/%d fehlgeschlagen", yahooFailed2, len(uncached))
+				failEvt, _ := json.Marshal(gin.H{"type": "prefetch_warning", "yahoo_failed": yahooFailed2, "yahoo_total": len(uncached)})
+				fmt.Fprintf(c.Writer, "data: %s\n\n", failEvt)
 				c.Writer.Flush()
 			}
 		}

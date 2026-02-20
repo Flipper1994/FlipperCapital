@@ -473,7 +473,7 @@ ${sorted.map(p => {
   }
 
   return (
-    <div className="flex-1 bg-dark-900 p-4 md:p-6 max-w-7xl mx-auto overflow-auto">
+    <div className="flex-1 min-h-0 bg-dark-900 p-4 md:p-6 max-w-7xl mx-auto overflow-y-auto">
       {/* Header */}
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-white">Daytrading Statistiken</h1>

@@ -3,6 +3,10 @@ import { CURRENCY_SYMBOLS, fetchExchangeRates, getStockCurrency } from '../utils
 
 const CurrencyContext = createContext()
 
+// Cached Intl.NumberFormat instances — creating these is expensive (~1-2ms each)
+const numFmtUS = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const numFmtCH = new Intl.NumberFormat('de-CH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
 // Fallback rates (approximate values)
 const FALLBACK_RATES = {
   USD: 1,
@@ -95,16 +99,10 @@ export function useCurrency() {
       }
 
       if (currency === 'CHF') {
-        return `${symbol} ${converted.toLocaleString('de-CH', {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2
-        })}`
+        return `${symbol} ${numFmtCH.format(converted)}`
       }
 
-      return `${symbol}${converted.toLocaleString('en-US', {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2
-      })}`
+      return `${symbol}${numFmtUS.format(converted)}`
     },
 
     convertPrice: (usdPrice, stockSymbol = null) => {

@@ -11,6 +11,32 @@ const STRATEGY_LABELS = Object.fromEntries(STRATEGIES.map(s => [s.value, s.label
 
 const BETA_STRATEGIES = new Set(['regression_scalping'])
 
+// Cached Intl formatters — creating these is expensive (~1-2ms each), reusing is ~0.001ms
+const dateFmt = new Intl.DateTimeFormat('de-DE', {
+  day: '2-digit', month: '2-digit', year: '2-digit',
+  hour: '2-digit', minute: '2-digit', second: '2-digit'
+})
+const dateShortFmt = new Intl.DateTimeFormat('de-DE', {
+  day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+})
+const timeFmt = new Intl.DateTimeFormat('de-DE', {
+  hour: '2-digit', minute: '2-digit', second: '2-digit'
+})
+const etFmt = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  weekday: 'short', hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false,
+})
+const numFmtDE = new Intl.NumberFormat('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const numFmtDE0 = new Intl.NumberFormat('de-DE')
+
+const StatCard = ({ label, value, sub, color }) => (
+  <div className="bg-dark-700/50 rounded-lg p-2">
+    <div className="text-[9px] text-gray-500 uppercase tracking-wider">{label}</div>
+    <div className={`text-xs font-bold mt-0.5 ${color || 'text-white'}`}>{value}</div>
+    {sub && <div className={`text-[9px] mt-0.5 ${color || 'text-gray-400'} opacity-70`}>{sub}</div>}
+  </div>
+)
+
 const symColHelper = createColumnHelper()
 
 const symbolsColumns = [
@@ -158,8 +184,7 @@ function TestOrderPanel({ headers, onOrderPlaced, tradeAmount }) {
 
 function getNextMarketOpen() {
   const now = new Date()
-  const et = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false, weekday: 'short', year: 'numeric', month: 'numeric', day: 'numeric' })
-  const parts = Object.fromEntries(et.formatToParts(now).map(p => [p.type, p.value]))
+  const parts = Object.fromEntries(etFmt.formatToParts(now).map(p => [p.type, p.value]))
   const dayOfWeek = parts.weekday // Mon, Tue, ...
   const hour = Number(parts.hour)
   const minute = Number(parts.minute)
@@ -218,18 +243,38 @@ function MarketClosedBanner() {
   )
 }
 
+function CountdownDisplay({ nextPollAt, fallback }) {
+  const [, tick] = useState(0)
+  useEffect(() => {
+    if (!nextPollAt) return
+    const iv = setInterval(() => tick(c => c + 1), 1000)
+    return () => clearInterval(iv)
+  }, [nextPollAt])
+  if (!nextPollAt) return <>{fallback || '-'}</>
+  const diff = Math.max(0, Math.floor((new Date(nextPollAt).getTime() - Date.now()) / 1000))
+  if (diff === 0) return <>Jetzt...</>
+  return <>{Math.floor(diff / 60)}:{String(diff % 60).padStart(2, '0')}</>
+}
+
+const _renderCount = { current: 0 }
+
 function LiveTrading({ isAdmin, token }) {
   const { sessionId: urlSessionId } = useParams()
   const navigate = useNavigate()
   const [config, setConfig] = useState(null)
   const [status, setStatus] = useState(null)
   const [positions, setPositions] = useState([])
+
+  // DEBUG: Render counter
+  _renderCount.current++
+  const _rc = _renderCount.current
+  const _t0 = performance.now()
+  console.log(`[LT] RENDER #${_rc} start, urlSessionId=${urlSessionId}`)
   const [sessions, setSessions] = useState([])
   const [showHistory, setShowHistory] = useState(false)
   const [selectedSessionId, setSelectedSessionId] = useState(null)
   const [selectedSessionPositions, setSelectedSessionPositions] = useState([])
   const [symbolPrices, setSymbolPrices] = useState({})
-  const [countdown, setCountdown] = useState(null)
   const [showDebug, setShowDebug] = useState(false)
   const [hiddenLogLevels, setHiddenLogLevels] = useState(new Set(['DEBUG']))
   const [debugSearch, setDebugSearch] = useState('')
@@ -313,10 +358,12 @@ function LiveTrading({ isAdmin, token }) {
 
   const fetchConfig = useCallback(async (sid) => {
     if (!sid) return
+    console.log(`[LT] fetchConfig start sid=${sid}`)
     try {
       const res = await fetch(`/api/trading/live/config?session_id=${sid}`, { headers })
       if (res.ok) {
         const data = await res.json()
+        console.log(`[LT] fetchConfig OK: symbols=${data.symbols?.length}, alpaca=${data.alpaca_enabled}, amount=${data.trade_amount}`)
         if (data.symbols) setConfig(data)
         if (data.alpaca_api_key) setAlpacaKey(data.alpaca_api_key)
         if (data.alpaca_secret_key) setAlpacaSecret(data.alpaca_secret_key)
@@ -324,31 +371,35 @@ function LiveTrading({ isAdmin, token }) {
         if (data.alpaca_paper != null) setAlpacaPaper(data.alpaca_paper)
         if (data.trade_amount) setTradeAmount(data.trade_amount)
       }
-    } catch { /* ignore */ }
+    } catch (err) { console.log(`[LT] fetchConfig error:`, err) }
   }, [token])
 
   const fetchStatus = useCallback(async () => {
+    console.log(`[LT] fetchStatus start`)
     try {
       const res = await fetch('/api/trading/live/status', { headers })
       if (res.ok) {
         const data = await res.json()
+        console.log(`[LT] fetchStatus OK: is_running=${data.is_running}, active_sessions=${data.active_sessions?.length}, prices=${data.symbol_prices ? Object.keys(data.symbol_prices).length : 0}`)
         setStatus(data)
         if (data.symbol_prices) setSymbolPrices(data.symbol_prices)
       }
-    } catch { /* ignore */ }
+    } catch (err) { console.log(`[LT] fetchStatus error:`, err) }
   }, [token])
 
   const fetchPositions = useCallback(async (sessionId) => {
     if (!sessionId) return
+    console.log(`[LT] fetchPositions start sid=${sessionId}`)
     try {
       const res = await fetch(`/api/trading/live/session/${sessionId}`, { headers })
       if (res.ok) {
         const data = await res.json()
+        console.log(`[LT] fetchPositions OK: positions=${(data.positions||[]).length}, prices=${data.symbol_prices ? Object.keys(data.symbol_prices).length : 0}, strategies=${(data.strategies||[]).length}`)
         setPositions(data.positions || [])
         if (data.symbol_prices) setSymbolPrices(data.symbol_prices)
         if (data.strategies) setStrategies(data.strategies)
       }
-    } catch { /* ignore */ }
+    } catch (err) { console.log(`[LT] fetchPositions error:`, err) }
   }, [token])
 
   const fetchSessions = useCallback(async () => {
@@ -366,21 +417,27 @@ function LiveTrading({ isAdmin, token }) {
 
   const fetchAlpacaPortfolio = useCallback(async (sid) => {
     if (!sid) return
+    console.log(`[LT] fetchAlpacaPortfolio start sid=${sid}`)
     try {
       const res = await fetch(`/api/trading/live/alpaca/portfolio?session_id=${sid}`, { headers })
       if (res.ok) {
         const data = await res.json()
+        console.log(`[LT] fetchAlpacaPortfolio OK: positions=${data.positions?.length}, orders=${data.orders?.length}`)
         setAlpacaPortfolio(data)
+      } else {
+        console.log(`[LT] fetchAlpacaPortfolio failed: ${res.status}`)
       }
-    } catch { /* ignore */ }
+    } catch (err) { console.log(`[LT] fetchAlpacaPortfolio error:`, err) }
   }, [token])
 
   // Load on mount / when URL session changes
   useEffect(() => {
+    console.log(`[LT] EFFECT:mount urlSessionId=${urlSessionId}`)
     fetchStatus()
     fetchSessions().then(list => {
-      // If no sessionId in URL, redirect to newest session (list is sorted by id DESC)
+      console.log(`[LT] sessions loaded: ${list?.length}, urlSessionId=${urlSessionId}`)
       if (!urlSessionId && list && list.length > 0) {
+        console.log(`[LT] navigating to session ${list[0].id}`)
         navigate(`/live-trading/${list[0].id}`, { replace: true })
       }
     })
@@ -393,6 +450,7 @@ function LiveTrading({ isAdmin, token }) {
   // Fetch Alpaca portfolio when enabled + session known + keys saved
   const alpacaPollRef = useRef(null)
   useEffect(() => {
+    console.log(`[LT] EFFECT:alpaca enabled=${alpacaEnabled} sid=${urlSessionId} key=${!!alpacaKey}`)
     if (!alpacaEnabled || !urlSessionId || !alpacaKey) {
       if (alpacaPollRef.current) clearInterval(alpacaPollRef.current)
       if (!alpacaEnabled) setAlpacaPortfolio(null)
@@ -405,6 +463,7 @@ function LiveTrading({ isAdmin, token }) {
 
   // Poll status + sessions when session is active
   useEffect(() => {
+    console.log(`[LT] EFFECT:statusPoll is_running=${status?.is_running}`)
     if (!status?.is_running) {
       if (pollRef.current) clearInterval(pollRef.current)
       return
@@ -418,6 +477,7 @@ function LiveTrading({ isAdmin, token }) {
 
   // Poll positions when session is active
   useEffect(() => {
+    console.log(`[LT] EFFECT:posPoll is_running=${status?.is_running} sid=${urlSessionId}`)
     if (!status?.is_running || !urlSessionId) {
       if (posPollRef.current) clearInterval(posPollRef.current)
       return
@@ -426,21 +486,6 @@ function LiveTrading({ isAdmin, token }) {
     posPollRef.current = setInterval(() => fetchPositions(urlSessionId), 10000)
     return () => clearInterval(posPollRef.current)
   }, [status?.is_running, urlSessionId])
-
-  // Countdown timer
-  useEffect(() => {
-    if (!status?.is_running || !status?.next_poll_at) {
-      setCountdown(null)
-      return
-    }
-    const calc = () => {
-      const diff = Math.floor((new Date(status.next_poll_at).getTime() - Date.now()) / 1000)
-      setCountdown(diff > 0 ? diff : 0)
-    }
-    calc()
-    const iv = setInterval(calc, 1000)
-    return () => clearInterval(iv)
-  }, [status?.is_running, status?.next_poll_at])
 
   // Debug log polling
   useEffect(() => {
@@ -642,12 +687,12 @@ function LiveTrading({ isAdmin, token }) {
     if (!ts) return '-'
     const d = new Date(ts)
     if (d.getFullYear() < 2000) return '-' // Guard against Go zero time
-    return d.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    return dateFmt.format(d)
   }
 
   const symbols = config?.symbols || []
-  const openPositions = positions.filter(p => !p.is_closed)
-  const closedPositions = positions.filter(p => p.is_closed)
+  const openPositions = useMemo(() => positions.filter(p => !p.is_closed), [positions])
+  const closedPositions = useMemo(() => positions.filter(p => p.is_closed), [positions])
 
   const toggleSort = (setter) => (field) => {
     setter(prev => {
@@ -679,18 +724,26 @@ function LiveTrading({ isAdmin, token }) {
     })
   }, [openPositions, appPosSort])
 
+  // Memoize sorted closed positions for trade history table
+  const sortedClosedPositions = useMemo(() =>
+    [...closedPositions].sort((a, b) => new Date(b.close_time) - new Date(a.close_time)),
+  [closedPositions])
+
   // Per-symbol aggregation
-  const symbolStats = {}
-  symbols.forEach(sym => { symbolStats[sym] = { totalReturn: 0, trades: 0, openPos: null } })
-  positions.forEach(p => {
-    if (!symbolStats[p.symbol]) symbolStats[p.symbol] = { totalReturn: 0, trades: 0, openPos: null }
-    if (p.is_closed) {
-      symbolStats[p.symbol].totalReturn += p.profit_loss_pct
-      symbolStats[p.symbol].trades++
-    } else {
-      symbolStats[p.symbol].openPos = p
-    }
-  })
+  const symbolStats = useMemo(() => {
+    const stats = {}
+    symbols.forEach(sym => { stats[sym] = { totalReturn: 0, trades: 0, openPos: null } })
+    positions.forEach(p => {
+      if (!stats[p.symbol]) stats[p.symbol] = { totalReturn: 0, trades: 0, openPos: null }
+      if (p.is_closed) {
+        stats[p.symbol].totalReturn += p.profit_loss_pct
+        stats[p.symbol].trades++
+      } else {
+        stats[p.symbol].openPos = p
+      }
+    })
+    return stats
+  }, [symbols, positions])
 
   const symbolsTableData = useMemo(() =>
     symbols.map(sym => {
@@ -704,7 +757,10 @@ function LiveTrading({ isAdmin, token }) {
         trades: stat.trades,
       }
     }),
-  [symbols, symbolStats, symbolPrices, formatPrice])
+  [symbols, symbolStats, symbolPrices, currency])
+
+  const globalFilterFn = useCallback((row, _columnId, filterValue) =>
+    row.original.symbol.toLowerCase().includes(filterValue.toLowerCase()), [])
 
   const symbolsTable = useReactTable({
     data: symbolsTableData,
@@ -715,30 +771,30 @@ function LiveTrading({ isAdmin, token }) {
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
-    globalFilterFn: (row, _columnId, filterValue) =>
-      row.original.symbol.toLowerCase().includes(filterValue.toLowerCase()),
+    globalFilterFn,
   })
 
-  const totalPnlEur = positions.reduce((s, p) => s + (p.profit_loss_amt || 0), 0)
-  const totalInvested = positions.reduce((s, p) => s + (p.invested_amount || 0), 0)
-  const totalRenditePct = totalInvested > 0 ? (totalPnlEur / totalInvested) * 100 : 0
-  // Win Rate: alle Positionen (offen: + = win, - = loss)
-  const allPositionsForWinRate = positions.filter(p => p.is_closed || p.profit_loss_pct != null)
-  const totalWins = allPositionsForWinRate.filter(p => (p.profit_loss_pct || 0) > 0).length
-  const totalLosses = allPositionsForWinRate.filter(p => (p.profit_loss_pct || 0) <= 0).length
-  const totalAll = allPositionsForWinRate.length
-  const winRate = totalAll > 0 ? (totalWins / totalAll) * 100 : 0
-  const totalClosed = closedPositions.length
-  // Avg returns
-  const avgReturnPerTrade = totalAll > 0 ? positions.reduce((s, p) => s + (p.profit_loss_pct || 0), 0) / totalAll : 0
-  const winPositions = allPositionsForWinRate.filter(p => (p.profit_loss_pct || 0) > 0)
-  const losePositions = allPositionsForWinRate.filter(p => (p.profit_loss_pct || 0) <= 0)
-  const avgWin = winPositions.length > 0 ? winPositions.reduce((s, p) => s + p.profit_loss_pct, 0) / winPositions.length : 0
-  const avgLoss = losePositions.length > 0 ? losePositions.reduce((s, p) => s + p.profit_loss_pct, 0) / losePositions.length : 0
-  const riskReward = avgLoss !== 0 ? Math.abs(avgWin / avgLoss) : 0
+  const perfMetrics = useMemo(() => {
+    const totalPnlEur = positions.reduce((s, p) => s + (p.profit_loss_amt || 0), 0)
+    const totalInvested = positions.reduce((s, p) => s + (p.invested_amount || 0), 0)
+    const totalRenditePct = totalInvested > 0 ? (totalPnlEur / totalInvested) * 100 : 0
+    const allForWR = positions.filter(p => p.is_closed || p.profit_loss_pct != null)
+    const totalWins = allForWR.filter(p => (p.profit_loss_pct || 0) > 0).length
+    const totalLosses = allForWR.filter(p => (p.profit_loss_pct || 0) <= 0).length
+    const totalAll = allForWR.length
+    const winRate = totalAll > 0 ? (totalWins / totalAll) * 100 : 0
+    const totalClosed = closedPositions.length
+    const avgReturnPerTrade = totalAll > 0 ? positions.reduce((s, p) => s + (p.profit_loss_pct || 0), 0) / totalAll : 0
+    const winPositions = allForWR.filter(p => (p.profit_loss_pct || 0) > 0)
+    const losePositions = allForWR.filter(p => (p.profit_loss_pct || 0) <= 0)
+    const avgWin = winPositions.length > 0 ? winPositions.reduce((s, p) => s + p.profit_loss_pct, 0) / winPositions.length : 0
+    const avgLoss = losePositions.length > 0 ? losePositions.reduce((s, p) => s + p.profit_loss_pct, 0) / losePositions.length : 0
+    const riskReward = avgLoss !== 0 ? Math.abs(avgWin / avgLoss) : 0
+    return { totalPnlEur, totalInvested, totalRenditePct, totalWins, totalLosses, winRate, totalClosed, avgReturnPerTrade, winPositions, losePositions, avgWin, avgLoss, riskReward }
+  }, [positions, closedPositions])
 
   // Bot Actions timeline — one OPEN row per position + one CLOSE row per closed position
-  const botActions = positions.flatMap(p => {
+  const botActions = useMemo(() => positions.flatMap(p => {
     const actions = [{
       time: p.entry_time,
       type: 'OPEN',
@@ -770,15 +826,18 @@ function LiveTrading({ isAdmin, token }) {
       })
     }
     return actions
-  }).sort((a, b) => new Date(b.time) - new Date(a.time))
+  }).sort((a, b) => new Date(b.time) - new Date(a.time)), [positions])
 
-  const currentSession = sessions.find(s => String(s.id) === String(urlSessionId))
-  const isSessionActive = currentSession?.is_active || status?.active_sessions?.some(s => String(s.session_id) === String(urlSessionId))
+  const currentSession = useMemo(() => sessions.find(s => String(s.id) === String(urlSessionId)), [sessions, urlSessionId])
+  const isSessionActive = useMemo(() => currentSession?.is_active || status?.active_sessions?.some(s => String(s.session_id) === String(urlSessionId)), [currentSession, status?.active_sessions, urlSessionId])
+
+  // DEBUG: render timing
+  console.log(`[LT] RENDER #${_rc} computed in ${(performance.now() - _t0).toFixed(1)}ms — positions=${positions.length}, symbols=${symbols.length}, config=${!!config}, status=${!!status}, isActive=${isSessionActive}`)
 
   // No session selected and no sessions exist — show empty state
   if (!urlSessionId && sessions.length === 0) {
     return (
-      <div className="flex-1 bg-dark-900 p-4 md:p-6 max-w-7xl mx-auto flex items-center justify-center">
+      <div className="flex-1 min-h-0 bg-dark-900 p-4 md:p-6 max-w-7xl mx-auto flex items-center justify-center overflow-y-scroll">
         <div className="text-center">
           <h2 className="text-lg text-gray-400 mb-2">Keine Sessions vorhanden</h2>
           <p className="text-sm text-gray-500 mb-4">Erstelle eine neue Session in der Trading Arena.</p>
@@ -791,7 +850,7 @@ function LiveTrading({ isAdmin, token }) {
   }
 
   return (
-    <div className="flex-1 bg-dark-900 p-4 md:p-6 max-w-7xl mx-auto overflow-auto">
+    <div className="flex-1 min-h-0 bg-dark-900 p-4 md:p-6 max-w-7xl mx-auto overflow-y-scroll">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
@@ -1014,7 +1073,7 @@ function LiveTrading({ isAdmin, token }) {
                 { label: isWS ? 'Modus' : 'Letzter Poll', value: isWS ? 'WebSocket' : formatTime(sess.last_poll_at) },
                 { label: isWS ? 'Letzte Bar' : 'Nächster Poll', value: isWS
                   ? (sess.last_bar_received ? formatTime(sess.last_bar_received) : '-')
-                  : (countdown != null ? (countdown === 0 ? 'Jetzt...' : `${Math.floor(countdown / 60)}:${String(countdown % 60).padStart(2, '0')}`) : formatTime(sess.next_poll_at))
+                  : <CountdownDisplay nextPollAt={sess.next_poll_at} fallback={formatTime(sess.next_poll_at)} />
                 },
                 { label: 'Session Start', value: formatTime(sess.started_at) },
                 { label: isWS ? 'Verbindung' : 'Polls', value: isWS ? (sess.ws_connected ? 'Verbunden' : sess.last_bar_received ? 'Getrennt' : 'Verbinde...') : sess.total_polls },
@@ -1203,7 +1262,7 @@ function LiveTrading({ isAdmin, token }) {
               {alpacaValidation && (
                 <div className={`text-xs p-2 rounded ${alpacaValidation.ok ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
                   {alpacaValidation.ok
-                    ? `Verbunden — Status: ${alpacaValidation.status} | Kaufkraft: $${Number(alpacaValidation.buying_power).toLocaleString('de-DE')} | ${alpacaValidation.paper ? 'Paper Trading' : 'LIVE'}`
+                    ? `Verbunden — Status: ${alpacaValidation.status} | Kaufkraft: $${numFmtDE0.format(Number(alpacaValidation.buying_power))} | ${alpacaValidation.paper ? 'Paper Trading' : 'LIVE'}`
                     : `Fehler: ${alpacaValidation.error}`
                   }
                 </div>
@@ -1286,7 +1345,7 @@ function LiveTrading({ isAdmin, token }) {
                     </span>
                     {lastChecked && (
                       <span className="text-[9px] text-gray-600" title={sess.alpaca_error || ''}>
-                        Check: {new Date(lastChecked).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                        Check: {timeFmt.format(new Date(lastChecked))}
                       </span>
                     )}
                   </>
@@ -1315,10 +1374,10 @@ function LiveTrading({ isAdmin, token }) {
             return (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
                 {[
-                  { label: 'Gesamtwert', value: `$${alpacaPortfolio.account.equity.toLocaleString('de-DE', { minimumFractionDigits: 2 })}`, color: 'text-white' },
-                  { label: 'Investiert', value: `$${totalInvested.toLocaleString('de-DE', { minimumFractionDigits: 2 })}`, color: 'text-accent-400' },
-                  { label: 'Verfügbares Cash', value: `$${alpacaPortfolio.account.cash.toLocaleString('de-DE', { minimumFractionDigits: 2 })}`, color: 'text-gray-300' },
-                  { label: 'Tagesänderung', value: `${dayChange >= 0 ? '+' : ''}$${dayChange.toLocaleString('de-DE', { minimumFractionDigits: 2 })} (${dayChangePct >= 0 ? '+' : ''}${dayChangePct.toFixed(2)}%)`, color: dayColor },
+                  { label: 'Gesamtwert', value: `$${numFmtDE.format(alpacaPortfolio.account.equity)}`, color: 'text-white' },
+                  { label: 'Investiert', value: `$${numFmtDE.format(totalInvested)}`, color: 'text-accent-400' },
+                  { label: 'Verfügbares Cash', value: `$${numFmtDE.format(alpacaPortfolio.account.cash)}`, color: 'text-gray-300' },
+                  { label: 'Tagesänderung', value: `${dayChange >= 0 ? '+' : ''}$${numFmtDE.format(dayChange)} (${dayChangePct >= 0 ? '+' : ''}${dayChangePct.toFixed(2)}%)`, color: dayColor },
                 ].map((item, i) => (
                   <div key={i} className="bg-dark-700 rounded-lg p-3">
                     <div className="text-[10px] text-gray-500 uppercase tracking-wider">{item.label}</div>
@@ -1428,7 +1487,7 @@ function LiveTrading({ isAdmin, token }) {
                         <td className="py-2 pr-3 text-right text-gray-300">{p.qty}</td>
                         <td className="py-2 pr-3 text-right text-gray-400">${p.avg_entry_price.toFixed(2)}</td>
                         <td className="py-2 pr-3 text-right text-gray-300">${p.current_price.toFixed(2)}</td>
-                        <td className="py-2 pr-3 text-right text-gray-300">${p.market_value.toLocaleString('de-DE', { minimumFractionDigits: 2 })}</td>
+                        <td className="py-2 pr-3 text-right text-gray-300">${numFmtDE.format(p.market_value)}</td>
                         <td className={`py-2 text-right font-medium ${p.unrealized_pl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                           {p.unrealized_pl >= 0 ? '+' : ''}${p.unrealized_pl.toFixed(2)} ({p.unrealized_pl_pct >= 0 ? '+' : ''}{p.unrealized_pl_pct.toFixed(2)}%)
                         </td>
@@ -1446,7 +1505,7 @@ function LiveTrading({ isAdmin, token }) {
                         <tr className="border-t border-dark-500">
                           <td colSpan={5} className="py-2 pr-3 text-gray-400 font-medium">Gesamt</td>
                           <td className="py-2 pr-3 text-right text-white font-medium">
-                            ${totalMV.toLocaleString('de-DE', { minimumFractionDigits: 2 })}
+                            ${numFmtDE.format(totalMV)}
                           </td>
                           <td className={`py-2 text-right font-bold ${pnlColor}`}>
                             {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)} ({totalPct >= 0 ? '+' : ''}{totalPct.toFixed(2)}%)
@@ -1487,7 +1546,7 @@ function LiveTrading({ isAdmin, token }) {
             }
             const fmtDate = (o) => {
               const d = o.filled_at || o.created_at
-              return d ? new Date(d).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'
+              return d ? dateShortFmt.format(new Date(d)) : '-'
             }
 
             return (
@@ -1643,21 +1702,21 @@ function LiveTrading({ isAdmin, token }) {
             <h3 className="text-sm font-medium text-white">Performance</h3>
             <div className="flex items-center gap-3 text-[10px] text-gray-500">
               <span>{openPositions.length} offen</span>
-              <span>{totalClosed} geschlossen</span>
+              <span>{perfMetrics.totalClosed} geschlossen</span>
               <span>{symbols.length} Aktien</span>
               <span>{STRATEGY_LABELS[config?.strategy] || '-'}</span>
             </div>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2">
             {[
-              { label: 'Rendite', value: `${totalRenditePct >= 0 ? '+' : ''}${totalRenditePct.toFixed(2)}%`, sub: `(${totalPnlEur >= 0 ? '+' : ''}${totalPnlEur.toFixed(2)}€)`, subColor: true, color: totalPnlEur >= 0 ? 'text-green-400' : 'text-red-400' },
-              { label: 'Trades', value: `${positions.length}`, sub: `${openPositions.length} offen / ${totalClosed} closed`, color: 'text-white' },
-              { label: 'Win Rate', value: `${winRate.toFixed(0)}%`, sub: `${totalWins}W / ${totalLosses}L`, color: winRate >= 50 ? 'text-green-400' : 'text-red-400' },
-              { label: 'R/R', value: riskReward > 0 ? riskReward.toFixed(2) : '-', sub: 'Risk/Reward', color: riskReward >= 1 ? 'text-green-400' : riskReward > 0 ? 'text-red-400' : 'text-gray-400' },
-              { label: 'Ø / Trade', value: `${avgReturnPerTrade >= 0 ? '+' : ''}${avgReturnPerTrade.toFixed(2)}%`, color: avgReturnPerTrade >= 0 ? 'text-green-400' : 'text-red-400' },
-              { label: 'Ø Win', value: winPositions.length > 0 ? `+${avgWin.toFixed(2)}%` : '-', color: 'text-green-400' },
-              { label: 'Ø Loss', value: losePositions.length > 0 ? `${avgLoss.toFixed(2)}%` : '-', color: 'text-red-400' },
-              { label: 'Investiert', value: `${totalInvested.toFixed(0)}€`, color: 'text-white' },
+              { label: 'Rendite', value: `${perfMetrics.totalRenditePct >= 0 ? '+' : ''}${perfMetrics.totalRenditePct.toFixed(2)}%`, sub: `(${perfMetrics.totalPnlEur >= 0 ? '+' : ''}${perfMetrics.totalPnlEur.toFixed(2)}€)`, subColor: true, color: perfMetrics.totalPnlEur >= 0 ? 'text-green-400' : 'text-red-400' },
+              { label: 'Trades', value: `${positions.length}`, sub: `${openPositions.length} offen / ${perfMetrics.totalClosed} closed`, color: 'text-white' },
+              { label: 'Win Rate', value: `${perfMetrics.winRate.toFixed(0)}%`, sub: `${perfMetrics.totalWins}W / ${perfMetrics.totalLosses}L`, color: perfMetrics.winRate >= 50 ? 'text-green-400' : 'text-red-400' },
+              { label: 'R/R', value: perfMetrics.riskReward > 0 ? perfMetrics.riskReward.toFixed(2) : '-', sub: 'Risk/Reward', color: perfMetrics.riskReward >= 1 ? 'text-green-400' : perfMetrics.riskReward > 0 ? 'text-red-400' : 'text-gray-400' },
+              { label: 'Ø / Trade', value: `${perfMetrics.avgReturnPerTrade >= 0 ? '+' : ''}${perfMetrics.avgReturnPerTrade.toFixed(2)}%`, color: perfMetrics.avgReturnPerTrade >= 0 ? 'text-green-400' : 'text-red-400' },
+              { label: 'Ø Win', value: perfMetrics.winPositions.length > 0 ? `+${perfMetrics.avgWin.toFixed(2)}%` : '-', color: 'text-green-400' },
+              { label: 'Ø Loss', value: perfMetrics.losePositions.length > 0 ? `${perfMetrics.avgLoss.toFixed(2)}%` : '-', color: 'text-red-400' },
+              { label: 'Investiert', value: `${perfMetrics.totalInvested.toFixed(0)}€`, color: 'text-white' },
             ].map((m, i) => (
               <div key={i} className="bg-dark-700 rounded-lg p-2.5">
                 <div className="text-[10px] text-gray-500">{m.label}{m.label === 'Rendite' && openPositions.length > 0 ? ' (inkl. offen)' : ''}</div>
@@ -1781,13 +1840,6 @@ function LiveTrading({ isAdmin, token }) {
         })
 
         const pf = (v, showSign = true) => `${showSign && v >= 0 ? '+' : ''}${v.toFixed(2)}`
-        const StatCard = ({ label, value, sub, color }) => (
-          <div className="bg-dark-700/50 rounded-lg p-2">
-            <div className="text-[9px] text-gray-500 uppercase tracking-wider">{label}</div>
-            <div className={`text-xs font-bold mt-0.5 ${color || 'text-white'}`}>{value}</div>
-            {sub && <div className={`text-[9px] mt-0.5 ${color || 'text-gray-400'} opacity-70`}>{sub}</div>}
-          </div>
-        )
 
         return (
           <div className="bg-dark-800 rounded-lg border border-dark-600 mb-4">
@@ -2076,9 +2128,9 @@ function LiveTrading({ isAdmin, token }) {
                 </tr>
               </thead>
               <tbody>
-                {[...closedPositions]
+                {sortedClosedPositions
                   .filter(p => !tradeHistorySearch || p.symbol?.toLowerCase().includes(tradeHistorySearch.toLowerCase()) || p.close_reason?.toLowerCase().includes(tradeHistorySearch.toLowerCase()) || p.strategy_name?.toLowerCase().includes(tradeHistorySearch.toLowerCase()))
-                  .sort((a, b) => new Date(b.close_time) - new Date(a.close_time)).map(p => (
+                  .map(p => (
                   <tr key={p.id} className="border-b border-dark-700/50">
                     <td className="py-1.5 pr-2 font-medium text-accent-400">
                       {p.symbol}
@@ -2287,7 +2339,7 @@ function LiveTrading({ isAdmin, token }) {
               if (hiddenLogLevels.has(l.level)) return false
               if (strategyFilter && l.strategy !== strategyFilter) return false
               if (searchLower) {
-                const time = new Date(l.created_at).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                const time = dateFmt.format(new Date(l.created_at))
                 return l.symbol?.toLowerCase().includes(searchLower) ||
                   l.message?.toLowerCase().includes(searchLower) ||
                   l.level?.toLowerCase().includes(searchLower) ||
@@ -2356,7 +2408,7 @@ function LiveTrading({ isAdmin, token }) {
                     <div className="text-gray-600 py-2 text-center">Noch keine Log-Einträge</div>
                   )}
                   {filteredLogs.map(log => {
-                    const time = new Date(log.created_at).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                    const time = timeFmt.format(new Date(log.created_at))
                     return (
                       <div key={log.id} className="flex gap-2 py-0.5 border-b border-dark-700/30">
                         <span className="text-gray-600 shrink-0">{time}</span>
@@ -2659,7 +2711,7 @@ function LiveTrading({ isAdmin, token }) {
                                   </span>
                                 </td>
                                 <td className="py-1.5 pr-2 text-gray-400 whitespace-nowrap">
-                                  {d.time ? new Date(d.time).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'}
+                                  {d.time ? dateShortFmt.format(new Date(d.time)) : '-'}
                                 </td>
                                 <td className="py-1.5 text-orange-300">{d.message}</td>
                               </tr>
