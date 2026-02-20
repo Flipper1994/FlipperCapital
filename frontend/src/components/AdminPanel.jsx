@@ -7131,7 +7131,7 @@ function AdminPanel() {
                         <tr key={acc.id} className="border-b border-dark-700 hover:bg-dark-700/50">
                           <td className="px-4 py-3 text-white font-medium">
                             {acc.name}
-                            {acc.is_default && <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] bg-accent-500/20 text-accent-400 border border-accent-500/30">Default</span>}
+                            {acc.is_default && <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] bg-accent-500/20 text-accent-400 border border-accent-500/30">WS / Data</span>}
                           </td>
                           <td className="px-4 py-3 text-gray-400 font-mono text-xs">{acc.api_key}</td>
                           <td className="px-4 py-3">
@@ -7156,7 +7156,7 @@ function AdminPanel() {
                                 className="px-2 py-1 text-[11px] bg-dark-600 hover:bg-dark-500 text-gray-300 rounded transition-colors">Bearbeiten</button>
                               {!acc.is_default && (
                                 <button onClick={() => setDefaultAccount(acc.id)}
-                                  className="px-2 py-1 text-[11px] bg-dark-600 hover:bg-dark-500 text-accent-400 rounded transition-colors">Default</button>
+                                  className="px-2 py-1 text-[11px] bg-dark-600 hover:bg-dark-500 text-accent-400 rounded transition-colors" title="Für WebSocket & Daten-API nutzen">WS Key</button>
                               )}
                               <button onClick={() => deleteAlpacaAccount(acc.id)}
                                 className="px-2 py-1 text-[11px] bg-dark-600 hover:bg-dark-500 text-red-400 rounded transition-colors">Löschen</button>

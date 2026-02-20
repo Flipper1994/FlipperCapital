@@ -1035,10 +1035,10 @@ var sessionsMu sync.RWMutex
 var httpClient = &http.Client{Timeout: 10 * time.Second}
 var twelveDataAPIKey string
 
-// Alpaca Data API keys (separate from per-session trading keys)
+// Alpaca Data API keys — loaded from default AlpacaAccount in DB
 var (
-	alpacaDataKey    string // env: ALPACA_DATA_KEY
-	alpacaDataSecret string // env: ALPACA_DATA_SECRET
+	alpacaDataKey    string
+	alpacaDataSecret string
 	alpacaRateTicker *time.Ticker
 )
 
@@ -1318,18 +1318,16 @@ func setGlobalSetting(key, value string) {
 }
 
 func alpacaFetchTradableAssets() (map[string]AlpacaAssetInfo, error) {
-	brokerKey := getGlobalSetting("alpaca_broker_key")
-	brokerSecret := getGlobalSetting("alpaca_broker_secret")
-	if brokerKey == "" || brokerSecret == "" {
-		return nil, fmt.Errorf("alpaca broker keys not configured")
+	if alpacaDataKey == "" || alpacaDataSecret == "" {
+		return nil, fmt.Errorf("alpaca keys not configured")
 	}
 
 	req, err := http.NewRequest("GET", "https://paper-api.alpaca.markets/v2/assets?status=active&asset_class=us_equity", nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("APCA-API-KEY-ID", brokerKey)
-	req.Header.Set("APCA-API-SECRET-KEY", brokerSecret)
+	req.Header.Set("APCA-API-KEY-ID", alpacaDataKey)
+	req.Header.Set("APCA-API-SECRET-KEY", alpacaDataSecret)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -1722,12 +1720,7 @@ func main() {
 		fmt.Println("[Config] Twelve Data API key configured - will use as fallback for monthly data")
 	}
 
-	alpacaDataKey = os.Getenv("ALPACA_DATA_KEY")
-	alpacaDataSecret = os.Getenv("ALPACA_DATA_SECRET")
-	if alpacaDataKey != "" && alpacaDataSecret != "" {
-		alpacaRateTicker = time.NewTicker(350 * time.Millisecond) // ~170 req/min (under 200 limit)
-		fmt.Println("[Config] Alpaca Data API keys configured — using as primary data source")
-	}
+	// Alpaca Data API keys are loaded from DB after AutoMigrate (see loadAlpacaWSKeys)
 
 	var err error
 	db, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
@@ -1843,25 +1836,8 @@ func main() {
 		db.Create(&SystemSetting{Key: "invite_code", Value: "KommInDieGruppe"})
 	}
 
-	// Seed Alpaca broker keys (only if not yet present)
-	if getGlobalSetting("alpaca_broker_key") == "" {
-		brokerKey := os.Getenv("ALPACA_BROKER_KEY")
-		if brokerKey == "" {
-			brokerKey = alpacaDataKey // fallback to data key
-		}
-		if brokerKey != "" {
-			setGlobalSetting("alpaca_broker_key", brokerKey)
-		}
-	}
-	if getGlobalSetting("alpaca_broker_secret") == "" {
-		brokerSecret := os.Getenv("ALPACA_BROKER_SECRET")
-		if brokerSecret == "" {
-			brokerSecret = alpacaDataSecret // fallback to data secret
-		}
-		if brokerSecret != "" {
-			setGlobalSetting("alpaca_broker_secret", brokerSecret)
-		}
-	}
+	// Load Alpaca WS/Data keys from default AlpacaAccount
+	loadAlpacaWSKeys()
 
 	// Startup: Load Alpaca tradable assets + clean trading watchlist
 	if err := refreshTradableAssetsCache(); err != nil {
@@ -26111,6 +26087,21 @@ func initSharedWS() {
 	log.Println("[SharedWS] Globaler WebSocket connected")
 }
 
+// loadAlpacaWSKeys reads the default AlpacaAccount from DB and sets the global data keys.
+func loadAlpacaWSKeys() {
+	var acc AlpacaAccount
+	if db.Where("is_default = ?", true).First(&acc).Error != nil {
+		log.Println("[Alpaca] Kein Default-Account in DB — Alpaca Data API deaktiviert")
+		return
+	}
+	alpacaDataKey = acc.ApiKey
+	alpacaDataSecret = acc.SecretKey
+	if alpacaDataKey != "" && alpacaDataSecret != "" {
+		alpacaRateTicker = time.NewTicker(350 * time.Millisecond)
+		log.Printf("[Alpaca] Data API Keys geladen von Account '%s' (ID %d)", acc.Name, acc.ID)
+	}
+}
+
 func (m *SharedWSManager) IsConnected() bool {
 	if m == nil || m.client == nil {
 		return false
@@ -27175,7 +27166,13 @@ func setDefaultAlpacaAccount(c *gin.Context) {
 	// Clear all defaults, then set new one
 	db.Model(&AlpacaAccount{}).Where("is_default = ?", true).Update("is_default", false)
 	db.Model(&account).Update("is_default", true)
-	c.JSON(200, gin.H{"ok": true})
+
+	// Update global data keys (used for WS + REST data API)
+	alpacaDataKey = account.ApiKey
+	alpacaDataSecret = account.SecretKey
+	log.Printf("[Alpaca] Default Account gewechselt → '%s' (ID %d) — Neustart für WS-Reconnect empfohlen", account.Name, account.ID)
+
+	c.JSON(200, gin.H{"ok": true, "note": "WS-Reconnect erfordert Neustart"})
 }
 
 func validateAlpacaKeys(c *gin.Context) {
