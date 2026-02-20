@@ -25362,6 +25362,17 @@ func arenaV2StartSession(c *gin.Context) {
 	db.Create(&session)
 	db.Model(&session).Update("is_active", false)
 
+	// Create initial LiveSessionStrategy (consistent with startLiveTrading)
+	db.Create(&LiveSessionStrategy{
+		SessionID:  session.ID,
+		Name:       req.Strategy,
+		ParamsJSON: req.ParamsJSON,
+		Symbols:    string(symbolsJSON),
+		IsEnabled:  true,
+		LongOnly:   req.LongOnly,
+		CreatedAt:  now,
+	})
+
 	logLiveEvent(session.ID, "INFO", "-", fmt.Sprintf("Arena v2 Session '%s' erstellt — %d Symbole, %s %s", session.Name, len(req.Symbols), req.Strategy, req.Interval))
 
 	c.JSON(200, gin.H{"session": session, "status": "created"})
@@ -26427,7 +26438,7 @@ func refreshSessionCache(state *liveSessionState, sessionID uint) {
 	state.cacheMu.Unlock()
 }
 
-// loadOHLCVIntoMemory preloads all OHLCV data from DB into the in-memory map
+// loadOHLCVIntoMemory preloads all OHLCV data from global memory/file cache into session state
 func loadOHLCVIntoMemory(state *liveSessionState, symbols []string, cacheInterval string) {
 	state.ohlcvMu.Lock()
 	state.ohlcvData = make(map[string][]OHLCV, len(symbols))
@@ -26435,14 +26446,12 @@ func loadOHLCVIntoMemory(state *liveSessionState, symbols []string, cacheInterva
 	state.ohlcvMu.Unlock()
 
 	for _, sym := range symbols {
-		var cache OHLCVCache
-		if db.Where("symbol = ? AND interval = ?", sym, cacheInterval).First(&cache).Error == nil {
-			var ohlcv []OHLCV
-			if json.Unmarshal([]byte(cache.DataJSON), &ohlcv) == nil {
-				state.ohlcvMu.Lock()
-				state.ohlcvData[sym] = ohlcv
-				state.ohlcvMu.Unlock()
-			}
+		if bars, ok := getOHLCVFromMemCache(sym, cacheInterval); ok && len(bars) > 0 {
+			barsCopy := make([]OHLCV, len(bars))
+			copy(barsCopy, bars)
+			state.ohlcvMu.Lock()
+			state.ohlcvData[sym] = barsCopy
+			state.ohlcvMu.Unlock()
 		}
 	}
 }
@@ -26539,11 +26548,10 @@ func triggerPriorityRefresh(symbols []string, yahooInterval string, sessionID ui
 		period = "60d"
 	}
 
-	// Find symbols without cache data
+	// Find symbols without cache data (memory + file cache)
 	var missing []string
 	for _, sym := range symbols {
-		var cache OHLCVCache
-		if db.Where("symbol = ? AND interval = ?", sym, yahooInterval).First(&cache).Error != nil {
+		if _, ok := getOHLCVFromMemCache(sym, yahooInterval); !ok {
 			missing = append(missing, sym)
 		}
 	}
@@ -28425,28 +28433,17 @@ func runLiveWebSocket(state *liveSessionState, sessionID uint, config LiveTradin
 
 	logLiveEvent(sessionID, "INFO", "-", fmt.Sprintf("WebSocket-Modus: %d Symbole, Interval %s", len(symbols), session.Interval))
 
-	// 1. Prefetch historical bars for strategy warmup
 	cacheInterval := session.Interval
 	ivMap := map[string]string{"1h": "60m", "1D": "1d", "1W": "1wk"}
 	if mapped, ok := ivMap[cacheInterval]; ok {
 		cacheInterval = mapped
 	}
-	triggerPriorityRefresh(symbols, cacheInterval, sessionID)
 
-	// Run initial scan from cache
-	runLiveScan(sessionID)
-
-	// === Fix 2: Initialize in-memory session/strategy cache ===
+	// === Step 1: Initialize session cache + worker pool + channel FIRST (non-blocking) ===
 	refreshSessionCache(state, sessionID)
 
-	// === Fix 3: Load OHLCV data into memory ===
-	loadOHLCVIntoMemory(state, symbols, cacheInterval)
-	logLiveEvent(sessionID, "INFO", "-", fmt.Sprintf("OHLCV in-memory geladen: %d Symbole", len(state.ohlcvData)))
-
-	// === Fix 1b: Create candle event channel ===
 	state.candleChan = make(chan candleEvent, 4096)
 
-	// === Fix 1d: Start worker goroutines ===
 	const numWorkers = 20
 	var workerWg sync.WaitGroup
 	for w := 0; w < numWorkers; w++ {
@@ -28545,7 +28542,15 @@ func runLiveWebSocket(state *liveSessionState, sessionID uint, config LiveTradin
 		logLiveEvent(sessionID, "INFO", "-", fmt.Sprintf("WebSocket connected (eigener Client) — subscribed to %d symbols", len(symbols)))
 	}
 
-	// 3b. Sofortiger Alpaca-Health-Check nach WS-Setup
+	// 3b. Prefetch historical data ASYNC (non-blocking — WS already receiving bars)
+	go func() {
+		triggerPriorityRefresh(symbols, cacheInterval, sessionID)
+		loadOHLCVIntoMemory(state, symbols, cacheInterval)
+		logLiveEvent(sessionID, "INFO", "-", fmt.Sprintf("OHLCV in-memory geladen: %d Symbole", len(state.ohlcvData)))
+		runLiveScan(sessionID)
+	}()
+
+	// 3c. Sofortiger Alpaca-Health-Check nach WS-Setup
 	if _, err := alpacaGetAccount(config); err == nil {
 		state.AlpacaActive = true
 		state.AlpacaLastChecked = time.Now()
