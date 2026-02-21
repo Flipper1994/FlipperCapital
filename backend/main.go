@@ -26514,6 +26514,7 @@ func processCandleEvent(state *liveSessionState, evt candleEvent, config LiveTra
 	state.cacheMu.RLock()
 	if !state.cacheReady {
 		state.cacheMu.RUnlock()
+		logLiveEvent(state.cachedSession.ID, "SKIP", evt.symbol, "Cache noch nicht bereit — Kerze übersprungen")
 		return
 	}
 	sess := state.cachedSession
@@ -26529,11 +26530,14 @@ func processCandleEvent(state *liveSessionState, evt candleEvent, config LiveTra
 		// Create fresh engine per call (strategies have internal state, not thread-safe)
 		engine := createStrategyFromJSON(s.Name, s.ParamsJSON)
 		if engine == nil {
+			logLiveEvent(sess.ID, "SKIP", evt.symbol, fmt.Sprintf("Strategie-Engine konnte nicht erstellt werden: %s", s.Name), s.Name)
 			continue
 		}
-		if len(ohlcvCopy) >= engine.RequiredBars() {
-			processLiveSymbolWithData(sess, evt.symbol, engine, ohlcvCopy, config, s)
+		if len(ohlcvCopy) < engine.RequiredBars() {
+			logLiveEvent(sess.ID, "SKIP", evt.symbol, fmt.Sprintf("Zu wenig Bars: %d/%d benötigt", len(ohlcvCopy), engine.RequiredBars()), s.Name)
+			continue
 		}
+		processLiveSymbolWithData(sess, evt.symbol, engine, ohlcvCopy, config, s)
 	}
 }
 
@@ -27893,6 +27897,19 @@ func getLiveTradingConfig(c *gin.Context) {
 		result["alpaca_secret_key"] = maskKey(config.AlpacaSecretKey)
 	}
 
+	// Add per-strategy symbol mapping
+	if sessionIDStr := c.Query("session_id"); sessionIDStr != "" {
+		var strategies []LiveSessionStrategy
+		db.Where("session_id = ?", sessionIDStr).Find(&strategies)
+		stratSymMap := map[string][]string{}
+		for _, s := range strategies {
+			var syms []string
+			json.Unmarshal([]byte(s.Symbols), &syms)
+			stratSymMap[fmt.Sprintf("%d", s.ID)] = syms
+		}
+		result["strategy_symbols"] = stratSymMap
+	}
+
 	c.JSON(200, result)
 }
 
@@ -28141,6 +28158,11 @@ func addLiveSessionStrategy(c *gin.Context) {
 		merged := append(existingSymbols, newSymbols...)
 		mergedJSON, _ := json.Marshal(merged)
 		db.Model(&session).Update("symbols", string(mergedJSON))
+
+		// Sync config symbols to match session symbols (Frontend zeigt config.symbols)
+		if session.ConfigID > 0 {
+			db.Model(&LiveTradingConfig{}).Where("id = ?", session.ConfigID).Update("symbols", string(mergedJSON))
+		}
 
 		// If session is active and using shared WS, subscribe new symbols
 		liveSchedulerMu.Lock()
@@ -28400,12 +28422,21 @@ func getLiveTradingSession(c *gin.Context) {
 		enrichedPositions[i] = posWithStrategy{LiveTradingPosition: p, StrategyName: stratNameMap[p.StrategyID]}
 	}
 
+	// Build per-strategy symbol mapping
+	stratSymMap := map[string][]string{}
+	for _, s := range strategies {
+		var syms []string
+		json.Unmarshal([]byte(s.Symbols), &syms)
+		stratSymMap[fmt.Sprintf("%d", s.ID)] = syms
+	}
+
 	result := gin.H{
-		"session":    session,
-		"symbols":    symbols,
-		"params":     params,
-		"positions":  enrichedPositions,
-		"strategies": strategies,
+		"session":          session,
+		"symbols":          symbols,
+		"params":           params,
+		"positions":        enrichedPositions,
+		"strategies":       strategies,
+		"strategy_symbols": stratSymMap,
 	}
 
 	var symbolPrices map[string]float64
@@ -28891,6 +28922,7 @@ func runLiveScan(sessionID uint) {
 			ohlcv, err = getOHLCVCached(sym, liveCacheInterval, 0)
 			if err != nil || len(ohlcv) == 0 {
 				skipped++
+				logLiveEvent(sessionID, "SKIP", sym, "Keine OHLCV-Daten im Cache — übersprungen")
 				continue
 			}
 		}
@@ -28901,12 +28933,14 @@ func runLiveScan(sessionID uint) {
 				continue // symbol not in this strategy's list
 			}
 			minBars := si.engine.RequiredBars()
-			if len(ohlcv) >= minBars {
-				if price, ok := processLiveSymbolWithData(session, sym, si.engine, ohlcv, liveConfig, si.strat); ok {
-					priceMapMu.Lock()
-					priceMap[sym] = price
-					priceMapMu.Unlock()
-				}
+			if len(ohlcv) < minBars {
+				logLiveEvent(sessionID, "SKIP", sym, fmt.Sprintf("Zu wenig Bars: %d/%d benötigt", len(ohlcv), minBars), si.strat.Name)
+				continue
+			}
+			if price, ok := processLiveSymbolWithData(session, sym, si.engine, ohlcv, liveConfig, si.strat); ok {
+				priceMapMu.Lock()
+				priceMap[sym] = price
+				priceMapMu.Unlock()
 			}
 		}
 
@@ -28956,6 +28990,7 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 
 	// Guard: empty OHLCV
 	if len(ohlcv) == 0 {
+		logLiveEvent(session.ID, "SKIP", symbol, "Leere OHLCV-Daten — übersprungen", strategyName)
 		return 0, false
 	}
 
@@ -28975,6 +29010,7 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 	// After stripping: re-check minimum bars for strategy
 	minBars := strategy.RequiredBars()
 	if len(ohlcv) < minBars {
+		logLiveEvent(session.ID, "SKIP", symbol, fmt.Sprintf("Zu wenig Bars nach Strip: %d/%d benötigt", len(ohlcv), minBars), strategyName)
 		return lastPrice, false
 	}
 
@@ -28998,6 +29034,7 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 	// Guard: if session has no StartedAt, skip ALL signal processing
 	// (prevents retroactive trading on sessions that haven't been started yet)
 	if session.StartedAt.IsZero() || session.StartedAt.Year() < 2000 {
+		logLiveEvent(session.ID, "SKIP", symbol, "Session hat kein gültiges StartedAt — Signalverarbeitung übersprungen", strategyName)
 		return lastPrice, false
 	}
 	sessionStartUnix := session.StartedAt.Unix()
@@ -29016,29 +29053,40 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 	// Process new signals (only after session start)
 	for _, sig := range signals {
 		if sig.Index < 0 || sig.Index >= len(ohlcv) {
+			logLiveEvent(session.ID, "SKIP", symbol, fmt.Sprintf("Signal-Index ungültig: %d (Bars: %d)", sig.Index, len(ohlcv)), strategyName)
 			continue
 		}
 		signalBarTime := ohlcv[sig.Index].Time
 		if signalBarTime < sessionStartUnix {
+			logLiveEvent(session.ID, "DEBUG", symbol, fmt.Sprintf("Signal vor Session-Start: Bar %s < Start %s", time.Unix(signalBarTime, 0).Format("15:04"), session.StartedAt.Format("15:04")), strategyName)
 			continue
 		}
 
 		// Check if this signal was already processed (DB check)
 		var duplicate LiveTradingPosition
 		if db.Where("session_id = ? AND strategy_id = ? AND symbol = ? AND signal_index = ?", session.ID, strategyID, symbol, sig.Index).First(&duplicate).Error == nil {
+			logLiveEvent(session.ID, "DEBUG", symbol, fmt.Sprintf("Duplikat-Signal übersprungen (Index %d, Richtung %s)", sig.Index, sig.Direction), strategyName)
 			continue
 		}
 
 		if !hasOpenPos {
+			// Atomarer Guard: Nur der erste Worker darf eine Position öffnen
+			if _, alreadyGuarded := liveOpenPosGuard.LoadOrStore(posKey, true); alreadyGuarded {
+				logLiveEvent(session.ID, "DEBUG", symbol, "Position wird bereits von anderem Worker geöffnet — übersprungen", strategyName)
+				continue
+			}
+
 			// Skip new entries outside US market hours
 			if !isUSMarketOpen() {
 				logLiveEvent(session.ID, "SKIP", symbol, fmt.Sprintf("%s Signal übersprungen (Markt geschlossen)", sig.Direction), strategyName)
+				liveOpenPosGuard.Delete(posKey)
 				continue
 			}
 
 			// LongOnly filter
 			if longOnly && sig.Direction == "SHORT" {
 				logLiveEvent(session.ID, "SKIP", symbol, "SHORT Signal übersprungen (Long Only)", strategyName)
+				liveOpenPosGuard.Delete(posKey)
 				continue
 			}
 
@@ -29063,6 +29111,7 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 				posQty = math.Floor(posQty)
 				if posQty < 1 {
 					logLiveEvent(session.ID, "SKIP", symbol, fmt.Sprintf("Nicht fractionable, Preis $%.2f > Trade-Amount $%.0f — übersprungen", entryPriceUSD, tradeAmountUSD), strategyName)
+					liveOpenPosGuard.Delete(posKey)
 					continue
 				}
 			}
@@ -29106,6 +29155,7 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 				orderResult, err := alpacaPlaceOrder(symbol, posQty, side, config)
 				if err != nil {
 					logLiveEvent(session.ID, "ERROR", symbol, fmt.Sprintf("Alpaca Order fehlgeschlagen: %v — Position wird NICHT eröffnet", err), strategyName)
+					liveOpenPosGuard.Delete(posKey)
 					continue // Skip DB entry if Alpaca order failed
 				}
 				alpacaOrderID = orderResult.OrderID
@@ -29139,8 +29189,7 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 				AlpacaOrderID:  alpacaOrderID,
 				CreatedAt:      time.Now(),
 			}
-			// Set in-memory guard BEFORE async DB write to prevent race condition
-			liveOpenPosGuard.Store(posKey, true)
+			// Guard already set via LoadOrStore above — just async DB write
 			livePositionWriteCh <- func() { db.Create(&pos) }
 
 			hasOpenPos = true
@@ -29155,6 +29204,8 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 			}
 			logLiveEvent(session.ID, "OPEN", symbol, fmt.Sprintf("%s eröffnet @ %.4f %s%s%s", sig.Direction, entryPriceNative, nativeCurrency, slInfo, tpInfo), strategyName)
 
+		} else if hasOpenPos && existingPos.Direction == sig.Direction {
+			logLiveEvent(session.ID, "DEBUG", symbol, fmt.Sprintf("Signal gleiche Richtung wie offene Position (%s) — übersprungen", sig.Direction), strategyName)
 		} else if hasOpenPos && existingPos.Direction != sig.Direction {
 			// Close on opposing signal — atomic guard prevents double-close with monitor
 			if _, loaded := liveOpenPosGuard.LoadAndDelete(posKey); loaded {
@@ -29196,6 +29247,7 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 			if closeReason != "" {
 				// Atomic guard: only ONE closer (worker OR monitor) proceeds
 				if _, loaded := liveOpenPosGuard.LoadAndDelete(posKey); !loaded {
+					logLiveEvent(session.ID, "DEBUG", symbol, fmt.Sprintf("%s erkannt, aber Monitor hat Position bereits geschlossen", closeReason), strategyName)
 					hasOpenPos = false
 					break // Monitor already closed it
 				}

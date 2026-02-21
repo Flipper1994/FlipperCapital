@@ -67,6 +67,24 @@ const symbolsColumns = [
     cell: info => <span className="font-medium text-accent-400">{info.getValue()}</span>,
     size: 80,
   }),
+  symColHelper.accessor('strategyTags', {
+    header: 'Strat.',
+    cell: info => {
+      const tags = info.getValue()
+      if (!tags?.length) return <span className="text-gray-600">-</span>
+      return (
+        <div className="flex flex-wrap gap-0.5">
+          {tags.map((t, i) => (
+            <span key={i} className="px-1 py-0.5 rounded text-[8px] bg-accent-500/20 text-accent-400 whitespace-nowrap">
+              {t}
+            </span>
+          ))}
+        </div>
+      )
+    },
+    size: 140,
+    enableSorting: false,
+  }),
   symColHelper.accessor('price', {
     header: 'Preis',
     cell: info => {
@@ -298,7 +316,7 @@ function LiveTrading({ isAdmin, token }) {
   const [selectedSessionPositions, setSelectedSessionPositions] = useState([])
   const [symbolPrices, setSymbolPrices] = useState({})
   const [showDebug, setShowDebug] = useState(false)
-  const [hiddenLogLevels, setHiddenLogLevels] = useState(new Set(['DEBUG']))
+  const [selectedLogLevels, setSelectedLogLevels] = useState(new Set())
   const [debugSearch, setDebugSearch] = useState('')
   const [debugLogs, setDebugLogs] = useState([])
   const [lastLogId, setLastLogId] = useState(0)
@@ -326,6 +344,7 @@ function LiveTrading({ isAdmin, token }) {
   const [botActionSearch, setBotActionSearch] = useState('')
   const [symbolsSorting, setSymbolsSorting] = useState([{ id: 'trades', desc: true }])
   const [strategies, setStrategies] = useState([])
+  const [strategySymbols, setStrategySymbols] = useState({})
   const [showStrategies, setShowStrategies] = useState(false)
   const [strategyFilter, setStrategyFilter] = useState('')
   const { formatPrice, currency } = useCurrency()
@@ -388,6 +407,7 @@ function LiveTrading({ isAdmin, token }) {
         if (data.alpaca_paper != null) setAlpacaPaper(data.alpaca_paper)
         if (data.trade_amount) setTradeAmount(data.trade_amount)
         if (data.alpaca_account_id) setSelectedAccountId(data.alpaca_account_id)
+        if (data.strategy_symbols) setStrategySymbols(data.strategy_symbols)
       }
     } catch (err) { console.log(`[LT] fetchConfig error:`, err) }
   }, [token])
@@ -401,6 +421,15 @@ function LiveTrading({ isAdmin, token }) {
         console.log(`[LT] fetchStatus OK: is_running=${data.is_running}, active_sessions=${data.active_sessions?.length}, prices=${data.symbol_prices ? Object.keys(data.symbol_prices).length : 0}`)
         setStatus(data)
         if (data.symbol_prices) setSymbolPrices(data.symbol_prices)
+        // Sync sessions active state from status (faster than fetchSessions)
+        if (data.active_sessions) {
+          const activeIds = new Set(data.active_sessions.map(s => s.session_id))
+          setSessions(prev => {
+            const changed = prev.some(s => s.is_active !== activeIds.has(s.id))
+            if (!changed) return prev
+            return prev.map(s => ({ ...s, is_active: activeIds.has(s.id) }))
+          })
+        }
       }
     } catch (err) { console.log(`[LT] fetchStatus error:`, err) }
   }, [token])
@@ -416,6 +445,7 @@ function LiveTrading({ isAdmin, token }) {
         setPositions(data.positions || [])
         if (data.symbol_prices) setSymbolPrices(data.symbol_prices)
         if (data.strategies) setStrategies(data.strategies)
+        if (data.strategy_symbols) setStrategySymbols(data.strategy_symbols)
       }
     } catch (err) { console.log(`[LT] fetchPositions error:`, err) }
   }, [token])
@@ -786,8 +816,15 @@ function LiveTrading({ isAdmin, token }) {
   const symbolsTableData = useMemo(() =>
     symbols.map(sym => {
       const stat = symbolStats[sym] || { totalReturn: 0, trades: 0, openPos: null }
+      const strategyTags = strategies
+        .filter(s => {
+          const syms = strategySymbols[String(s.id)] || []
+          return syms.includes(sym)
+        })
+        .map(s => STRATEGY_LABELS[s.name] || s.name)
       return {
         symbol: sym,
+        strategyTags,
         price: symbolPrices[sym] != null ? formatPrice(symbolPrices[sym], sym) : null,
         priceRaw: symbolPrices[sym] ?? 0,
         openPos: stat.openPos,
@@ -795,7 +832,7 @@ function LiveTrading({ isAdmin, token }) {
         trades: stat.trades,
       }
     }),
-  [symbols, symbolStats, symbolPrices, currency])
+  [symbols, symbolStats, symbolPrices, currency, strategies, strategySymbols])
 
   const globalFilterFn = useCallback((row, _columnId, filterValue) =>
     row.original.symbol.toLowerCase().includes(filterValue.toLowerCase()), [])
@@ -2295,7 +2332,7 @@ function LiveTrading({ isAdmin, token }) {
             const searchLower = debugSearch.toLowerCase()
             const allStrategies = [...new Set(debugLogs.map(l => l.strategy).filter(Boolean))].sort()
             const filteredLogs = debugLogs.filter(l => {
-              if (hiddenLogLevels.has(l.level)) return false
+              if (selectedLogLevels.size > 0 && !selectedLogLevels.has(l.level)) return false
               if (strategyFilter && l.strategy !== strategyFilter) return false
               if (searchLower) {
                 const time = dateFmt.format(new Date(l.created_at))
@@ -2307,7 +2344,7 @@ function LiveTrading({ isAdmin, token }) {
               return true
             })
             const toggleLevel = (level) => {
-              setHiddenLogLevels(prev => {
+              setSelectedLogLevels(prev => {
                 const next = new Set(prev)
                 if (next.has(level)) next.delete(level)
                 else next.add(level)
@@ -2345,17 +2382,19 @@ function LiveTrading({ isAdmin, token }) {
                         key={level}
                         onClick={() => toggleLevel(level)}
                         className={`px-2 py-0.5 rounded border text-[10px] font-medium transition-all ${
-                          hiddenLogLevels.has(level)
-                            ? 'bg-dark-700 border-dark-500 text-gray-600 line-through opacity-50'
-                            : `${levelBg[level] || 'bg-gray-500/20 border-gray-500/30'} ${levelColors[level] || 'text-gray-400'}`
+                          selectedLogLevels.size > 0 && selectedLogLevels.has(level)
+                            ? `${levelBg[level] || 'bg-gray-500/20 border-gray-500/30'} ${levelColors[level] || 'text-gray-400'} ring-1 ring-accent-500/50`
+                            : selectedLogLevels.size > 0
+                              ? 'bg-dark-700 border-dark-500 text-gray-600 opacity-50'
+                              : `${levelBg[level] || 'bg-gray-500/20 border-gray-500/30'} ${levelColors[level] || 'text-gray-400'}`
                         }`}
                       >
                         {level}
                         <span className="ml-1 text-gray-500 font-normal">{debugLogs.filter(l => l.level === level).length}</span>
                       </button>
                     ))}
-                    {hiddenLogLevels.size > 0 && (
-                      <button onClick={() => setHiddenLogLevels(new Set())} className="text-[10px] text-gray-500 hover:text-gray-300 ml-1 transition-colors">Alle zeigen</button>
+                    {selectedLogLevels.size > 0 && (
+                      <button onClick={() => setSelectedLogLevels(new Set())} className="text-[10px] text-gray-500 hover:text-gray-300 ml-1 transition-colors">Alle zeigen</button>
                     )}
                   </div>
                 )}
