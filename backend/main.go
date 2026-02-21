@@ -26438,21 +26438,36 @@ func refreshSessionCache(state *liveSessionState, sessionID uint) {
 	state.cacheMu.Unlock()
 }
 
-// loadOHLCVIntoMemory preloads all OHLCV data from global memory/file cache into session state
+// loadOHLCVIntoMemory preloads all OHLCV data from global memory/file cache into session state.
+// Safe to call while workers are already appending live bars — merges rather than overwrites.
 func loadOHLCVIntoMemory(state *liveSessionState, symbols []string, cacheInterval string) {
+	// Initialize maps only if not yet created (first call)
 	state.ohlcvMu.Lock()
-	state.ohlcvData = make(map[string][]OHLCV, len(symbols))
-	state.ohlcvDirty = make(map[string]bool)
+	if state.ohlcvData == nil {
+		state.ohlcvData = make(map[string][]OHLCV, len(symbols))
+	}
+	if state.ohlcvDirty == nil {
+		state.ohlcvDirty = make(map[string]bool)
+	}
 	state.ohlcvMu.Unlock()
 
 	for _, sym := range symbols {
-		if bars, ok := getOHLCVFromMemCache(sym, cacheInterval); ok && len(bars) > 0 {
-			barsCopy := make([]OHLCV, len(bars))
-			copy(barsCopy, bars)
-			state.ohlcvMu.Lock()
-			state.ohlcvData[sym] = barsCopy
-			state.ohlcvMu.Unlock()
+		cached, ok := getOHLCVFromMemCache(sym, cacheInterval)
+		if !ok || len(cached) == 0 {
+			continue
 		}
+		barsCopy := make([]OHLCV, len(cached))
+		copy(barsCopy, cached)
+
+		state.ohlcvMu.Lock()
+		existing := state.ohlcvData[sym]
+		if len(existing) > 0 {
+			// Workers already appended live bars — merge: cached history + live bars
+			state.ohlcvData[sym] = mergeOHLCV(barsCopy, existing)
+		} else {
+			state.ohlcvData[sym] = barsCopy
+		}
+		state.ohlcvMu.Unlock()
 	}
 }
 
@@ -27238,7 +27253,13 @@ func checkOpenPositionsSLTP() {
 			}
 
 			if hit {
-				// Re-fetch from DB to avoid stale data (could have been closed by scan in the meantime)
+				// Atomic guard: only ONE closer (monitor OR worker) can proceed
+				posKey := openPosGuardKey(session.ID, pos.StrategyID, pos.Symbol)
+				if _, loaded := liveOpenPosGuard.LoadAndDelete(posKey); !loaded {
+					continue // Worker already closed this position
+				}
+
+				// Re-fetch from DB to avoid stale data
 				var fresh LiveTradingPosition
 				if db.First(&fresh, pos.ID).Error != nil || fresh.IsClosed {
 					continue
@@ -27456,9 +27477,30 @@ func deleteLiveSession(c *gin.Context) {
 		}
 	}
 
-	// Delete positions, logs, then session
+	// Close open positions on Alpaca + clear guards before deleting
+	var openPositions []LiveTradingPosition
+	db.Where("session_id = ? AND is_closed = ?", session.ID, false).Find(&openPositions)
+	if len(openPositions) > 0 {
+		var config LiveTradingConfig
+		if session.ConfigID > 0 {
+			db.First(&config, session.ConfigID)
+		}
+		for _, pos := range openPositions {
+			liveOpenPosGuard.Delete(openPosGuardKey(session.ID, pos.StrategyID, pos.Symbol))
+			if pos.AlpacaOrderID != "" && config.AlpacaEnabled && config.AlpacaApiKey != "" {
+				side := "sell"
+				if pos.Direction == "SHORT" {
+					side = "buy"
+				}
+				alpacaPlaceOrder(pos.Symbol, pos.Quantity, side, config)
+			}
+		}
+	}
+
+	// Delete positions, logs, strategies, then session
 	db.Where("session_id = ?", session.ID).Delete(&LiveTradingPosition{})
 	db.Where("session_id = ?", session.ID).Delete(&LiveTradingLog{})
+	db.Where("session_id = ?", session.ID).Delete(&LiveSessionStrategy{})
 	db.Delete(&session)
 
 	log.Printf("[LiveTrading] Session #%d gelöscht von User %d", session.ID, uid)
@@ -27486,11 +27528,22 @@ func resetLiveSession(c *gin.Context) {
 		liveSchedulerMu.Unlock()
 	}
 
-	// Clear liveOpenPosGuard entries for this session's positions
+	// Close open Alpaca positions + clear guards
 	var positions []LiveTradingPosition
 	db.Where("session_id = ?", session.ID).Find(&positions)
+	var config LiveTradingConfig
+	if session.ConfigID > 0 {
+		db.First(&config, session.ConfigID)
+	}
 	for _, pos := range positions {
 		liveOpenPosGuard.Delete(openPosGuardKey(session.ID, pos.StrategyID, pos.Symbol))
+		if !pos.IsClosed && pos.AlpacaOrderID != "" && config.AlpacaEnabled && config.AlpacaApiKey != "" {
+			side := "sell"
+			if pos.Direction == "SHORT" {
+				side = "buy"
+			}
+			alpacaPlaceOrder(pos.Symbol, pos.Quantity, side, config)
+		}
 	}
 
 	// Delete positions and logs
@@ -28374,12 +28427,21 @@ func resumeLiveTrading(c *gin.Context) {
 		return
 	}
 
-	if session.IsActive {
-		c.JSON(400, gin.H{"error": "Session ist bereits aktiv"})
-		return
+	// Load config FIRST (before marking active — validates existence)
+	var config LiveTradingConfig
+	if session.ConfigID > 0 {
+		if db.First(&config, session.ConfigID).Error != nil {
+			c.JSON(400, gin.H{"error": "Config nicht gefunden — Session kann nicht gestartet werden"})
+			return
+		}
+	} else {
+		if db.Where("user_id = ?", session.UserID).Order("updated_at DESC").First(&config).Error != nil {
+			c.JSON(400, gin.H{"error": "Keine Config vorhanden"})
+			return
+		}
 	}
 
-	// Reactivate session
+	// Atomic activate: WHERE is_active=false prevents double-start race
 	updates := map[string]interface{}{
 		"is_active":  true,
 		"stopped_at": nil,
@@ -28387,14 +28449,10 @@ func resumeLiveTrading(c *gin.Context) {
 	if session.StartedAt.IsZero() {
 		updates["started_at"] = time.Now()
 	}
-	db.Model(&session).Updates(updates)
-
-	// Load config to check for Alpaca WS capability
-	var config LiveTradingConfig
-	if session.ConfigID > 0 {
-		db.First(&config, session.ConfigID)
-	} else {
-		db.Where("user_id = ?", session.UserID).Order("updated_at DESC").First(&config)
+	result := db.Model(&session).Where("is_active = ?", false).Updates(updates)
+	if result.RowsAffected == 0 {
+		c.JSON(400, gin.H{"error": "Session ist bereits aktiv"})
+		return
 	}
 
 	// Initialize in-memory open position guard from DB
@@ -28830,7 +28888,7 @@ func runLiveScan(sessionID uint) {
 		ohlcv, ok := getOHLCVFromMemCache(sym, liveCacheInterval)
 		if !ok || len(ohlcv) == 0 {
 			var err error
-			ohlcv, err = getOHLCVCached(sym, session.Interval, 0)
+			ohlcv, err = getOHLCVCached(sym, liveCacheInterval, 0)
 			if err != nil || len(ohlcv) == 0 {
 				skipped++
 				continue
@@ -28896,6 +28954,11 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 		longOnly = strat[0].LongOnly
 	}
 
+	// Guard: empty OHLCV
+	if len(ohlcv) == 0 {
+		return 0, false
+	}
+
 	// Strip incomplete (still open) candle — only analyze fully closed bars
 	// Keep lastPrice from the latest bar (even if open) for P&L updates
 	lastPrice := ohlcv[len(ohlcv)-1].Close
@@ -28907,6 +28970,12 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 			// Last candle is still open → remove it for signal analysis
 			ohlcv = ohlcv[:len(ohlcv)-1]
 		}
+	}
+
+	// After stripping: re-check minimum bars for strategy
+	minBars := strategy.RequiredBars()
+	if len(ohlcv) < minBars {
+		return lastPrice, false
 	}
 
 	nativeCurrency := getStockCurrency(symbol)
@@ -29087,12 +29156,13 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 			logLiveEvent(session.ID, "OPEN", symbol, fmt.Sprintf("%s eröffnet @ %.4f %s%s%s", sig.Direction, entryPriceNative, nativeCurrency, slInfo, tpInfo), strategyName)
 
 		} else if hasOpenPos && existingPos.Direction != sig.Direction {
-			// Close on opposing signal
-			closePriceNative := ohlcv[sig.Index].Open
-			closeLivePosition(&existingPos, closePriceNative, "SIGNAL", nativeCurrency, config)
-			liveOpenPosGuard.Delete(posKey)
-			logLiveEvent(session.ID, "CLOSE", symbol, fmt.Sprintf("Gegensignal — %s geschlossen @ %.4f (%.2f%%, %.2f EUR)", existingPos.Direction, closePriceNative, existingPos.ProfitLossPct, existingPos.ProfitLossAmt), strategyName)
-			hasOpenPos = false
+			// Close on opposing signal — atomic guard prevents double-close with monitor
+			if _, loaded := liveOpenPosGuard.LoadAndDelete(posKey); loaded {
+				closePriceNative := ohlcv[sig.Index].Open
+				closeLivePosition(&existingPos, closePriceNative, "SIGNAL", nativeCurrency, config)
+				logLiveEvent(session.ID, "CLOSE", symbol, fmt.Sprintf("Gegensignal — %s geschlossen @ %.4f (%.2f%%, %.2f EUR)", existingPos.Direction, closePriceNative, existingPos.ProfitLossPct, existingPos.ProfitLossAmt), strategyName)
+				hasOpenPos = false
+			}
 		}
 	}
 
@@ -29103,27 +29173,33 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 			if bar.Time <= entryUnix {
 				continue
 			}
-			closed := false
+			var closePrice float64
+			closeReason := ""
 			if existingPos.Direction == "LONG" {
 				// SL checked BEFORE TP (matches backtest engine)
 				if existingPos.StopLoss > 0 && bar.Low <= existingPos.StopLoss {
-					closeLivePosition(&existingPos, existingPos.StopLoss, "SL", nativeCurrency, config)
-					closed = true
+					closePrice = existingPos.StopLoss
+					closeReason = "SL"
 				} else if existingPos.TakeProfit > 0 && bar.High >= existingPos.TakeProfit {
-					closeLivePosition(&existingPos, existingPos.TakeProfit, "TP", nativeCurrency, config)
-					closed = true
+					closePrice = existingPos.TakeProfit
+					closeReason = "TP"
 				}
 			} else {
 				if existingPos.StopLoss > 0 && bar.High >= existingPos.StopLoss {
-					closeLivePosition(&existingPos, existingPos.StopLoss, "SL", nativeCurrency, config)
-					closed = true
+					closePrice = existingPos.StopLoss
+					closeReason = "SL"
 				} else if existingPos.TakeProfit > 0 && bar.Low <= existingPos.TakeProfit {
-					closeLivePosition(&existingPos, existingPos.TakeProfit, "TP", nativeCurrency, config)
-					closed = true
+					closePrice = existingPos.TakeProfit
+					closeReason = "TP"
 				}
 			}
-			if closed {
-				liveOpenPosGuard.Delete(posKey)
+			if closeReason != "" {
+				// Atomic guard: only ONE closer (worker OR monitor) proceeds
+				if _, loaded := liveOpenPosGuard.LoadAndDelete(posKey); !loaded {
+					hasOpenPos = false
+					break // Monitor already closed it
+				}
+				closeLivePosition(&existingPos, closePrice, closeReason, nativeCurrency, config)
 				hasOpenPos = false
 				break
 			}
@@ -29346,6 +29422,7 @@ func analyzeLiveSymbolHandler(c *gin.Context) {
 		strategiesList = append(strategiesList, gin.H{
 			"id":         s.ID,
 			"name":       s.Name,
+			"params_json": s.ParamsJSON,
 			"is_enabled": s.IsEnabled,
 		})
 	}
@@ -29404,16 +29481,16 @@ func analyzeLiveSymbolHandler(c *gin.Context) {
 	}
 
 	interval := session.Interval
-	if _, ok := backtestPeriodMap[interval]; !ok {
-		c.JSON(400, gin.H{"error": "Ungültiges Interval: " + interval})
-		return
-	}
 
-	// Fetch OHLCV from cache (fresh within 24h)
-	ohlcv, err := getOHLCVCached(symbol, interval, 24*time.Hour)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "Daten konnten nicht geladen werden: " + err.Error()})
-		return
+	// Read OHLCV from memory cache first (instant), fallback to Yahoo if cache empty
+	ohlcv, err := getOHLCVCached(symbol, interval, 0)
+	if err != nil || len(ohlcv) == 0 {
+		// Cache miss (e.g. server restart) — fetch from Yahoo
+		ohlcv, err = getOHLCVCached(symbol, interval, 24*time.Hour)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "Daten konnten nicht geladen werden: " + err.Error()})
+			return
+		}
 	}
 	if len(ohlcv) < 50 {
 		c.JSON(400, gin.H{"error": "Nicht genug Daten für Analyse"})
@@ -29459,7 +29536,7 @@ func analyzeLiveSymbolHandler(c *gin.Context) {
 		"chart_data":      result.ChartData,
 		"comparison":      comparison,
 		"strategies":      strategiesList,
-		"active_strategy": gin.H{"id": activeStrategyID, "name": strategyName},
+		"active_strategy": gin.H{"id": activeStrategyID, "name": strategyName, "params_json": paramsJSON},
 	})
 }
 

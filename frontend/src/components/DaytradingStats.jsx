@@ -27,7 +27,7 @@ function EquityCurve({ trades }) {
     const points = [{ x: 0, y: 100 }]
     let eq = 100
     sorted.forEach((t, i) => {
-      eq *= (1 + (t.profit_loss_pct || 0) / 100)
+      eq += (t.profit_loss_pct || 0)
       points.push({ x: i + 1, y: eq })
     })
 
@@ -173,9 +173,14 @@ function DaytradingStats({ token, isAdmin }) {
       end = new Date(customDate); end.setHours(23, 59, 59, 999)
     } else if (dateFilter === 'week' && customWeek) {
       const [y, w] = customWeek.split('-W').map(Number)
-      const jan1 = new Date(y, 0, 1)
-      const days = (w - 1) * 7 - jan1.getDay() + 1
-      start = new Date(y, 0, 1 + days); start.setHours(0, 0, 0, 0)
+      // ISO 8601: Week 1 contains the year's first Thursday
+      const jan4 = new Date(y, 0, 4) // Jan 4 is always in ISO week 1
+      const dow = jan4.getDay() || 7 // Convert Sunday=0 to 7 (ISO: Mon=1..Sun=7)
+      const week1Monday = new Date(jan4)
+      week1Monday.setDate(jan4.getDate() - dow + 1) // Monday of week 1
+      start = new Date(week1Monday)
+      start.setDate(week1Monday.getDate() + (w - 1) * 7)
+      start.setHours(0, 0, 0, 0)
       end = new Date(start); end.setDate(end.getDate() + 6); end.setHours(23, 59, 59, 999)
     } else if (dateFilter === 'month' && customMonth) {
       const [y, m] = customMonth.split('-').map(Number)
@@ -209,32 +214,32 @@ function DaytradingStats({ token, isAdmin }) {
   // === KPI Calculations ===
   const stats = useMemo(() => {
     if (positions.length === 0) return null
-    const all = positions.filter(p => p.is_closed || p.profit_loss_pct != null)
-    const totalPnl = all.reduce((s, p) => s + (p.profit_loss_amt || 0), 0)
-    const totalInvested = all.reduce((s, p) => s + (p.invested_amount || 0), 0)
-    const rendite = totalInvested > 0 ? (totalPnl / totalInvested) * 100 : 0
-    const wins = all.filter(p => (p.profit_loss_pct || 0) > 0)
-    const losses = all.filter(p => (p.profit_loss_pct || 0) <= 0)
-    const winRate = all.length > 0 ? (wins.length / all.length) * 100 : 0
+    const closed = closedPositions
+    const totalPnl = closed.reduce((s, p) => s + (p.profit_loss_amt || 0), 0)
+    const totalInvested = closed.reduce((s, p) => s + (p.invested_amount || 0), 0)
+    const wins = closed.filter(p => (p.profit_loss_pct || 0) > 0)
+    const losses = closed.filter(p => (p.profit_loss_pct || 0) <= 0)
+    const winRate = closed.length > 0 ? (wins.length / closed.length) * 100 : 0
     const avgWin = wins.length > 0 ? wins.reduce((s, p) => s + p.profit_loss_pct, 0) / wins.length : 0
     const avgLoss = losses.length > 0 ? losses.reduce((s, p) => s + p.profit_loss_pct, 0) / losses.length : 0
     const rr = avgLoss !== 0 ? Math.abs(avgWin / avgLoss) : 0
     const grossWin = wins.reduce((s, p) => s + (p.profit_loss_amt || 0), 0)
     const grossLoss = Math.abs(losses.reduce((s, p) => s + (p.profit_loss_amt || 0), 0))
     const profitFactor = grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? Infinity : 0
-    const avgReturn = all.length > 0 ? all.reduce((s, p) => s + (p.profit_loss_pct || 0), 0) / all.length : 0
-    const best = all.length > 0 ? Math.max(...all.map(p => p.profit_loss_pct || 0)) : 0
-    const worst = all.length > 0 ? Math.min(...all.map(p => p.profit_loss_pct || 0)) : 0
+    const avgReturn = closed.length > 0 ? closed.reduce((s, p) => s + (p.profit_loss_pct || 0), 0) / closed.length : 0
+    const best = closed.length > 0 ? Math.max(...closed.map(p => p.profit_loss_pct || 0)) : 0
+    const worst = closed.length > 0 ? Math.min(...closed.map(p => p.profit_loss_pct || 0)) : 0
 
-    // Max drawdown on equity curve
-    const sorted = [...closedPositions].sort((a, b) => new Date(a.close_time) - new Date(b.close_time))
+    // Additive equity curve + max drawdown (fixed position sizes)
+    const sorted = [...closed].sort((a, b) => new Date(a.close_time) - new Date(b.close_time))
     let eq = 100, peak = 100, maxDD = 0
     sorted.forEach(t => {
-      eq *= (1 + (t.profit_loss_pct || 0) / 100)
+      eq += (t.profit_loss_pct || 0)
       if (eq > peak) peak = eq
-      const dd = (peak - eq) / peak * 100
+      const dd = peak > 0 ? (peak - eq) / peak * 100 : 0
       if (dd > maxDD) maxDD = dd
     })
+    const rendite = eq - 100 // Additive total return = sum of all pct
 
     // Avg holding duration
     const durations = closedPositions.filter(p => p.entry_time && p.close_time).map(p =>
@@ -271,7 +276,7 @@ function DaytradingStats({ token, isAdmin }) {
 
     return {
       totalPnl, rendite, winRate, rr, profitFactor, avgReturn,
-      totalTrades: all.length, totalClosed: closedPositions.length,
+      totalTrades: positions.length, totalClosed: closed.length,
       wins: wins.length, losses: losses.length,
       avgWin, avgLoss, best, worst, maxDD, avgDuration,
       maxWinStreak, maxLossStreak, totalInvested, equity: eq,
@@ -299,6 +304,7 @@ function DaytradingStats({ token, isAdmin }) {
   const sortedSymbols = useMemo(() => {
     return [...symbolBreakdown].sort((a, b) => {
       const mul = sortDir === 'asc' ? 1 : -1
+      if (sortField === 'symbol') return a.symbol.localeCompare(b.symbol) * mul
       return (a[sortField] - b[sortField]) * mul
     })
   }, [symbolBreakdown, sortField, sortDir])
@@ -412,7 +418,7 @@ function DaytradingStats({ token, isAdmin }) {
 <div class="ext-grid">
   <div class="ext"><div class="label">\u00D8 Win</div><div class="value green">${s.avgWin > 0 ? '+' + s.avgWin.toFixed(2) + '%' : '-'}</div></div>
   <div class="ext"><div class="label">\u00D8 Loss</div><div class="value red">${s.avgLoss < 0 ? s.avgLoss.toFixed(2) + '%' : '-'}</div></div>
-  <div class="ext"><div class="label">Best Trade</div><div class="value green">+${s.best.toFixed(2)}%</div></div>
+  <div class="ext"><div class="label">Best Trade</div><div class="value ${s.best >= 0 ? 'green' : 'red'}">${s.best >= 0 ? '+' : ''}${s.best.toFixed(2)}%</div></div>
   <div class="ext"><div class="label">Worst Trade</div><div class="value red">${s.worst.toFixed(2)}%</div></div>
   <div class="ext"><div class="label">Max Drawdown</div><div class="value ${s.maxDD > 5 ? 'red' : 'yellow'}">${s.maxDD > 0 ? '-' : ''}${s.maxDD.toFixed(2)}%</div></div>
   <div class="ext"><div class="label">\u00D8 Haltedauer</div><div class="value gray">${formatDuration(s.avgDuration)}</div></div>
@@ -591,7 +597,7 @@ ${sorted.map(p => {
             {[
               { label: 'Ø Win', value: stats.avgWin > 0 ? `+${stats.avgWin.toFixed(2)}%` : '-', color: 'text-green-400' },
               { label: 'Ø Loss', value: stats.avgLoss < 0 ? `${stats.avgLoss.toFixed(2)}%` : '-', color: 'text-red-400' },
-              { label: 'Best Trade', value: `+${stats.best.toFixed(2)}%`, color: 'text-green-400' },
+              { label: 'Best Trade', value: `${stats.best >= 0 ? '+' : ''}${stats.best.toFixed(2)}%`, color: stats.best >= 0 ? 'text-green-400' : 'text-red-400' },
               { label: 'Worst Trade', value: `${stats.worst.toFixed(2)}%`, color: 'text-red-400' },
               { label: 'Max Drawdown', value: stats.maxDD > 0 ? `-${stats.maxDD.toFixed(2)}%` : '0%', color: stats.maxDD > 5 ? 'text-red-400' : 'text-yellow-400' },
               { label: 'Ø Haltedauer', value: formatDuration(stats.avgDuration), color: 'text-gray-300' },

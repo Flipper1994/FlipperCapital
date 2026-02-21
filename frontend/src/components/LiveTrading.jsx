@@ -5,9 +5,31 @@ import { useCurrency } from '../context/CurrencyContext'
 import ArenaChart from './ArenaChart'
 import ArenaIndicatorChart from './ArenaIndicatorChart'
 import ArenaBacktestPanel from './ArenaBacktestPanel'
-import { STRATEGIES } from '../utils/arenaConfig'
+import { STRATEGIES, STRATEGY_PARAMS } from '../utils/arenaConfig'
 
 const STRATEGY_LABELS = Object.fromEntries(STRATEGIES.map(s => [s.value, s.label]))
+
+// Build display name: "NW Bollinger (BB1=3.5, Hybrid=Off)" or "NW Bollinger [Standard]"
+function strategyDisplayName(name, paramsJson) {
+  const label = STRATEGY_LABELS[name] || name
+  const defs = STRATEGY_PARAMS[name]
+  if (!defs) return label
+  let params = {}
+  try { params = typeof paramsJson === 'string' ? JSON.parse(paramsJson || '{}') : (paramsJson || {}) } catch { return label }
+  const diffs = []
+  for (const d of defs) {
+    const val = params[d.key]
+    if (val === undefined || val === null) continue
+    if (Number(val) !== d.default) {
+      if (d.isToggle) {
+        diffs.push(`${d.label.replace(/\?$/, '')}=${Number(val) ? 'On' : 'Off'}`)
+      } else {
+        diffs.push(`${d.label}=${val}`)
+      }
+    }
+  }
+  return diffs.length > 0 ? `${label} (${diffs.join(', ')})` : `${label} [Standard]`
+}
 
 const BETA_STRATEGIES = new Set(['regression_scalping'])
 
@@ -899,7 +921,7 @@ function LiveTrading({ isAdmin, token }) {
                         </span>
                         <div className="min-w-0">
                           <div className="flex items-center gap-2 text-xs">
-                            <span className="text-white font-medium">{STRATEGY_LABELS[s.name] || s.name}</span>
+                            <span className="text-white font-medium">{strategyDisplayName(s.name, s.params_json)}</span>
                             <span className="text-gray-600">|</span>
                             <span className="text-gray-500">{stratSymbols.length} Symbole</span>
                             <span className="text-gray-600">|</span>
@@ -1149,7 +1171,7 @@ function LiveTrading({ isAdmin, token }) {
                         {s.is_enabled ? 'AKTIV' : 'INAKTIV'}
                       </span>
                       <div>
-                        <span className="text-sm text-white font-medium">{STRATEGY_LABELS[s.name] || s.name}</span>
+                        <span className="text-sm text-white font-medium">{strategyDisplayName(s.name, s.params_json)}</span>
                         <div className="text-[10px] text-gray-500">
                           {stratSymbols.length} Symbole | {s.long_only ? 'Long Only' : 'Long+Short'} | {new Date(s.created_at).toLocaleDateString('de-DE')}
                         </div>
@@ -1880,7 +1902,7 @@ function LiveTrading({ isAdmin, token }) {
           {/* Mobile: Cards */}
           <div className="md:hidden grid grid-cols-1 gap-2">
             {openPositions.map(p => (
-              <div key={p.id} className="bg-dark-700 rounded-lg p-3 border border-dark-600">
+              <div key={p.id} className="bg-dark-700 rounded-lg p-3 border border-dark-600 cursor-pointer" onClick={() => openAnalysis(p.symbol, p.strategy_id)}>
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-bold text-accent-400">{p.symbol}</span>
@@ -1927,7 +1949,7 @@ function LiveTrading({ isAdmin, token }) {
               </thead>
               <tbody>
                 {sortedAppPositions.map(p => (
-                  <tr key={p.id} className="border-b border-dark-700/50">
+                  <tr key={p.id} className="border-b border-dark-700/50 cursor-pointer hover:bg-dark-700 transition-colors" onClick={() => openAnalysis(p.symbol, p.strategy_id)}>
                     <td className="py-2 pr-3 font-medium text-accent-400">
                       {p.symbol}
                       {p.alpaca_order_id && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-purple-500/20 text-purple-400" title={`Order: ${p.alpaca_order_id}`}>A</span>}
@@ -2068,7 +2090,7 @@ function LiveTrading({ isAdmin, token }) {
                 {sortedClosedPositions
                   .filter(p => !tradeHistorySearch || p.symbol?.toLowerCase().includes(tradeHistorySearch.toLowerCase()) || p.close_reason?.toLowerCase().includes(tradeHistorySearch.toLowerCase()) || p.strategy_name?.toLowerCase().includes(tradeHistorySearch.toLowerCase()))
                   .map(p => (
-                  <tr key={p.id} className="border-b border-dark-700/50">
+                  <tr key={p.id} className="border-b border-dark-700/50 cursor-pointer hover:bg-dark-700 transition-colors" onClick={() => openAnalysis(p.symbol, p.strategy_id)}>
                     <td className="py-1.5 pr-2 font-medium text-accent-400">
                       {p.symbol}
                       {p.symbol.includes('.') && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-400" title="Nicht über Alpaca handelbar (nur DB-Tracking)">Non-US</span>}
@@ -2546,19 +2568,21 @@ function LiveTrading({ isAdmin, token }) {
           <div className="sticky top-0 z-10 bg-dark-800 border-b border-dark-600 px-6 py-3 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <h2 className="text-lg font-bold text-white">{analysisSymbol}</h2>
-              {analysisData?.strategies?.filter(s => s.is_enabled).length > 1 ? (
+              {analysisData?.strategies?.length > 1 ? (
                 <select
                   value={analysisStrategyId || ''}
                   onChange={e => { const id = Number(e.target.value); setAnalysisStrategyId(id); openAnalysis(analysisSymbol, id) }}
                   className="bg-dark-700 border border-dark-500 rounded px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-accent-500"
                 >
-                  {analysisData.strategies.filter(s => s.is_enabled).map(s => (
-                    <option key={s.id} value={s.id}>{STRATEGY_LABELS[s.name] || s.name}</option>
+                  {analysisData.strategies.map(s => (
+                    <option key={s.id} value={s.id}>
+                      {strategyDisplayName(s.name, s.params_json)}{!s.is_enabled ? ' (deaktiviert)' : ''}
+                    </option>
                   ))}
                 </select>
               ) : (
                 <span className="text-xs text-gray-500">
-                  {analysisData?.active_strategy?.name ? (STRATEGY_LABELS[analysisData.active_strategy.name] || analysisData.active_strategy.name) : (STRATEGY_LABELS[config?.strategy] || config?.strategy)}
+                  {analysisData?.active_strategy?.name ? strategyDisplayName(analysisData.active_strategy.name, analysisData.active_strategy.params_json) : (STRATEGY_LABELS[config?.strategy] || config?.strategy)}
                 </span>
               )}
               <span className="text-xs text-gray-600">|</span>
