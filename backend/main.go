@@ -24339,12 +24339,17 @@ type WatchlistBacktestTrade struct {
 	IsOpen     bool    `json:"is_open"`
 }
 
+type SkippedSymbolEntry struct {
+	Symbol string `json:"symbol"`
+	Reason string `json:"reason"`
+}
+
 type WatchlistBacktestResult struct {
 	Metrics        ArenaBacktestMetrics            `json:"metrics"`
 	Trades         []WatchlistBacktestTrade        `json:"trades"`
 	PerStock       map[string]ArenaBacktestMetrics `json:"per_stock"`
 	MarketCaps     map[string]int64                `json:"market_caps,omitempty"`
-	SkippedSymbols []string                        `json:"skipped_symbols,omitempty"`
+	SkippedSymbols []SkippedSymbolEntry            `json:"skipped_symbols,omitempty"`
 }
 
 // backtestDebugHandler runs the same backtest via both the single and batch code paths
@@ -24661,6 +24666,7 @@ func backtestWatchlistHandler(c *gin.Context) {
 		ysem := make(chan struct{}, 20)
 		var yahooDone int64
 		var yahooFailed int64
+		var prefetchErrors sync.Map // symbol → reason string
 		type yahooProgress struct{ Symbol string }
 		yCh := make(chan yahooProgress, len(uncached))
 		for _, sym := range uncached {
@@ -24700,6 +24706,24 @@ func backtestWatchlistHandler(c *gin.Context) {
 					saveOHLCVCache(s, cacheInterval, ohlcv)
 				} else {
 					atomic.AddInt64(&yahooFailed, 1)
+					reason := "Keine Daten"
+					if lastErr != nil {
+						errStr := lastErr.Error()
+						if strings.Contains(errStr, "status 404") || strings.Contains(errStr, "status 400") {
+							reason = "Symbol nicht gefunden"
+						} else if strings.Contains(errStr, "status 429") {
+							reason = "Yahoo Rate-Limit"
+						} else if strings.Contains(errStr, "Timeout") || strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline") {
+							reason = "Timeout"
+						} else if strings.Contains(errStr, "status 4") || strings.Contains(errStr, "status 5") {
+							reason = fmt.Sprintf("HTTP-Fehler (%s)", errStr)
+						} else {
+							reason = errStr
+						}
+					} else if len(ohlcv) == 0 {
+						reason = "Leere Antwort (0 Bars)"
+					}
+					prefetchErrors.Store(s, reason)
 				}
 				yCh <- yahooProgress{Symbol: s}
 			}(sym)
@@ -24729,9 +24753,10 @@ func backtestWatchlistHandler(c *gin.Context) {
 
 	// Progress channel
 	type progressMsg struct {
-		Index   int
-		Symbol  string
-		Skipped bool
+		Index      int
+		Symbol     string
+		Skipped    bool
+		SkipReason string
 	}
 	progressCh := make(chan progressMsg, total)
 
@@ -24745,7 +24770,7 @@ func backtestWatchlistHandler(c *gin.Context) {
 			defer func() {
 				if r := recover(); r != nil {
 					log.Printf("[Arena] Batch panic for %s: %v", symbol, r)
-					progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true}
+					progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true, SkipReason: "Interner Fehler (Panic)"}
 				}
 			}()
 			select {
@@ -24760,7 +24785,13 @@ func backtestWatchlistHandler(c *gin.Context) {
 
 			ohlcv, err := getOHLCVCached(symbol, interval, 0) // cache only — pre-warm already fetched
 			if err != nil || len(ohlcv) < 50 {
-				progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true}
+				reason := "Nicht im Cache"
+				if err != nil {
+					reason = err.Error()
+				} else if len(ohlcv) < 50 {
+					reason = fmt.Sprintf("Zu wenig Daten (%d Bars, min. 50)", len(ohlcv))
+				}
+				progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true, SkipReason: reason}
 				return
 			}
 			strategy, _ := instantiateStrategy(req.Strategy, req.Params)
@@ -24785,14 +24816,14 @@ func backtestWatchlistHandler(c *gin.Context) {
 		close(progressCh)
 	}()
 
-	var skippedSymbols []string
+	var skippedSymbols []SkippedSymbolEntry
 	for msg := range progressCh {
 		if ctx.Err() != nil {
 			continue // drain without writing
 		}
 		completed++
 		if msg.Skipped {
-			skippedSymbols = append(skippedSymbols, msg.Symbol)
+			skippedSymbols = append(skippedSymbols, SkippedSymbolEntry{Symbol: msg.Symbol, Reason: msg.SkipReason})
 		}
 		progressJSON, _ := json.Marshal(gin.H{
 			"type":    "progress",
@@ -24974,6 +25005,7 @@ func arenaV2BatchHandler(c *gin.Context) {
 	fmt.Fprintf(c.Writer, "data: %s\n\n", cacheEvt)
 	c.Writer.Flush()
 
+	var prefetchErrors sync.Map // symbol → reason string (shared between prefetch + backtest)
 	if len(uncachedSymbols) > 0 {
 		var sseMu sync.Mutex
 		var prewarmDone int64
@@ -25036,6 +25068,24 @@ func arenaV2BatchHandler(c *gin.Context) {
 					saveOHLCVCache(s, bulkCacheInterval, ohlcv)
 				} else {
 					atomic.AddInt64(&yahooFailed, 1)
+					reason := "Keine Daten"
+					if lastErr != nil {
+						errStr := lastErr.Error()
+						if strings.Contains(errStr, "status 404") || strings.Contains(errStr, "status 400") {
+							reason = "Symbol nicht gefunden"
+						} else if strings.Contains(errStr, "status 429") {
+							reason = "Yahoo Rate-Limit"
+						} else if strings.Contains(errStr, "Timeout") || strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline") {
+							reason = "Timeout"
+						} else if strings.Contains(errStr, "status 4") || strings.Contains(errStr, "status 5") {
+							reason = fmt.Sprintf("HTTP-Fehler (%s)", errStr)
+						} else {
+							reason = errStr
+						}
+					} else if len(ohlcv) == 0 {
+						reason = "Leere Antwort (0 Bars)"
+					}
+					prefetchErrors.Store(s, reason)
 				}
 				done := atomic.AddInt64(&prewarmDone, 1)
 				sendProgress(done)
@@ -25080,9 +25130,10 @@ func arenaV2BatchHandler(c *gin.Context) {
 	sem := make(chan struct{}, 50) // CPU-only with in-memory cache
 
 	type progressMsg struct {
-		Index   int
-		Symbol  string
-		Skipped bool
+		Index      int
+		Symbol     string
+		Skipped    bool
+		SkipReason string
 	}
 	progressCh := make(chan progressMsg, total)
 
@@ -25095,7 +25146,7 @@ func arenaV2BatchHandler(c *gin.Context) {
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
-					progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true}
+					progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true, SkipReason: "Interner Fehler (Panic)"}
 				}
 			}()
 			select {
@@ -25111,7 +25162,13 @@ func arenaV2BatchHandler(c *gin.Context) {
 			// Read directly from in-memory cache (no JSON unmarshal, no DB hit)
 			ohlcv, ok := getOHLCVFromMemCache(symbol, bulkCacheInterval)
 			if !ok || len(ohlcv) < 50 {
-				progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true}
+				reason := "Nicht im Cache"
+				if prefetchReason, found := prefetchErrors.Load(symbol); found {
+					reason = prefetchReason.(string)
+				} else if ok && len(ohlcv) < 50 {
+					reason = fmt.Sprintf("Zu wenig Daten (%d Bars, min. 50)", len(ohlcv))
+				}
+				progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true, SkipReason: reason}
 				return
 			}
 			strategy, _ := instantiateStrategy(req.Strategy, req.Params)
@@ -25148,7 +25205,7 @@ func arenaV2BatchHandler(c *gin.Context) {
 		close(progressCh)
 	}()
 
-	var skippedSymbols []string
+	var skippedSymbols []SkippedSymbolEntry
 	for msg := range progressCh {
 		if ctx.Err() != nil {
 			// Drain remaining messages without writing to cancelled client
@@ -25156,7 +25213,7 @@ func arenaV2BatchHandler(c *gin.Context) {
 		}
 		completed++
 		if msg.Skipped {
-			skippedSymbols = append(skippedSymbols, msg.Symbol)
+			skippedSymbols = append(skippedSymbols, SkippedSymbolEntry{Symbol: msg.Symbol, Reason: msg.SkipReason})
 		}
 		progressJSON, _ := json.Marshal(gin.H{
 			"type": "progress", "current": completed, "total": total, "symbol": msg.Symbol,

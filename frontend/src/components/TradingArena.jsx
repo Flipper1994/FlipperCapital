@@ -307,7 +307,107 @@ function StockPerformanceTable({ perStock, totalPerStock, cardSearch, setCardSea
   )
 }
 
-function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSelectStock, filterSymbols, timeRange, formatTimeRange, tradeAmount, tradesFrom, noDataSymbols = [], onExport }) {
+function ExcludedStocksOverlay({ excludedStocks, onClose, onMinimize, onSelectStock }) {
+  const [search, setSearch] = useState('')
+  const [sortCol, setSortCol] = useState('symbol')
+  const [sortDir, setSortDir] = useState('asc')
+
+  const toggleSort = (col) => {
+    if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    else { setSortCol(col); setSortDir('desc') }
+  }
+  const sortInd = (col) => sortCol === col ? (sortDir === 'asc' ? ' \u25B2' : ' \u25BC') : ''
+
+  const sorted = useMemo(() => {
+    let list = search ? excludedStocks.filter(s => s.symbol.toLowerCase().includes(search.toLowerCase())) : excludedStocks
+    return [...list].sort((a, b) => {
+      let va, vb
+      if (sortCol === 'symbol') { va = a.symbol.toLowerCase(); vb = b.symbol.toLowerCase() }
+      else if (sortCol === 'win_rate') { va = a.metrics?.win_rate ?? -999; vb = b.metrics?.win_rate ?? -999 }
+      else if (sortCol === 'risk_reward') { va = a.metrics?.risk_reward ?? -999; vb = b.metrics?.risk_reward ?? -999 }
+      else if (sortCol === 'total_return') { va = a.metrics?.total_return ?? -999; vb = b.metrics?.total_return ?? -999 }
+      else if (sortCol === 'total_trades') { va = a.metrics?.total_trades ?? -999; vb = b.metrics?.total_trades ?? -999 }
+      else { va = 0; vb = 0 }
+      if (va < vb) return sortDir === 'asc' ? -1 : 1
+      if (va > vb) return sortDir === 'asc' ? 1 : -1
+      return 0
+    })
+  }, [excludedStocks, search, sortCol, sortDir])
+
+  const fmtPct = (v) => v == null ? '-' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
+      <div className="bg-dark-800 border border-dark-600 rounded-lg w-full max-w-5xl mx-4 max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-dark-600">
+          <h3 className="text-sm font-medium text-white">Gefilterte Aktien ({excludedStocks.length})</h3>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Symbol suchen..."
+              className="bg-dark-700 border border-dark-500 rounded px-2 py-1 text-xs text-white w-32 focus:border-accent-500 focus:outline-none"
+              autoFocus
+            />
+            <button onClick={onMinimize} className="text-xs text-gray-400 hover:text-white px-2 py-1 rounded hover:bg-dark-700 transition-colors">Minimieren</button>
+            <button onClick={onClose} className="text-xs text-gray-400 hover:text-white px-2 py-1 rounded hover:bg-dark-700 transition-colors">&#10005;</button>
+          </div>
+        </div>
+        {/* Table */}
+        <div className="overflow-auto flex-1">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-dark-800">
+              <tr className="text-left text-gray-500 border-b border-dark-600">
+                <th className="py-2 px-3 cursor-pointer hover:text-white select-none" style={{width:80}} onClick={() => toggleSort('symbol')}>Symbol{sortInd('symbol')}</th>
+                <th className="py-2 px-2" style={{width:180}}>Filter</th>
+                <th className="py-2 px-2 text-right cursor-pointer hover:text-white select-none" style={{width:70}} onClick={() => toggleSort('win_rate')}>WinRate{sortInd('win_rate')}</th>
+                <th className="py-2 px-2 text-right cursor-pointer hover:text-white select-none" style={{width:60}} onClick={() => toggleSort('risk_reward')}>R/R{sortInd('risk_reward')}</th>
+                <th className="py-2 px-2 text-right cursor-pointer hover:text-white select-none" style={{width:80}} onClick={() => toggleSort('total_return')}>Total{sortInd('total_return')}</th>
+                <th className="py-2 px-2 text-right cursor-pointer hover:text-white select-none" style={{width:60}} onClick={() => toggleSort('total_trades')}>Trades{sortInd('total_trades')}</th>
+                <th className="py-2 px-2 text-right" style={{width:50}}>Wins</th>
+                <th className="py-2 px-2 text-right" style={{width:50}}>Losses</th>
+                <th className="py-2 px-2 text-right" style={{width:80}}>&Oslash;/Trade</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map(item => {
+                const m = item.metrics
+                return (
+                  <tr key={item.symbol} className="border-b border-dark-700/50 last:border-0 cursor-pointer hover:bg-dark-700 transition-colors" onClick={() => item.hasData && onSelectStock(item.symbol)}>
+                    <td className="py-1.5 px-3 font-medium text-accent-400">{item.symbol}</td>
+                    <td className="py-1.5 px-2">
+                      <div className="flex flex-wrap gap-1">
+                        {item.reasons.map((r, i) => (
+                          <span key={i} className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${item.hasData ? 'bg-yellow-500/20 text-yellow-400' : 'bg-red-500/20 text-red-400'}`}>{r}</span>
+                        ))}
+                      </div>
+                    </td>
+                    <td className={`py-1.5 px-2 text-right ${m ? (m.win_rate >= 50 ? 'text-green-400' : 'text-red-400') : 'text-gray-600'}`}>{m ? `${m.win_rate.toFixed(0)}%` : '-'}</td>
+                    <td className={`py-1.5 px-2 text-right ${m ? (m.risk_reward >= 1 ? 'text-green-400' : 'text-red-400') : 'text-gray-600'}`}>{m ? m.risk_reward.toFixed(1) : '-'}</td>
+                    <td className={`py-1.5 px-2 text-right ${m ? (m.total_return >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-600'}`}>{m ? fmtPct(m.total_return) : '-'}</td>
+                    <td className="py-1.5 px-2 text-right text-gray-300">{m ? m.total_trades : '-'}</td>
+                    <td className="py-1.5 px-2 text-right text-green-400">{m ? (m.wins ?? Math.round(m.total_trades * m.win_rate / 100)) : '-'}</td>
+                    <td className="py-1.5 px-2 text-right text-red-400">{m ? (m.losses ?? m.total_trades - Math.round(m.total_trades * m.win_rate / 100)) : '-'}</td>
+                    <td className={`py-1.5 px-2 text-right ${m && m.total_trades > 0 ? ((m.total_return / m.total_trades) >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-600'}`}>
+                      {m && m.total_trades > 0 ? fmtPct(m.total_return / m.total_trades) : '-'}
+                    </td>
+                  </tr>
+                )
+              })}
+              {sorted.length === 0 && (
+                <tr><td colSpan={9} className="py-8 text-center text-gray-500">Keine Treffer</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSelectStock, filterSymbols, timeRange, formatTimeRange, tradeAmount, tradesFrom, noDataSymbols = [], onExport, excludedCount = 0, onShowExcluded }) {
   const [sortCol, setSortCol] = useState('entry_time')
   const [sortDir, setSortDir] = useState('desc')
   const [tradesVisible, setTradesVisible] = useState(100)
@@ -505,6 +605,11 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
         </h3>
         <div className="flex items-center gap-2">
           {timeRange && <span className="text-[10px] text-gray-500">{formatTimeRange(timeRange)}</span>}
+          {excludedCount > 0 && (
+            <button onClick={onShowExcluded} className="text-[10px] px-2 py-0.5 rounded bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-400 border border-yellow-500/30 transition-colors">
+              {excludedCount} gefiltert
+            </button>
+          )}
           {onExport && <button onClick={onExport} className="text-[10px] px-2 py-0.5 rounded bg-dark-600 hover:bg-dark-500 text-gray-300 hover:text-white transition-colors border border-dark-500">CSV Export</button>}
         </div>
       </div>
@@ -571,14 +676,6 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
           </div>
         </div>
       </div>
-
-      {/* Skipped symbols warning */}
-      {noDataSymbols.length > 0 && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-xs mb-2">
-          <span className="font-medium">{noDataSymbols.length} Aktien ohne Daten übersprungen</span>
-          <span className="text-yellow-500/60">— Kursdaten konnten nicht geladen werden (API-Limit oder Symbol nicht verfügbar)</span>
-        </div>
-      )}
 
       {/* Per-Stock Table */}
       {Object.keys(perStock).length > 0 && <StockPerformanceTable perStock={perStock} totalPerStock={batchResults?.per_stock} cardSearch={cardSearch} setCardSearch={setCardSearch} onSelectStock={onSelectStock} />}
@@ -697,6 +794,8 @@ function TradingArena({ isAdmin, token }) {
   const [showAddToSessionModal, setShowAddToSessionModal] = useState(false)
   const [availableSessions, setAvailableSessions] = useState([])
   const [addToSessionLoading, setAddToSessionLoading] = useState(false)
+  const [showExcluded, setShowExcluded] = useState(false)
+  const [excludedMinimized, setExcludedMinimized] = useState(false)
 
   // Alpaca Broker Config (admin)
   const [showBrokerConfig, setShowBrokerConfig] = useState(false)
@@ -987,7 +1086,44 @@ function TradingArena({ isAdmin, token }) {
 
   // O(1) lookup sets for watchlist rendering
   const perfFilteredSet = useMemo(() => perfFilteredSymbols ? new Set(perfFilteredSymbols) : null, [perfFilteredSymbols])
-  const noDataSet = useMemo(() => new Set(noDataSymbols), [noDataSymbols])
+  const noDataSet = useMemo(() => new Set(noDataSymbols.map(item => typeof item === 'string' ? item : item.symbol)), [noDataSymbols])
+
+  // Combined list of all excluded stocks with reasons and metrics
+  const excludedStocks = useMemo(() => {
+    if (!batchResults) return []
+    const excluded = []
+    const f = filtersActive && appliedFilters ? appliedFilters : null
+    const mc = batchResults?.market_caps || {}
+
+    // Category B: Frontend filter rejects (have metrics)
+    if (perStockMetrics && (f || usOnly)) {
+      const included = perfFilteredSymbols ? new Set(perfFilteredSymbols) : null
+      Object.entries(perStockMetrics).forEach(([sym, m]) => {
+        if (included && included.has(sym)) return
+        if (!included) return
+        const reasons = []
+        if (usOnly && sym.includes('.')) reasons.push('Non-US')
+        if (f) {
+          if (f.minWinRate !== '' && m.win_rate < Number(f.minWinRate)) reasons.push(`WinRate < ${f.minWinRate}%`)
+          if (f.minRR !== '' && m.risk_reward < Number(f.minRR)) reasons.push(`R/R < ${f.minRR}`)
+          if (f.minTotalReturn !== '' && m.total_return < Number(f.minTotalReturn)) reasons.push(`Total < ${f.minTotalReturn}%`)
+          if (f.minAvgReturn !== '' && m.avg_return < Number(f.minAvgReturn)) reasons.push(`Ø/Trade < ${f.minAvgReturn}%`)
+          if (f.minNetProfit !== '' && m.net_profit < Number(f.minNetProfit)) reasons.push(`NetProfit < ${f.minNetProfit}%`)
+          if (f.minMarketCap !== '' && (mc[sym] || 0) < Number(f.minMarketCap) * 1e9) reasons.push(`MarketCap < ${f.minMarketCap}B`)
+        }
+        excluded.push({ symbol: sym, metrics: m, reasons: reasons.length > 0 ? reasons : ['Filter'], hasData: true })
+      })
+    }
+
+    // Category A: Data skips (no metrics)
+    ;(noDataSymbols || []).forEach(item => {
+      const sym = typeof item === 'string' ? item : item.symbol
+      const reason = typeof item === 'string' ? 'Keine Daten' : (item.reason || 'Keine Daten')
+      excluded.push({ symbol: sym, metrics: null, reasons: [reason], hasData: false })
+    })
+
+    return excluded
+  }, [batchResults, perStockMetrics, perfFilteredSymbols, noDataSymbols, filtersActive, appliedFilters, usOnly])
 
   // Filtered trades for heatmap (same filter logic as WatchlistBatchPanel)
   const heatmapTrades = useMemo(() => {
@@ -2266,7 +2402,7 @@ function TradingArena({ isAdmin, token }) {
           </div>
         )}
 
-        {batchResults && !batchLoading && <WatchlistBatchPanel batchResults={batchResults} strategy={backtestStrategy} interval={interval} longOnly={longOnly} onSelectStock={selectStock} filterSymbols={perfFilteredSymbols} timeRange={batchTimeRange} formatTimeRange={formatTimeRange} tradeAmount={simTradeAmount} tradesFrom={tradesFrom} noDataSymbols={noDataSymbols} onExport={handleBatchExport} />}
+        {batchResults && !batchLoading && <WatchlistBatchPanel batchResults={batchResults} strategy={backtestStrategy} interval={interval} longOnly={longOnly} onSelectStock={selectStock} filterSymbols={perfFilteredSymbols} timeRange={batchTimeRange} formatTimeRange={formatTimeRange} tradeAmount={simTradeAmount} tradesFrom={tradesFrom} noDataSymbols={noDataSymbols} onExport={handleBatchExport} excludedCount={excludedStocks.length} onShowExcluded={() => { setShowExcluded(true); setExcludedMinimized(false) }} />}
 
         {/* Calendar Heatmap Section */}
         {batchResults && !batchLoading && heatmapTrades.length > 0 && (
@@ -2588,6 +2724,25 @@ function TradingArena({ isAdmin, token }) {
           </div>
         </div>
       </div>
+
+      {/* Excluded Stocks Overlay */}
+      {showExcluded && !excludedMinimized && (
+        <ExcludedStocksOverlay
+          excludedStocks={excludedStocks}
+          onClose={() => setShowExcluded(false)}
+          onMinimize={() => setExcludedMinimized(true)}
+          onSelectStock={(sym) => { selectStock(sym, null, true); setExcludedMinimized(true) }}
+        />
+      )}
+
+      {/* Minimized excluded stocks bar */}
+      {showExcluded && excludedMinimized && (
+        <div className="fixed bottom-4 right-4 z-50">
+          <button onClick={() => setExcludedMinimized(false)} className="bg-dark-800 border border-yellow-500/30 rounded-lg px-3 py-2 text-xs text-yellow-400 shadow-lg hover:bg-dark-700 transition-colors">
+            Gefilterte Aktien ({excludedStocks.length}) &#9650;
+          </button>
+        </div>
+      )}
 
       {/* Session Name Dialog */}
       {showSessionNameDialog && (

@@ -41,6 +41,13 @@ npm-debug.log*
 backend/main
 *.exe
 
+# OHLCV Cache (von Tests/Runtime erzeugt)
+backend/*_60m.json.gz
+backend/*_1d.json.gz
+backend/*_5m.json.gz
+backend/*_15m.json.gz
+backend/*_1wk.json.gz
+
 # Docker volumes
 docker-data/
 
