@@ -63,7 +63,7 @@ function ProfitBar({ value, maxAbs }) {
 
 // --- Trade Detail Overlay ---
 function TradeOverlay({ title, trades, tradeAmount, onClose }) {
-  const amt = tradeAmount || 500
+  const amt = tradeAmount || 100
 
   // Close on Escape
   useEffect(() => {
@@ -177,7 +177,7 @@ function TradeOverlay({ title, trades, tradeAmount, onClose }) {
 }
 
 // --- Main Component ---
-export default function ArenaCalendarHeatmap({ trades, tradeAmount = 500 }) {
+export default function ArenaCalendarHeatmap({ trades, tradeAmount = 100 }) {
   const [collapsed, setCollapsed] = useState({})
   const [overlay, setOverlay] = useState(null) // { title, trades }
 
@@ -190,7 +190,7 @@ export default function ArenaCalendarHeatmap({ trades, tradeAmount = 500 }) {
     if (!allTrades.length) return { days: {}, weeks: {}, months: {}, totals: null, maxAbsEUR: 0 }
 
     const dayMap = {}
-    const amt = tradeAmount || 500
+    const amt = tradeAmount || 100
 
     // Group trades by entry day
     const dayTrades = {}
@@ -295,12 +295,23 @@ export default function ArenaCalendarHeatmap({ trades, tradeAmount = 500 }) {
 
       const sortedWeeks = [...mData.weeks].reverse().map(wk => {
         const wData = weeks[wk]
-        const sortedDays = [...wData.days].sort().reverse().map(dk => ({
+        // Only show days belonging to THIS month (weeks can span month boundaries)
+        const monthDays = wData.days.filter(dk => dk.startsWith(mk))
+        const sortedDays = [...monthDays].sort().reverse().map(dk => ({
           key: dk,
           ...days[dk],
           dayLabel: `${WEEKDAYS_SHORT[days[dk].date.getDay()]}, ${days[dk].date.getDate()}.${parseInt(dk.split('-')[1])}.`,
         }))
-        return { key: wk, ...wData, days: sortedDays, label: `KW ${wk.split('-W')[1]}` }
+        // Recalculate week metrics for only the days in this month
+        let wTrades = 0, wInvested = 0, wProfitEUR = 0
+        for (const dk of monthDays) {
+          const d = days[dk]
+          wTrades += d.trades
+          wInvested += d.invested
+          wProfitEUR += d.profitEUR
+        }
+        const wReturnPct = wInvested > 0 ? (wProfitEUR / wInvested) * 100 : 0
+        return { key: `${mk}-${wk}`, trades: wTrades, invested: wInvested, profitEUR: wProfitEUR, returnPct: wReturnPct, days: sortedDays, label: `KW ${wk.split('-W')[1]}` }
       })
 
       return { key: mk, ...mData, weeks: sortedWeeks, label }

@@ -5,7 +5,7 @@ import ArenaBacktestPanel from './ArenaBacktestPanel'
 import ArenaIndicatorChart from './ArenaIndicatorChart'
 import ArenaCalendarHeatmap from './ArenaCalendarHeatmap'
 import { useCurrency } from '../context/CurrencyContext'
-import { INTERVALS, INTERVAL_MAP, TV_INTERVAL_MAP, STRATEGIES, STRATEGY_PARAMS, STRATEGY_DEFAULT_INTERVAL, getDefaultParams } from '../utils/arenaConfig'
+import { INTERVALS, INTERVAL_MAP, TV_INTERVAL_MAP, STRATEGIES, STRATEGY_PARAMS, STRATEGY_DEFAULT_INTERVAL, STRATEGY_ALGORITHMS, getDefaultParams, getPresetParams } from '../utils/arenaConfig'
 
 // Skeleton building blocks
 const Sk = ({ className = '' }) => <div className={`bg-dark-700 rounded animate-pulse ${className}`} />
@@ -158,6 +158,37 @@ const STRATEGY_INFO = {
       { symbol: '▼ SL', color: '#ef4444', desc: 'Stop Loss (Swing Low/High ± Buffer)' },
       { symbol: '█ grün', color: '#22c55e', desc: 'GMMA Main > Signal — bullisches Momentum' },
       { symbol: '█ rot', color: '#ef4444', desc: 'GMMA Main < Signal — bärisches Momentum' },
+    ],
+  },
+  vwap_day_trading: {
+    title: 'VWAP Day Trading',
+    desc: 'Intraday-Strategie basierend auf VWAP (Volume Weighted Average Price). Kombiniert Pullback-Einstiege im Trend (Rücklauf zum VWAP) mit Mean-Reversion-Trades an den Standardabweichungs-Bändern. VWAP resettet täglich und nutzt Preis × Volumen für den fairen Tageswert.',
+    indicators: 'VWAP, Standardabweichungs-Bänder (2σ/3σ), Previous Day VWAP, VWAP Distance',
+    timeframes: '5m, 15m',
+    tips: '↑ Win Rate: Body% erhöhen (60-70%), Prev VWAP Filter aktivieren, Band-Mult erhöhen (2.5-3.0). ↑ Frequenz: Body% senken (30-40%), Trend-Fenster kleiner (4-5), Skip Bars reduzieren.',
+    legend: [
+      { symbol: '▲ LONG (Pullback)', color: '#22c55e', desc: 'Uptrend + Pullback zum VWAP + bullische Bestätigungskerze' },
+      { symbol: '▼ SHORT (Pullback)', color: '#ef4444', desc: 'Downtrend + Pullback zum VWAP + bärische Bestätigungskerze' },
+      { symbol: '▲ LONG (Reversal)', color: '#86efac', desc: 'Seitwärtsmarkt + Preis am unteren Band + bullische Bestätigung → Target: VWAP' },
+      { symbol: '▼ SHORT (Reversal)', color: '#fca5a5', desc: 'Seitwärtsmarkt + Preis am oberen Band + bärische Bestätigung → Target: VWAP' },
+      { symbol: '━ VWAP', color: '#3b82f6', desc: 'Volume Weighted Average Price — fairer Tageswert' },
+      { symbol: '╌ Bänder', color: '#f97316', desc: '2σ/3σ Standardabweichungs-Bänder um den VWAP' },
+      { symbol: '╌ Prev VWAP', color: '#9ca3af', desc: 'VWAP-Schlusskurs des Vortags als S/R-Level' },
+    ],
+  },
+  gaussian_trend: {
+    title: 'Gaussian + RSI + MACD',
+    desc: 'N-Pole Gaussian Filter nach Ehlers (Loxx TradingView) mit RSI- und MACD-Bestätigung. Gaussian-Farbwechsel (rot→grün / grün→rot) signalisiert Trendwende, RSI(30) und MACD(24,52,9) Histogram müssen die Richtung bestätigen. Entry zum Open der Folgekerze.',
+    indicators: 'N-Pole Gaussian Filter (STD-gefiltert), RSI(30), MACD(24,52,9) Histogram',
+    timeframes: '1h, 4h',
+    tips: '↑ Win Rate: Poles erhöhen (7-9 = glatterer Filter, weniger Whipsaws), RSI Period erhöhen (40-50 = weniger Signale, stärkere Bestätigung), STD Filter Mult erhöhen (1.5-2.0 = weniger Filteränderungen). ↑ Frequenz: Period senken (15-20), Poles senken (3-4), STD Filter Mult senken (0.5).',
+    legend: [
+      { symbol: '▲ LONG', color: '#22c55e', desc: 'Entry — Gaussian grün + RSI > 50 + MACD Hist > 0' },
+      { symbol: '▼ SHORT', color: '#ef4444', desc: 'Entry — Gaussian rot + RSI < 50 + MACD Hist < 0' },
+      { symbol: '▼ TP', color: '#22c55e', desc: 'Take Profit (Risk × R/R)' },
+      { symbol: '▼ SL', color: '#ef4444', desc: 'Stop Loss (Gaussian-Linie / Swing ± Buffer)' },
+      { symbol: '━ grün', color: '#22c55e', desc: 'Gaussian Filter steigend (bullish)' },
+      { symbol: '━ rot', color: '#ef4444', desc: 'Gaussian Filter fallend (bearish)' },
     ],
   },
 }
@@ -461,37 +492,41 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
   }, [batchResults?.trades, sortCol, sortDir, longOnly, filterSymbols, tradesFromUnix])
 
   const batchMetrics = useMemo(() => {
-    if (!longOnly && !filterSymbols && !tradesFromUnix) return batchResults?.metrics || null
+    // Helper to compute metrics from a trade array
+    const calc = (trades) => {
+      // Sort by entry time for correct equity curve / MaxDD
+      const sorted = [...trades].sort((a, b) => a.entry_time - b.entry_time)
+      let wins = 0, losses = 0, totalReturn = 0, totalWinReturn = 0, totalLossReturn = 0
+      let equity = 100, peak = 100, maxDD = 0
+      for (const t of sorted) {
+        totalReturn += t.return_pct
+        if (t.return_pct >= 0) { wins++; totalWinReturn += t.return_pct }
+        else { losses++; totalLossReturn += Math.abs(t.return_pct) }
+        equity *= (1 + t.return_pct / 100)
+        if (equity > peak) peak = equity
+        const dd = (peak - equity) / peak * 100
+        if (dd > maxDD) maxDD = dd
+      }
+      const total = wins + losses
+      const winRate = total > 0 ? (wins / total) * 100 : 0
+      const avgWin = wins > 0 ? totalWinReturn / wins : 0
+      const avgLoss = losses > 0 ? totalLossReturn / losses : 0
+      const riskReward = avgLoss > 0 ? avgWin / avgLoss : 0
+      return {
+        win_rate: winRate, risk_reward: riskReward, total_return: totalReturn,
+        avg_return: total > 0 ? totalReturn / total : 0, max_drawdown: maxDD,
+        net_profit: equity - 100, total_trades: total, wins, losses,
+      }
+    }
 
-    // Filter trades for recalculation
+    // Even without filters, recalculate to get sorted MaxDD
     let trades = batchResults?.trades || []
     if (longOnly) trades = trades.filter(t => t.direction === 'LONG')
     if (filterSymbols) { const set = new Set(filterSymbols); trades = trades.filter(t => set.has(t.symbol)) }
     if (tradesFromUnix > 0) trades = trades.filter(t => t.entry_time >= tradesFromUnix)
     trades = trades.filter(t => !t.is_open)
     if (trades.length === 0) return batchResults?.metrics || null
-
-    let wins = 0, losses = 0, totalReturn = 0, totalWinReturn = 0, totalLossReturn = 0
-    let equity = 100, peak = 100, maxDD = 0
-    for (const t of trades) {
-      totalReturn += t.return_pct
-      if (t.return_pct >= 0) { wins++; totalWinReturn += t.return_pct }
-      else { losses++; totalLossReturn += Math.abs(t.return_pct) }
-      equity *= (1 + t.return_pct / 100)
-      if (equity > peak) peak = equity
-      const dd = (peak - equity) / peak * 100
-      if (dd > maxDD) maxDD = dd
-    }
-    const total = wins + losses
-    const winRate = total > 0 ? (wins / total) * 100 : 0
-    const avgWin = wins > 0 ? totalWinReturn / wins : 0
-    const avgLoss = losses > 0 ? totalLossReturn / losses : 0
-    const riskReward = avgLoss > 0 ? avgWin / avgLoss : 0
-    return {
-      win_rate: winRate, risk_reward: riskReward, total_return: totalReturn,
-      avg_return: total > 0 ? totalReturn / total : 0, max_drawdown: maxDD,
-      net_profit: equity - 100, total_trades: total, wins, losses,
-    }
+    return calc(trades)
   }, [batchResults, longOnly, filterSymbols, tradesFromUnix])
 
   const batchPerStock = useMemo(() => {
@@ -574,12 +609,32 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
     let open = 0, maxParallel = 0
     events.forEach(e => { open += e.type; if (open > maxParallel) maxParallel = open })
 
-    const posSize = tradeAmount > 0 ? tradeAmount : 500
+    const posSize = tradeAmount > 0 ? tradeAmount : 100
     const requiredCapital = maxParallel * posSize
     const totalProfit = sorted.reduce((s, t) => s + posSize * (t.return_pct / 100), 0)
     const portfolioReturn = requiredCapital > 0 ? (totalProfit / requiredCapital) * 100 : 0
 
-    return { portfolioReturn, maxParallel, requiredCapital, totalProfit, posSize }
+    // Ø Gewinn pro Tag/Woche/Monat/Jahr
+    let avgDay = 0, avgWeek = 0, avgMonth = 0, avgYear = 0, tradingDays = 0
+    if (sorted.length > 0) {
+      const firstTime = sorted[0].entry_time
+      const lastTime = sorted[sorted.length - 1].exit_time || sorted[sorted.length - 1].entry_time
+      const spanDays = Math.max((lastTime - firstTime) / 86400, 1)
+      // Count unique trading days
+      const daySet = new Set(sorted.map(t => {
+        const d = new Date(t.entry_time * 1000)
+        return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+      }))
+      tradingDays = daySet.size || 1
+      avgDay = totalProfit / tradingDays
+      const weeks = Math.max(spanDays / 7, 1)
+      avgWeek = totalProfit / weeks
+      const months = Math.max(spanDays / 30.44, 1)
+      avgMonth = totalProfit / months
+      avgYear = avgMonth * 12
+    }
+
+    return { portfolioReturn, maxParallel, requiredCapital, totalProfit, posSize, avgDay, avgWeek, avgMonth, avgYear, tradingDays }
   }, [filteredBatchTrades, tradeAmount])
 
   if (!m) return (
@@ -676,6 +731,24 @@ function WatchlistBatchPanel({ batchResults, strategy, interval, longOnly, onSel
           </div>
         </div>
       </div>
+
+      {/* Ø Gewinn pro Zeitraum */}
+      {portfolioStats.tradingDays > 0 && (() => {
+        const cap = portfolioStats.requiredCapital || 1
+        const fmtEur = v => `${v >= 0 ? '+' : ''}${v.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`
+        const fmtPct = v => `${v >= 0 ? '+' : ''}${(v / cap * 100).toFixed(2)}%`
+        const clr = v => v >= 0 ? 'text-green-400' : 'text-red-400'
+        return (
+          <div className="flex items-center gap-3 mb-4 flex-wrap text-[11px] text-gray-400">
+            <span className="text-gray-500 font-medium">Ø Gewinn:</span>
+            <span>Tag: <span className={clr(portfolioStats.avgDay)}>{fmtEur(portfolioStats.avgDay)}</span> <span className="text-gray-600">({fmtPct(portfolioStats.avgDay)})</span></span>
+            <span>Woche: <span className={clr(portfolioStats.avgWeek)}>{fmtEur(portfolioStats.avgWeek)}</span> <span className="text-gray-600">({fmtPct(portfolioStats.avgWeek)})</span></span>
+            <span>Monat: <span className={clr(portfolioStats.avgMonth)}>{fmtEur(portfolioStats.avgMonth)}</span> <span className="text-gray-600">({fmtPct(portfolioStats.avgMonth)})</span></span>
+            <span>Jahr: <span className={clr(portfolioStats.avgYear)}>{fmtEur(portfolioStats.avgYear)}</span> <span className="text-gray-600">({fmtPct(portfolioStats.avgYear)})</span></span>
+            <span className="text-gray-600">({portfolioStats.tradingDays} Handelstage)</span>
+          </div>
+        )
+      })()}
 
       {/* Per-Stock Table */}
       {Object.keys(perStock).length > 0 && <StockPerformanceTable perStock={perStock} totalPerStock={batchResults?.per_stock} cardSearch={cardSearch} setCardSearch={setCardSearch} onSelectStock={onSelectStock} />}
@@ -782,7 +855,7 @@ function TradingArena({ isAdmin, token }) {
   const [isFilterPending, startFilterTransition] = useTransition()
   const [showSimulation, setShowSimulation] = useState(false)
   const [showCalendar, setShowCalendar] = useState(true)
-  const [simTradeAmount, setSimTradeAmount] = useState(500)
+  const [simTradeAmount, setSimTradeAmount] = useState(100)
   const [appliedFilters, setAppliedFilters] = useState(null)
   const [filtersActive, setFiltersActive] = useState(false)
   const [tradesFrom, setTradesFrom] = useState('')
@@ -1055,7 +1128,7 @@ function TradingArena({ isAdmin, token }) {
       const winReturns = trades.filter(t => t.return_pct >= 0).map(t => t.return_pct)
       const lossReturns = trades.filter(t => t.return_pct < 0).map(t => Math.abs(t.return_pct))
       const avgWin = winReturns.length ? winReturns.reduce((a, b) => a + b, 0) / winReturns.length : 0
-      const avgLoss = lossReturns.length ? lossReturns.reduce((a, b) => a + b, 0) / lossReturns.length : 1
+      const avgLoss = lossReturns.length ? lossReturns.reduce((a, b) => a + b, 0) / lossReturns.length : 0
       let eq = 100, peak = 100, maxDD = 0
       trades.forEach(t => { eq *= (1 + t.return_pct / 100); if (eq > peak) peak = eq; const dd = (peak - eq) / peak * 100; if (dd > maxDD) maxDD = dd })
       ps[sym] = { win_rate: trades.length ? (wins / trades.length) * 100 : 0, risk_reward: avgLoss > 0 ? avgWin / avgLoss : 0, total_return: totalReturn, avg_return: trades.length ? totalReturn / trades.length : 0, net_profit: eq - 100, total_trades: trades.length }
@@ -1153,25 +1226,128 @@ function TradingArena({ isAdmin, token }) {
   const handleBacktestExport = useCallback(() => {
     if (!filteredMetrics || !filteredTrades) return
     const strat = STRATEGIES.find(s => s.value === backtestStrategy)
+
+    const chartData = backtestResults?.chart_data || []
+    const timeIndex = new Map()
+    chartData.forEach((bar, i) => { timeIndex.set(bar.time, i) })
+
+    const indicatorSeries = (backtestResults?.indicators || []).filter(s => s.type !== 'reference_line')
+    const overlaySeries = backtestResults?.overlays || []
+    const indicatorNames = indicatorSeries.map(s => s.name)
+    const overlayNames = overlaySeries.map(s => s.name)
+
+    const indicatorLookup = {}
+    indicatorSeries.forEach(s => {
+      const m = new Map()
+      s.data?.forEach(d => { if (d.time && Number.isFinite(d.value)) m.set(d.time, d.value) })
+      indicatorLookup[s.name] = m
+    })
+    const overlayLookup = {}
+    overlaySeries.forEach(s => {
+      const m = new Map()
+      s.data?.forEach(d => { if (d.time && Number.isFinite(d.value)) m.set(d.time, d.value) })
+      overlayLookup[s.name] = m
+    })
+
+    const columns = ['time', 'open', 'high', 'low', 'close', 'volume', ...indicatorNames, ...overlayNames]
+    const timeseriesData = chartData.map(bar => {
+      const row = [bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume]
+      indicatorNames.forEach(name => { row.push(indicatorLookup[name].get(bar.time) ?? null) })
+      overlayNames.forEach(name => { row.push(overlayLookup[name].get(bar.time) ?? null) })
+      return row
+    })
+
+    const findBarIndex = (time) => {
+      if (!time || chartData.length === 0) return -1
+      const exact = timeIndex.get(time)
+      if (exact !== undefined) return exact
+      let lo = 0, hi = chartData.length - 1
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1
+        if (chartData[mid].time < time) lo = mid + 1
+        else hi = mid
+      }
+      if (lo > 0 && chartData[lo].time > time) lo--
+      return lo
+    }
+
+    const getSnapshot = (lookup, names, time) => {
+      const snap = {}
+      names.forEach(name => { snap[name] = lookup[name].get(time) ?? null })
+      return snap
+    }
+
+    const CONTEXT_BARS = 5
+
+    const algo = STRATEGY_ALGORITHMS[backtestStrategy] || null
+    const paramDefs = (STRATEGY_PARAMS[backtestStrategy] || []).map(p => ({
+      key: p.key, label: p.label, value: strategyParams[p.key] ?? p.default,
+      default: p.default, min: p.min, max: p.max, step: p.step, is_toggle: !!p.isToggle,
+    }))
+
     const data = {
+      version: 3,
       exported_at: new Date().toISOString(),
       symbol: selectedSymbol,
-      strategy: { key: backtestStrategy, label: strat?.label || backtestStrategy, interval },
+      strategy: {
+        key: backtestStrategy,
+        label: strat?.label || backtestStrategy,
+        interval,
+        algorithm: algo,
+      },
       params: { ...strategyParams },
+      param_definitions: paramDefs,
       settings: { trade_amount: simTradeAmount, long_only: longOnly },
+      backtest_engine: {
+        description: 'Bar-by-bar simulation. Phase 1 (Open): signal fires → close existing + open new position. Phase 2 (Intrabar): check SL/TP on high/low. SL is checked BEFORE TP (same bar: SL wins).',
+        entry_rule: 'Entry at next bar open after signal (ohlcv[i+1].open).',
+        sl_tp_rule: 'SL/TP proportionally scaled from strategy signal values.',
+        metrics_note: 'return_pct = (exit - entry) / entry * 100 for LONG, (entry - exit) / entry * 100 for SHORT.',
+      },
+      indicator_columns: Object.fromEntries(
+        indicatorNames.map(name => {
+          const desc = algo?.indicators?.[name]
+          return [name, desc || 'Sub-chart indicator series']
+        })
+      ),
+      overlay_columns: Object.fromEntries(
+        overlayNames.map(name => {
+          const matchKey = Object.keys(algo?.overlays || {}).find(k => name.startsWith(k) || name.includes(k))
+          return [name, (matchKey && algo.overlays[matchKey]) || 'Price chart overlay series']
+        })
+      ),
       time_range: backtestTimeRange,
       metrics: filteredMetrics,
-      trades: filteredTrades.map(t => ({
-        direction: t.direction,
-        entry_time: t.entry_time,
-        entry_price: t.entry_price,
-        exit_time: t.exit_time || null,
-        exit_price: t.exit_price || null,
-        return_pct: t.return_pct,
-        exit_reason: t.exit_reason || null,
-        is_open: !!t.is_open,
-      })),
+      trades: filteredTrades.map(t => {
+        const entryIdx = findBarIndex(t.entry_time)
+        const exitIdx = t.exit_time ? findBarIndex(t.exit_time) : -1
+        const entryBar = entryIdx >= 0 ? chartData[entryIdx] : null
+        const exitBar = exitIdx >= 0 ? chartData[exitIdx] : null
+        const ctxStart = Math.max(0, entryIdx - CONTEXT_BARS)
+        const contextBars = entryIdx >= 0
+          ? chartData.slice(ctxStart, entryIdx).map(b => ({
+              time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume
+            }))
+          : []
+        return {
+          direction: t.direction,
+          entry_time: t.entry_time,
+          entry_price: t.entry_price,
+          exit_time: t.exit_time || null,
+          exit_price: t.exit_price || null,
+          return_pct: t.return_pct,
+          exit_reason: t.exit_reason || null,
+          is_open: !!t.is_open,
+          entry_indicators: entryBar ? getSnapshot(indicatorLookup, indicatorNames, entryBar.time) : null,
+          exit_indicators: exitBar ? getSnapshot(indicatorLookup, indicatorNames, exitBar.time) : null,
+          entry_overlays: entryBar ? getSnapshot(overlayLookup, overlayNames, entryBar.time) : null,
+          exit_overlays: exitBar ? getSnapshot(overlayLookup, overlayNames, exitBar.time) : null,
+          context_bars: contextBars,
+        }
+      }),
+      timeseries: { columns, data: timeseriesData },
     }
+
     const json = JSON.stringify(data, null, 2)
     const blob = new Blob([json], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
@@ -1181,7 +1357,7 @@ function TradingArena({ isAdmin, token }) {
     a.download = `backtest_${selectedSymbol}_${backtestStrategy}_${interval}_${date}.json`
     a.click()
     URL.revokeObjectURL(url)
-  }, [filteredMetrics, filteredTrades, backtestStrategy, selectedSymbol, interval, strategyParams, simTradeAmount, longOnly, backtestTimeRange])
+  }, [filteredMetrics, filteredTrades, backtestStrategy, selectedSymbol, interval, strategyParams, simTradeAmount, longOnly, backtestTimeRange, backtestResults])
 
   const handleBatchExport = useCallback(() => {
     if (!batchResults) return
@@ -1329,7 +1505,7 @@ function TradingArena({ isAdmin, token }) {
     setBatchProgress(null)
     setBatchResults(null) // Reset old results → shows skeleton with spinner
     try {
-      const res = await fetch('/api/trading/backtest-watchlist', {
+      const res = await fetch('/api/trading/arena/v2/batch', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1786,11 +1962,14 @@ function TradingArena({ isAdmin, token }) {
     if (batchLoading) {
       const p = batchProgress
       if (!p) return { label: 'Starte Backtest', pct: 0, detail: 'Verbinde...' }
+      if (p.phase === 'init') {
+        return { label: 'Prüfe Cache', pct: 0, detail: `${p.total} Aktien in Watchlist` }
+      }
       if (p.phase === 'cache') {
         return { label: 'Cache geladen', pct: p.uncached === 0 ? 100 : 5, detail: `${p.cached} im Cache, ${p.uncached} fehlen (${p.total} gesamt)` }
       }
       if (p.prefetching) {
-        const src = p.source || 'Alpaca'
+        const src = p.source || 'Yahoo'
         if (p.prefetchCurrent != null) {
           const pct = p.prefetchTotal > 0 ? Math.round((p.prefetchCurrent / p.prefetchTotal) * 100) : 0
           const warn = p.prefetchWarning ? ` (${p.prefetchWarning.yahooFailed} fehlgeschlagen)` : ''
@@ -2045,12 +2224,29 @@ function TradingArena({ isAdmin, token }) {
                 {STRATEGIES.find(s => s.value === backtestStrategy)?.label} Parameter
                 {selectedSymbol && <span className="text-accent-400 ml-1">({selectedSymbol})</span>}
               </span>
-              <button
-                onClick={resetParams}
-                className="text-[10px] px-2 py-0.5 rounded bg-dark-700 text-gray-400 hover:text-white transition-colors"
-              >
-                Reset
-              </button>
+              <div className="flex items-center gap-2">
+                {(() => {
+                  const preset = getPresetParams(backtestStrategy, interval)
+                  if (!preset) return null
+                  return (
+                    <button
+                      onClick={() => {
+                        const newParams = { ...strategyParams, ...preset.params }
+                        setStrategyParams(newParams)
+                      }}
+                      className="text-[10px] px-2 py-0.5 rounded bg-accent-500/20 text-accent-400 border border-accent-500/30 hover:bg-accent-500/30 transition-colors"
+                    >
+                      {preset.label} laden
+                    </button>
+                  )
+                })()}
+                <button
+                  onClick={resetParams}
+                  className="text-[10px] px-2 py-0.5 rounded bg-dark-700 text-gray-400 hover:text-white transition-colors"
+                >
+                  Reset
+                </button>
+              </div>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
               {currentParams.map(p => (
@@ -2189,14 +2385,25 @@ function TradingArena({ isAdmin, token }) {
           </div>
         )}
 
-        {/* Indicator Sub-Chart */}
-        {backtestResults?.indicators && (
-          <ArenaIndicatorChart
-            indicators={backtestResults.indicators}
-            markers={filteredMarkers}
-            strategyName={STRATEGIES.find(s => s.value === backtestStrategy)?.label}
-          />
-        )}
+        {/* Indicator Sub-Charts (grouped by panel) */}
+        {backtestResults?.indicators && (() => {
+          const panels = {}
+          backtestResults.indicators.forEach(s => {
+            const p = s.panel || 0
+            if (!panels[p]) panels[p] = []
+            panels[p].push(s)
+          })
+          const panelKeys = Object.keys(panels).sort((a, b) => a - b)
+          const stratLabel = STRATEGIES.find(s => s.value === backtestStrategy)?.label
+          return panelKeys.map(pk => (
+            <ArenaIndicatorChart
+              key={pk}
+              indicators={panels[pk]}
+              markers={pk === panelKeys[0] ? filteredMarkers : []}
+              strategyName={panelKeys.length > 1 ? `${stratLabel} — ${panels[pk].map(s => s.name).filter((v, i, a) => a.indexOf(v) === i).join(', ')}` : stratLabel}
+            />
+          ))
+        })()}
 
         {/* Backtest Results */}
         {backtestResults ? (
@@ -2359,18 +2566,18 @@ function TradingArena({ isAdmin, token }) {
               <span className="text-xs text-gray-400 font-medium whitespace-nowrap">Filter:</span>
               <div className="flex items-center gap-1">
                 <label className="text-[10px] text-gray-500">Min Win%</label>
-                <input type="number" name="minWinRate" defaultValue="50"
-                  className="w-14 bg-dark-700 border border-dark-500 rounded px-1.5 py-1 text-xs text-white" />
+                <input type="number" name="minWinRate" defaultValue=""
+                  className="w-14 bg-dark-700 border border-dark-500 rounded px-1.5 py-1 text-xs text-white" placeholder="50" />
               </div>
               <div className="flex items-center gap-1">
                 <label className="text-[10px] text-gray-500">Min R/R</label>
-                <input type="number" name="minRR" step="0.1" defaultValue="1"
-                  className="w-14 bg-dark-700 border border-dark-500 rounded px-1.5 py-1 text-xs text-white" />
+                <input type="number" name="minRR" step="0.1" defaultValue=""
+                  className="w-14 bg-dark-700 border border-dark-500 rounded px-1.5 py-1 text-xs text-white" placeholder="1.0" />
               </div>
               <div className="flex items-center gap-1">
                 <label className="text-[10px] text-gray-500">Min Total%</label>
-                <input type="number" name="minTotalReturn" defaultValue="0"
-                  className="w-14 bg-dark-700 border border-dark-500 rounded px-1.5 py-1 text-xs text-white" />
+                <input type="number" name="minTotalReturn" defaultValue=""
+                  className="w-14 bg-dark-700 border border-dark-500 rounded px-1.5 py-1 text-xs text-white" placeholder="0" />
               </div>
               <div className="flex items-center gap-1">
                 <label className="text-[10px] text-gray-500">Min Avg%</label>
@@ -2379,8 +2586,8 @@ function TradingArena({ isAdmin, token }) {
               </div>
               <div className="flex items-center gap-1">
                 <label className="text-[10px] text-gray-500">Min Net%</label>
-                <input type="number" name="minNetProfit" defaultValue="0"
-                  className="w-14 bg-dark-700 border border-dark-500 rounded px-1.5 py-1 text-xs text-white" />
+                <input type="number" name="minNetProfit" defaultValue=""
+                  className="w-14 bg-dark-700 border border-dark-500 rounded px-1.5 py-1 text-xs text-white" placeholder="0" />
               </div>
               <div className="flex items-center gap-1">
                 <label className="text-[10px] text-gray-500">Min MCap (Mrd)</label>
@@ -2443,7 +2650,7 @@ function TradingArena({ isAdmin, token }) {
                 <div className="flex items-center gap-3 mt-3 mb-3">
                   <div className="flex items-center gap-1">
                     <label className="text-[10px] text-gray-500">Betrag/Trade EUR</label>
-                    <input type="number" value={simTradeAmount} onChange={e => setSimTradeAmount(Number(e.target.value) || 500)}
+                    <input type="number" value={simTradeAmount} onChange={e => setSimTradeAmount(Number(e.target.value) || 100)}
                       className="w-20 bg-dark-700 border border-dark-500 rounded px-2 py-1.5 text-xs text-white" />
                   </div>
                   <button

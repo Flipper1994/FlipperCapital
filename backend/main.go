@@ -405,7 +405,7 @@ type BXtrenderConfig struct {
 	LongL1     int       `json:"long_l1" gorm:"default:20"`
 	LongL2     int       `json:"long_l2" gorm:"default:15"`
 	TslPercent float64   `json:"tsl_percent" gorm:"default:20.0"`
-	TslEnabled bool      `json:"tsl_enabled" gorm:"default:true"`
+	TslEnabled bool      `json:"tsl_enabled"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
@@ -417,11 +417,11 @@ type BXtrenderQuantConfig struct {
 	ShortL3      int       `json:"short_l3" gorm:"default:15"`       // Short RSI period
 	LongL1       int       `json:"long_l1" gorm:"default:20"`        // Long EMA period
 	LongL2       int       `json:"long_l2" gorm:"default:15"`        // Long RSI period
-	MaFilterOn   bool      `json:"ma_filter_on" gorm:"default:true"` // Enable MA filter
+	MaFilterOn   bool      `json:"ma_filter_on"` // Enable MA filter
 	MaLength     int       `json:"ma_length" gorm:"default:200"`     // MA filter length
 	MaType       string    `json:"ma_type" gorm:"default:EMA"`       // MA type: "EMA" or "SMA"
 	TslPercent   float64   `json:"tsl_percent" gorm:"default:20.0"`  // Trailing stop loss percentage
-	TslEnabled   bool      `json:"tsl_enabled" gorm:"default:true"`
+	TslEnabled   bool      `json:"tsl_enabled"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
@@ -506,11 +506,11 @@ type BXtrenderDitzConfig struct {
 	ShortL3      int       `json:"short_l3" gorm:"default:15"`
 	LongL1       int       `json:"long_l1" gorm:"default:20"`
 	LongL2       int       `json:"long_l2" gorm:"default:15"`
-	MaFilterOn   bool      `json:"ma_filter_on" gorm:"default:true"`
+	MaFilterOn   bool      `json:"ma_filter_on"`
 	MaLength     int       `json:"ma_length" gorm:"default:200"`
 	MaType       string    `json:"ma_type" gorm:"default:EMA"`
 	TslPercent   float64   `json:"tsl_percent" gorm:"default:20.0"`
-	TslEnabled   bool      `json:"tsl_enabled" gorm:"default:true"`
+	TslEnabled   bool      `json:"tsl_enabled"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
@@ -599,7 +599,7 @@ type BXtrenderTraderConfig struct {
 	MaLength     int       `json:"ma_length" gorm:"default:200"`
 	MaType       string    `json:"ma_type" gorm:"default:EMA"`
 	TslPercent   float64   `json:"tsl_percent" gorm:"default:20.0"`
-	TslEnabled   bool      `json:"tsl_enabled" gorm:"default:true"`
+	TslEnabled   bool      `json:"tsl_enabled"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
@@ -1067,6 +1067,14 @@ type ohlcvCacheEntry struct {
 	LastAccess time.Time
 }
 
+// Arena-only OHLCV cache — completely separate from live trading cache
+// Prevents file corruption, cache interference, and mutex contention between Arena batch and Live
+var (
+	arenaOHLCVMemCache   map[string]map[string]*ohlcvCacheEntry
+	arenaOHLCVMemCacheMu sync.RWMutex
+	arenaOHLCVCacheDir   string
+)
+
 // Live-Trading: serialized position writes to avoid SQLite lock contention
 var livePositionWriteCh = make(chan func(), 256)
 
@@ -1278,27 +1286,466 @@ func setOHLCVInMemCache(symbol, interval string, bars []OHLCV) {
 
 // getOHLCVMemCacheSymbols returns all symbols that have cached data for a given interval
 // Checks both memory and files on disk
-func getOHLCVMemCacheSymbols(interval string) map[string]bool {
+// --- Arena-only OHLCV cache functions (separate from live trading) ---
+
+func initArenaOHLCVCache() {
+	arenaOHLCVMemCacheMu.Lock()
+	arenaOHLCVMemCache = make(map[string]map[string]*ohlcvCacheEntry)
+	arenaOHLCVMemCacheMu.Unlock()
+	os.MkdirAll(arenaOHLCVCacheDir, 0755)
+	fileCount := 0
+	files, _ := filepath.Glob(filepath.Join(arenaOHLCVCacheDir, "*.json.gz"))
+	fileCount = len(files)
+	log.Printf("[ArenaCache] Ready: %d files in %s (lazy-load)", fileCount, arenaOHLCVCacheDir)
+	go arenaOHLCVLRUEvictor()
+}
+
+// arenaOHLCVLRUEvictor removes arena entries not accessed for 1 hour
+func arenaOHLCVLRUEvictor() {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		arenaOHLCVMemCacheMu.Lock()
+		evicted := 0
+		cutoff := time.Now().Add(-1 * time.Hour)
+		for sym, intervals := range arenaOHLCVMemCache {
+			for iv, entry := range intervals {
+				if entry.LastAccess.Before(cutoff) {
+					delete(intervals, iv)
+					evicted++
+				}
+			}
+			if len(intervals) == 0 {
+				delete(arenaOHLCVMemCache, sym)
+			}
+		}
+		arenaOHLCVMemCacheMu.Unlock()
+		if evicted > 0 {
+			log.Printf("[ArenaCache] LRU evicted %d entries", evicted)
+		}
+	}
+}
+
+func arenaOHLCVFilePath(symbol, interval string) string {
+	safe := strings.ReplaceAll(symbol, "/", "_")
+	safe = strings.ReplaceAll(safe, "\\", "_")
+	return filepath.Join(arenaOHLCVCacheDir, safe+"_"+interval+".json.gz")
+}
+
+func writeArenaOHLCVFile(symbol, interval string, bars []OHLCV) error {
+	data, err := json.Marshal(bars)
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	gz.Write(data)
+	gz.Close()
+	return os.WriteFile(arenaOHLCVFilePath(symbol, interval), buf.Bytes(), 0644)
+}
+
+func readArenaOHLCVFile(symbol, interval string) ([]OHLCV, time.Time, error) {
+	path := arenaOHLCVFilePath(symbol, interval)
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	defer gz.Close()
+	data, err := io.ReadAll(gz)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	var bars []OHLCV
+	if err := json.Unmarshal(data, &bars); err != nil {
+		return nil, time.Time{}, err
+	}
+	return bars, fi.ModTime(), nil
+}
+
+func getArenaOHLCVFromMemCache(symbol, interval string) ([]OHLCV, bool) {
+	arenaOHLCVMemCacheMu.RLock()
+	if m, ok := arenaOHLCVMemCache[symbol]; ok {
+		if entry, ok := m[interval]; ok && len(entry.Bars) > 0 {
+			entry.LastAccess = time.Now()
+			arenaOHLCVMemCacheMu.RUnlock()
+			return entry.Bars, true
+		}
+	}
+	arenaOHLCVMemCacheMu.RUnlock()
+
+	// Slow path: load from arena file
+	bars, _, err := readArenaOHLCVFile(symbol, interval)
+	if err != nil || len(bars) == 0 {
+		return nil, false
+	}
+
+	arenaOHLCVMemCacheMu.Lock()
+	if arenaOHLCVMemCache[symbol] == nil {
+		arenaOHLCVMemCache[symbol] = make(map[string]*ohlcvCacheEntry)
+	}
+	arenaOHLCVMemCache[symbol][interval] = &ohlcvCacheEntry{Bars: bars, LastAccess: time.Now()}
+	arenaOHLCVMemCacheMu.Unlock()
+	return bars, true
+}
+
+func setArenaOHLCVInMemCache(symbol, interval string, bars []OHLCV) {
+	arenaOHLCVMemCacheMu.Lock()
+	if arenaOHLCVMemCache == nil {
+		arenaOHLCVMemCache = make(map[string]map[string]*ohlcvCacheEntry)
+	}
+	if arenaOHLCVMemCache[symbol] == nil {
+		arenaOHLCVMemCache[symbol] = make(map[string]*ohlcvCacheEntry)
+	}
+	arenaOHLCVMemCache[symbol][interval] = &ohlcvCacheEntry{Bars: bars, LastAccess: time.Now()}
+	arenaOHLCVMemCacheMu.Unlock()
+
+	go writeArenaOHLCVFile(symbol, interval, bars)
+}
+
+func saveArenaOHLCVCache(symbol, interval string, ohlcv []OHLCV) {
+	setArenaOHLCVInMemCache(symbol, interval, ohlcv)
+}
+
+func getArenaOHLCVMemCacheSymbols(interval string) map[string]bool {
 	result := make(map[string]bool)
-	// Memory
-	ohlcvMemCacheMu.RLock()
-	for sym, intervals := range ohlcvMemCache {
+	arenaOHLCVMemCacheMu.RLock()
+	for sym, intervals := range arenaOHLCVMemCache {
 		if _, ok := intervals[interval]; ok {
 			result[sym] = true
 		}
 	}
-	ohlcvMemCacheMu.RUnlock()
-	// Files on disk
-	pattern := filepath.Join(ohlcvCacheDir, "*_"+interval+".json.gz")
+	arenaOHLCVMemCacheMu.RUnlock()
+	pattern := filepath.Join(arenaOHLCVCacheDir, "*_"+interval+".json.gz")
 	files, _ := filepath.Glob(pattern)
 	for _, f := range files {
 		base := filepath.Base(f)
 		sym := strings.TrimSuffix(base, "_"+interval+".json.gz")
-		sym = strings.ReplaceAll(sym, "_", ".") // BRK_B → BRK.B (reverse sanitize — only for dots)
+		sym = strings.ReplaceAll(sym, "_", ".")
 		result[sym] = true
 	}
 	return result
 }
+
+func getArenaOHLCVCached(symbol, interval string, freshness time.Duration) ([]OHLCV, error) {
+	// Arena always aggregates 2h/4h from 60m (no Alpaca)
+	if interval == "2h" || interval == "4h" {
+		factor := 2
+		if interval == "4h" {
+			factor = 4
+		}
+		hourly, err := getArenaOHLCVCached(symbol, "60m", freshness)
+		if err != nil {
+			return nil, err
+		}
+		return aggregateOHLCV(hourly, factor), nil
+	}
+
+	cacheInterval := interval
+	switch interval {
+	case "1h":
+		cacheInterval = "60m"
+	case "1D":
+		cacheInterval = "1d"
+	case "1W":
+		cacheInterval = "1wk"
+	}
+
+	if bars, ok := getArenaOHLCVFromMemCache(symbol, cacheInterval); ok {
+		if freshness == 0 {
+			return bars, nil
+		}
+		if _, modTime, err := readArenaOHLCVFile(symbol, cacheInterval); err == nil {
+			if time.Since(modTime) < freshness {
+				return bars, nil
+			}
+		}
+	}
+
+	if freshness == 0 {
+		return nil, fmt.Errorf("no arena cache for %s/%s", symbol, interval)
+	}
+
+	yahooInterval := cacheInterval
+	period := backtestPeriodMap[yahooInterval]
+	if period == "" {
+		period = "60d"
+	}
+
+	if cached, ok := getArenaOHLCVFromMemCache(symbol, cacheInterval); ok && len(cached) > 0 {
+		deltaPeriod := getOHLCVDeltaPeriod(yahooInterval)
+		freshBars, err := fetchOHLCVFromYahoo(symbol, deltaPeriod, yahooInterval)
+		if err == nil && len(freshBars) > 0 {
+			merged := mergeOHLCV(cached, freshBars)
+			saveArenaOHLCVCache(symbol, yahooInterval, merged)
+			return merged, nil
+		}
+		return cached, nil
+	}
+
+	ohlcv, err := fetchOHLCVFromYahoo(symbol, period, yahooInterval)
+	if err != nil {
+		return nil, err
+	}
+	if len(ohlcv) == 0 {
+		return nil, fmt.Errorf("no data for %s/%s", symbol, interval)
+	}
+
+	saveArenaOHLCVCache(symbol, yahooInterval, ohlcv)
+	return ohlcv, nil
+}
+
+// --- End of Arena-only OHLCV cache functions ---
+
+// --- Bot/Dashboard-only OHLCV cache (separate from live trading and arena) ---
+// Prevents cache interference between bot calculations and live trading
+var (
+	botOHLCVMemCache   map[string]map[string]*ohlcvCacheEntry
+	botOHLCVMemCacheMu sync.RWMutex
+	botOHLCVCacheDir   string
+)
+
+func initBotOHLCVCache() {
+	botOHLCVMemCacheMu.Lock()
+	botOHLCVMemCache = make(map[string]map[string]*ohlcvCacheEntry)
+	botOHLCVMemCacheMu.Unlock()
+	os.MkdirAll(botOHLCVCacheDir, 0755)
+	fileCount := 0
+	files, _ := filepath.Glob(filepath.Join(botOHLCVCacheDir, "*.json.gz"))
+	fileCount = len(files)
+	log.Printf("[BotCache] Ready: %d files in %s (lazy-load)", fileCount, botOHLCVCacheDir)
+	go botOHLCVLRUEvictor()
+}
+
+func botOHLCVLRUEvictor() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		botOHLCVMemCacheMu.Lock()
+		evicted := 0
+		cutoff := time.Now().Add(-30 * time.Minute)
+		for sym, intervals := range botOHLCVMemCache {
+			for iv, entry := range intervals {
+				if entry.LastAccess.Before(cutoff) {
+					delete(intervals, iv)
+					evicted++
+				}
+			}
+			if len(intervals) == 0 {
+				delete(botOHLCVMemCache, sym)
+			}
+		}
+		botOHLCVMemCacheMu.Unlock()
+		if evicted > 0 {
+			log.Printf("[BotCache] LRU evicted %d entries", evicted)
+		}
+	}
+}
+
+func botOHLCVFilePath(symbol, interval string) string {
+	safe := strings.ReplaceAll(symbol, "/", "_")
+	safe = strings.ReplaceAll(safe, "\\", "_")
+	return filepath.Join(botOHLCVCacheDir, safe+"_"+interval+".json.gz")
+}
+
+func writeBotOHLCVFile(symbol, interval string, bars []OHLCV) error {
+	data, err := json.Marshal(bars)
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	gz.Write(data)
+	gz.Close()
+	return os.WriteFile(botOHLCVFilePath(symbol, interval), buf.Bytes(), 0644)
+}
+
+func readBotOHLCVFile(symbol, interval string) ([]OHLCV, time.Time, error) {
+	path := botOHLCVFilePath(symbol, interval)
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	defer gz.Close()
+	data, err := io.ReadAll(gz)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	var bars []OHLCV
+	if err := json.Unmarshal(data, &bars); err != nil {
+		return nil, time.Time{}, err
+	}
+	return bars, fi.ModTime(), nil
+}
+
+func getBotOHLCVFromMemCache(symbol, interval string) ([]OHLCV, bool) {
+	botOHLCVMemCacheMu.RLock()
+	if m, ok := botOHLCVMemCache[symbol]; ok {
+		if entry, ok := m[interval]; ok && len(entry.Bars) > 0 {
+			entry.LastAccess = time.Now()
+			botOHLCVMemCacheMu.RUnlock()
+			return entry.Bars, true
+		}
+	}
+	botOHLCVMemCacheMu.RUnlock()
+
+	bars, _, err := readBotOHLCVFile(symbol, interval)
+	if err != nil || len(bars) == 0 {
+		return nil, false
+	}
+
+	botOHLCVMemCacheMu.Lock()
+	if botOHLCVMemCache[symbol] == nil {
+		botOHLCVMemCache[symbol] = make(map[string]*ohlcvCacheEntry)
+	}
+	botOHLCVMemCache[symbol][interval] = &ohlcvCacheEntry{Bars: bars, LastAccess: time.Now()}
+	botOHLCVMemCacheMu.Unlock()
+	return bars, true
+}
+
+func setBotOHLCVInMemCache(symbol, interval string, bars []OHLCV) {
+	botOHLCVMemCacheMu.Lock()
+	if botOHLCVMemCache == nil {
+		botOHLCVMemCache = make(map[string]map[string]*ohlcvCacheEntry)
+	}
+	if botOHLCVMemCache[symbol] == nil {
+		botOHLCVMemCache[symbol] = make(map[string]*ohlcvCacheEntry)
+	}
+	botOHLCVMemCache[symbol][interval] = &ohlcvCacheEntry{Bars: bars, LastAccess: time.Now()}
+	botOHLCVMemCacheMu.Unlock()
+
+	go writeBotOHLCVFile(symbol, interval, bars)
+}
+
+func saveBotOHLCVCache(symbol, interval string, ohlcv []OHLCV) {
+	setBotOHLCVInMemCache(symbol, interval, ohlcv)
+}
+
+func getBotOHLCVMemCacheSymbols(interval string) map[string]bool {
+	result := make(map[string]bool)
+	botOHLCVMemCacheMu.RLock()
+	for sym, intervals := range botOHLCVMemCache {
+		if _, ok := intervals[interval]; ok {
+			result[sym] = true
+		}
+	}
+	botOHLCVMemCacheMu.RUnlock()
+	pattern := filepath.Join(botOHLCVCacheDir, "*_"+interval+".json.gz")
+	files, _ := filepath.Glob(pattern)
+	for _, f := range files {
+		base := filepath.Base(f)
+		sym := strings.TrimSuffix(base, "_"+interval+".json.gz")
+		sym = strings.ReplaceAll(sym, "_", ".")
+		result[sym] = true
+	}
+	return result
+}
+
+func getBotOHLCVCached(symbol, interval string, freshness time.Duration) ([]OHLCV, error) {
+	if (interval == "2h" || interval == "4h") && (alpacaDataKey == "" || isNonUSStock(symbol)) {
+		factor := 2
+		if interval == "4h" {
+			factor = 4
+		}
+		hourly, err := getBotOHLCVCached(symbol, "60m", freshness)
+		if err != nil {
+			return nil, err
+		}
+		return aggregateOHLCV(hourly, factor), nil
+	}
+
+	cacheInterval := interval
+	switch interval {
+	case "1h":
+		cacheInterval = "60m"
+	case "1D":
+		cacheInterval = "1d"
+	case "1W":
+		cacheInterval = "1wk"
+	}
+
+	if bars, ok := getBotOHLCVFromMemCache(symbol, cacheInterval); ok {
+		if freshness == 0 {
+			return bars, nil
+		}
+		if _, modTime, err := readBotOHLCVFile(symbol, cacheInterval); err == nil {
+			if time.Since(modTime) < freshness {
+				return bars, nil
+			}
+		}
+	}
+
+	if freshness == 0 {
+		return nil, fmt.Errorf("no bot cache for %s/%s", symbol, interval)
+	}
+
+	yahooInterval := cacheInterval
+	period := backtestPeriodMap[yahooInterval]
+	if period == "" {
+		period = "60d"
+	}
+
+	if cached, ok := getBotOHLCVFromMemCache(symbol, cacheInterval); ok && len(cached) > 0 {
+		deltaPeriod := getOHLCVDeltaPeriod(yahooInterval)
+		freshBars, err := fetchOHLCVFromYahoo(symbol, deltaPeriod, yahooInterval)
+		if err == nil && len(freshBars) > 0 {
+			merged := mergeOHLCV(cached, freshBars)
+			saveBotOHLCVCache(symbol, yahooInterval, merged)
+			return merged, nil
+		}
+		return cached, nil
+	}
+
+	ohlcv, err := fetchOHLCVFromYahoo(symbol, period, yahooInterval)
+	if err != nil {
+		return nil, err
+	}
+	if len(ohlcv) == 0 {
+		return nil, fmt.Errorf("no data for %s/%s", symbol, interval)
+	}
+
+	saveBotOHLCVCache(symbol, yahooInterval, ohlcv)
+	return ohlcv, nil
+}
+
+func getBotMonthlyOHLCVCached(symbol string, freshness time.Duration) ([]OHLCV, error) {
+	if bars, ok := getBotOHLCVFromMemCache(symbol, "1mo"); ok {
+		if freshness <= 0 {
+			return bars, nil
+		}
+		if _, modTime, err := readBotOHLCVFile(symbol, "1mo"); err == nil && time.Since(modTime) < freshness {
+			return bars, nil
+		}
+	}
+
+	data, err := fetchHistoricalDataServer(symbol)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(data) > 0 {
+		saveBotOHLCVCache(symbol, "1mo", data)
+	}
+
+	return data, nil
+}
+
+// --- End of Bot/Dashboard-only OHLCV cache functions ---
 
 func getGlobalSetting(key string) string {
 	var s GlobalSetting
@@ -1865,6 +2312,14 @@ func main() {
 	ohlcvCacheDir = filepath.Join(filepath.Dir(dbPath), "ohlcv")
 	initOHLCVFileCache()
 
+	// Init separate arena OHLCV cache (isolated from live trading)
+	arenaOHLCVCacheDir = filepath.Join(filepath.Dir(dbPath), "ohlcv_arena")
+	initArenaOHLCVCache()
+
+	// Init separate bot/dashboard OHLCV cache (isolated from live trading and arena)
+	botOHLCVCacheDir = filepath.Join(filepath.Dir(dbPath), "ohlcv_bot")
+	initBotOHLCVCache()
+
 	// Start live-trading position writer (serialized DB writes)
 	go livePositionWriter()
 
@@ -2134,6 +2589,7 @@ func main() {
 		api.GET("/admin/stats", authMiddleware(), adminOnly(), getAdminStats)
 		api.GET("/admin/traffic", authMiddleware(), adminOnly(), getAdminTraffic)
 		api.GET("/admin/update-all-stocks", authMiddleware(), adminOnly(), updateAllWatchlistStocks)
+		api.POST("/admin/prefetch-monthly-ohlcv", authMiddleware(), adminOnly(), prefetchMonthlyOHLCV)
 		api.GET("/admin/tracked-diff", authMiddleware(), adminOnly(), getTrackedDiff)
 		api.DELETE("/admin/tracked/:symbol", authMiddleware(), adminOnly(), deleteTrackedStock)
 		api.GET("/admin/bxtrender-config", authMiddleware(), adminOnly(), getBXtrenderConfig)
@@ -2160,8 +2616,6 @@ func main() {
 		api.POST("/trading/backtest", authMiddleware(), runBacktestHandler)
 		api.POST("/trading/backtest-debug", authMiddleware(), backtestDebugHandler)
 		api.GET("/trading/backtest-results/:symbol", authMiddleware(), getBacktestResultsHandler)
-		api.POST("/trading/backtest-batch", authMiddleware(), adminOnly(), backtestBatchHandler)
-		api.POST("/trading/backtest-watchlist", authMiddleware(), backtestWatchlistHandler)
 		api.POST("/trading/arena/prefetch", authMiddleware(), arenaPrefetchHandler)
 		api.GET("/trading/strategy-settings", authMiddleware(), getStrategySettings)
 		api.POST("/trading/strategy-settings", authMiddleware(), saveStrategySettings)
@@ -3133,37 +3587,65 @@ type YahooChartResponse struct {
 	} `json:"chart"`
 }
 
-// aggregateOHLCV combines consecutive OHLCV candles by the given factor.
+// aggregateOHLCV combines consecutive OHLCV candles by the given factor,
+// respecting trading-day boundaries so that no candle spans overnight gaps.
+// Within each trading day, bars are grouped into chunks of `factor` starting
+// from the first bar of that day (aligned to market open, like TradingView).
+// Incomplete groups at day end are emitted as shorter candles.
 // O=first.Open, H=max(High), L=min(Low), C=last.Close, V=sum(Volume)
 func aggregateOHLCV(data []OHLCV, factor int) []OHLCV {
 	if factor <= 1 || len(data) == 0 {
 		return data
 	}
+
 	result := make([]OHLCV, 0, len(data)/factor+1)
-	for i := 0; i < len(data); i += factor {
-		end := i + factor
-		if end > len(data) {
-			end = len(data)
-		}
-		chunk := data[i:end]
-		agg := OHLCV{
-			Time:   chunk[0].Time,
-			Open:   chunk[0].Open,
-			High:   chunk[0].High,
-			Low:    chunk[0].Low,
-			Close:  chunk[len(chunk)-1].Close,
-			Volume: 0,
-		}
-		for _, bar := range chunk {
-			if bar.High > agg.High {
-				agg.High = bar.High
+
+	// Group bars by trading day, then aggregate within each day
+	dayStart := 0
+	for dayStart < len(data) {
+		// Determine the trading day of the first bar in this group
+		t0 := time.Unix(data[dayStart].Time, 0).UTC()
+		day0 := t0.YearDay() + t0.Year()*400 // unique day ID
+
+		// Find end of this trading day
+		dayEnd := dayStart + 1
+		for dayEnd < len(data) {
+			tn := time.Unix(data[dayEnd].Time, 0).UTC()
+			dayN := tn.YearDay() + tn.Year()*400
+			if dayN != day0 {
+				break
 			}
-			if bar.Low < agg.Low {
-				agg.Low = bar.Low
-			}
-			agg.Volume += bar.Volume
+			dayEnd++
 		}
-		result = append(result, agg)
+
+		// Aggregate within this day in chunks of `factor`
+		for i := dayStart; i < dayEnd; i += factor {
+			end := i + factor
+			if end > dayEnd {
+				end = dayEnd
+			}
+			chunk := data[i:end]
+			agg := OHLCV{
+				Time:   chunk[0].Time,
+				Open:   chunk[0].Open,
+				High:   chunk[0].High,
+				Low:    chunk[0].Low,
+				Close:  chunk[len(chunk)-1].Close,
+				Volume: 0,
+			}
+			for _, bar := range chunk {
+				if bar.High > agg.High {
+					agg.High = bar.High
+				}
+				if bar.Low < agg.Low {
+					agg.Low = bar.Low
+				}
+				agg.Volume += bar.Volume
+			}
+			result = append(result, agg)
+		}
+
+		dayStart = dayEnd
 	}
 	return result
 }
@@ -3175,7 +3657,7 @@ func getHistory(c *gin.Context) {
 
 	// For monthly interval: use persistent cache (saves Yahoo + TwelveData calls)
 	if interval == "1mo" {
-		cached, err := getMonthlyOHLCVCached(symbol, 12*time.Hour)
+		cached, err := getBotMonthlyOHLCVCached(symbol, 12*time.Hour)
 		if err == nil && len(cached) > 0 {
 			c.JSON(http.StatusOK, gin.H{
 				"symbol":            symbol,
@@ -3190,7 +3672,7 @@ func getHistory(c *gin.Context) {
 
 	// For non-monthly intervals: check OHLCV cache first (getOHLCVCached handles 2h/4h aggregation)
 	if interval != "1mo" {
-		cached, err := getOHLCVCached(symbol, interval, 15*time.Minute)
+		cached, err := getBotOHLCVCached(symbol, interval, 15*time.Minute)
 		if err == nil && len(cached) > 0 {
 			cutoff := periodToTime(period)
 			filtered := filterOHLCVAfter(cached, cutoff)
@@ -4872,20 +5354,16 @@ func fetchHistoricalData(symbol string, period string) []OHLCV {
 	}
 	histCacheMu.RUnlock()
 
-	// 2. Persistent cache (OHLCVCache "1d")
-	var dbCache OHLCVCache
-	if db.Where("symbol = ? AND interval = ?", symbol, "1d").First(&dbCache).Error == nil {
-		if time.Since(dbCache.UpdatedAt) < 12*time.Hour {
-			var fullData []OHLCV
-			if json.Unmarshal([]byte(dbCache.DataJSON), &fullData) == nil && len(fullData) > 0 {
-				cutoff := periodToTime(period)
-				filtered := filterOHLCVAfter(fullData, cutoff)
-				if len(filtered) > 0 {
-					histCacheMu.Lock()
-					histCache[cacheKey] = histCacheEntry{Data: filtered, FetchedAt: time.Now()}
-					histCacheMu.Unlock()
-					return filtered
-				}
+	// 2. Persistent cache (bot file cache "1d")
+	if cached, ok := getBotOHLCVFromMemCache(symbol, "1d"); ok && len(cached) > 0 {
+		if _, modTime, err := readBotOHLCVFile(symbol, "1d"); err == nil && time.Since(modTime) < 12*time.Hour {
+			cutoff := periodToTime(period)
+			filtered := filterOHLCVAfter(cached, cutoff)
+			if len(filtered) > 0 {
+				histCacheMu.Lock()
+				histCache[cacheKey] = histCacheEntry{Data: filtered, FetchedAt: time.Now()}
+				histCacheMu.Unlock()
+				return filtered
 			}
 		}
 	}
@@ -4953,7 +5431,7 @@ func fetchHistoricalData(symbol string, period string) []OHLCV {
 	}
 
 	// 4. Store in both caches
-	saveOHLCVCache(symbol, "1d", data)
+	saveBotOHLCVCache(symbol, "1d", data)
 	histCacheMu.Lock()
 	histCache[cacheKey] = histCacheEntry{Data: data, FetchedAt: time.Now()}
 	histCacheMu.Unlock()
@@ -5514,6 +5992,7 @@ func getBXtrenderQuantConfigPublic(c *gin.Context) {
 			MaLength:   200,
 			MaType:     "EMA",
 			TslPercent: 20.0,
+			TslEnabled: true,
 		}
 	}
 
@@ -5536,6 +6015,7 @@ func getBXtrenderQuantConfig(c *gin.Context) {
 			MaLength:   200,
 			MaType:     "EMA",
 			TslPercent: 20.0,
+			TslEnabled: true,
 		}
 	}
 
@@ -5582,7 +6062,7 @@ func updateBXtrenderQuantConfig(c *gin.Context) {
 			TslEnabled: tslEnabled,
 			UpdatedAt:  time.Now(),
 		}
-		db.Create(&config)
+		db.Select("*").Create(&config)
 	} else {
 		config.ShortL1 = req.ShortL1
 		config.ShortL2 = req.ShortL2
@@ -5597,7 +6077,7 @@ func updateBXtrenderQuantConfig(c *gin.Context) {
 			config.TslEnabled = *req.TslEnabled
 		}
 		config.UpdatedAt = time.Now()
-		db.Save(&config)
+		db.Select("*").Save(&config)
 	}
 
 	c.JSON(http.StatusOK, config)
@@ -6078,8 +6558,8 @@ func getBXtrenderConfig(c *gin.Context) {
 
 	// Create default configs if they don't exist
 	if len(configs) == 0 {
-		defensive := BXtrenderConfig{Mode: "defensive", ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15}
-		aggressive := BXtrenderConfig{Mode: "aggressive", ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15}
+		defensive := BXtrenderConfig{Mode: "defensive", ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, TslPercent: 20.0, TslEnabled: true}
+		aggressive := BXtrenderConfig{Mode: "aggressive", ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, TslPercent: 20.0, TslEnabled: true}
 		db.Create(&defensive)
 		db.Create(&aggressive)
 		configs = []BXtrenderConfig{defensive, aggressive}
@@ -6095,8 +6575,8 @@ func getBXtrenderConfigPublic(c *gin.Context) {
 
 	// Create default configs if they don't exist
 	if len(configs) == 0 {
-		defensive := BXtrenderConfig{Mode: "defensive", ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15}
-		aggressive := BXtrenderConfig{Mode: "aggressive", ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15}
+		defensive := BXtrenderConfig{Mode: "defensive", ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, TslPercent: 20.0, TslEnabled: true}
+		aggressive := BXtrenderConfig{Mode: "aggressive", ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, TslPercent: 20.0, TslEnabled: true}
 		db.Create(&defensive)
 		db.Create(&aggressive)
 		configs = []BXtrenderConfig{defensive, aggressive}
@@ -6146,7 +6626,7 @@ func updateBXtrenderConfig(c *gin.Context) {
 			TslPercent: req.TslPercent,
 			TslEnabled: tslEnabled,
 		}
-		db.Create(&config)
+		db.Select("*").Create(&config)
 	} else {
 		// Update existing config
 		config.ShortL1 = req.ShortL1
@@ -6160,7 +6640,7 @@ func updateBXtrenderConfig(c *gin.Context) {
 		if req.TslEnabled != nil {
 			config.TslEnabled = *req.TslEnabled
 		}
-		db.Save(&config)
+		db.Select("*").Save(&config)
 	}
 
 	c.JSON(http.StatusOK, config)
@@ -6198,6 +6678,90 @@ func updateAllWatchlistStocks(c *gin.Context) {
 		"stocks":       stocks,
 		"total":        len(stocks),
 		"last_updates": lastUpdates,
+	})
+}
+
+func prefetchMonthlyOHLCV(c *gin.Context) {
+	var req struct {
+		Symbols []string `json:"symbols"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.Symbols) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "symbols required"})
+		return
+	}
+
+	type result struct {
+		Symbol string `json:"symbol"`
+		OK     bool   `json:"ok"`
+		Bars   int    `json:"bars"`
+		Source string `json:"source"`
+		Error  string `json:"error,omitempty"`
+	}
+
+	results := make([]result, len(req.Symbols))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 5) // max 5 concurrent Yahoo requests (konservativ)
+
+	for i, sym := range req.Symbols {
+		wg.Add(1)
+		go func(idx int, symbol string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			symbol = strings.ToUpper(symbol)
+
+			// Prüfe ob Cache frisch genug ist (Memory + Datei)
+			if bars, ok := getBotOHLCVFromMemCache(symbol, "1mo"); ok && len(bars) > 0 {
+				if _, modTime, err := readBotOHLCVFile(symbol, "1mo"); err == nil && time.Since(modTime) < 12*time.Hour {
+					results[idx] = result{Symbol: symbol, OK: true, Bars: len(bars), Source: "cache"}
+					return
+				}
+			}
+
+			// Yahoo mit Crumb-Auth (query2)
+			data, err := fetchOHLCVFromYahoo(symbol, "max", "1mo")
+			if err != nil {
+				// Fallback: unauthenticated (query1)
+				data, err = fetchHistoricalDataServer(symbol)
+			}
+			if err != nil {
+				results[idx] = result{Symbol: symbol, OK: false, Error: err.Error()}
+				return
+			}
+			if len(data) == 0 {
+				results[idx] = result{Symbol: symbol, OK: false, Error: "no data"}
+				return
+			}
+
+			// Memory-Cache setzen
+			setBotOHLCVInMemCache(symbol, "1mo", data)
+			// Synchron auf Disk schreiben (nicht async!) damit getHistory sofort Cache-Hit hat
+			if err := writeBotOHLCVFile(symbol, "1mo", data); err != nil {
+				fmt.Printf("[Prefetch] %s: disk write error: %v\n", symbol, err)
+			}
+
+			results[idx] = result{Symbol: symbol, OK: true, Bars: len(data), Source: "yahoo"}
+		}(i, sym)
+	}
+
+	wg.Wait()
+
+	okCount := 0
+	failCount := 0
+	for _, r := range results {
+		if r.OK {
+			okCount++
+		} else {
+			failCount++
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"results": results,
+		"total":   len(req.Symbols),
+		"ok":      okCount,
+		"failed":  failCount,
 	})
 }
 
@@ -13841,19 +14405,19 @@ func runFullStockUpdate(triggeredBy string) {
 
 	// Set defaults if not found
 	if defensiveConfig.ID == 0 {
-		defensiveConfig = BXtrenderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15}
+		defensiveConfig = BXtrenderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, TslPercent: 20.0, TslEnabled: true}
 	}
 	if aggressiveConfig.ID == 0 {
-		aggressiveConfig = BXtrenderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15}
+		aggressiveConfig = BXtrenderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, TslPercent: 20.0, TslEnabled: true}
 	}
 	if quantConfig.ID == 0 {
-		quantConfig = BXtrenderQuantConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: true, MaLength: 200, MaType: "EMA", TslPercent: 20.0}
+		quantConfig = BXtrenderQuantConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: true, MaLength: 200, MaType: "EMA", TslPercent: 20.0, TslEnabled: true}
 	}
 	if ditzConfig.ID == 0 {
-		ditzConfig = BXtrenderDitzConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: true, MaLength: 200, MaType: "EMA", TslPercent: 20.0}
+		ditzConfig = BXtrenderDitzConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: true, MaLength: 200, MaType: "EMA", TslPercent: 20.0, TslEnabled: true}
 	}
 	if traderConfig.ID == 0 {
-		traderConfig = BXtrenderTraderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: false, MaLength: 200, MaType: "EMA", TslPercent: 20.0}
+		traderConfig = BXtrenderTraderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: false, MaLength: 200, MaType: "EMA", TslPercent: 20.0, TslEnabled: true}
 	}
 
 	// --- Phase 1: Batch-fetch all market caps upfront (saves ~2000 individual API calls) ---
@@ -13887,12 +14451,11 @@ func runFullStockUpdate(triggeredBy string) {
 		}
 
 		// Check if monthly OHLCV cache is still fresh (to decide on rate limiting)
-		needsFetch := false
-		var cache OHLCVCache
-		if db.Where("symbol = ? AND interval = ?", stock.Symbol, "1mo").First(&cache).Error != nil {
-			needsFetch = true // no cache entry
-		} else if time.Since(cache.UpdatedAt) >= cacheFreshness {
-			needsFetch = true // cache stale
+		needsFetch := true
+		if _, modTime, err := readBotOHLCVFile(stock.Symbol, "1mo"); err == nil {
+			if time.Since(modTime) < cacheFreshness {
+				needsFetch = false
+			}
 		}
 
 		// Rate limit only when we'll actually hit Yahoo
@@ -14057,7 +14620,7 @@ func generateSignalNotifications(preSignals map[string]string) {
 // marketCap is passed in from the caller (batch-fetched upfront).
 // cacheFreshness controls how long the monthly OHLCV cache is considered fresh.
 func processStockServer(symbol, name string, defensiveConfig, aggressiveConfig BXtrenderConfig, quantConfig BXtrenderQuantConfig, ditzConfig BXtrenderDitzConfig, traderConfig BXtrenderTraderConfig, marketCap int64, cacheFreshness time.Duration) error {
-	data, err := getMonthlyOHLCVCached(symbol, cacheFreshness)
+	data, err := getBotMonthlyOHLCVCached(symbol, cacheFreshness)
 	if err != nil {
 		return fmt.Errorf("failed to fetch historical data: %v", err)
 	}
@@ -14980,6 +15543,71 @@ func calculateHybridEMA(closes []float64, shortP, longP, k, lookback, normLookba
 	return scaled
 }
 
+// ========== VWAP Helpers ==========
+
+// detectDayBoundaries returns start indices of each trading day.
+// Uses a 4-hour gap threshold to detect overnight gaps.
+func detectDayBoundaries(ohlcv []OHLCV) []int {
+	starts := []int{0}
+	const threshold int64 = 4 * 3600
+	for i := 1; i < len(ohlcv); i++ {
+		if ohlcv[i].Time-ohlcv[i-1].Time > threshold {
+			starts = append(starts, i)
+		}
+	}
+	return starts
+}
+
+// calculateVWAPBands calculates VWAP + standard deviation bands, resetting each day.
+func calculateVWAPBands(ohlcv []OHLCV, mult1, mult2 float64) (
+	vwap, upper1, lower1, upper2, lower2 []float64,
+	dayStarts []int, prevDayVWAP []float64,
+) {
+	n := len(ohlcv)
+	vwap = make([]float64, n)
+	upper1 = make([]float64, n)
+	lower1 = make([]float64, n)
+	upper2 = make([]float64, n)
+	lower2 = make([]float64, n)
+	prevDayVWAP = make([]float64, n)
+	dayStarts = detectDayBoundaries(ohlcv)
+
+	lastDayVWAP := 0.0
+
+	for d, ds := range dayStarts {
+		de := n
+		if d+1 < len(dayStarts) {
+			de = dayStarts[d+1]
+		}
+
+		var cumTPV, cumVol, cumTP2V float64
+		for i := ds; i < de; i++ {
+			prevDayVWAP[i] = lastDayVWAP
+			tp := (ohlcv[i].High + ohlcv[i].Low + ohlcv[i].Close) / 3
+			cumTPV += tp * ohlcv[i].Volume
+			cumVol += ohlcv[i].Volume
+			cumTP2V += tp * tp * ohlcv[i].Volume
+			if cumVol > 0 {
+				v := cumTPV / cumVol
+				variance := (cumTP2V / cumVol) - v*v
+				if variance < 0 {
+					variance = 0
+				}
+				sd := math.Sqrt(variance)
+				vwap[i] = v
+				upper1[i] = v + mult1*sd
+				lower1[i] = v - mult1*sd
+				upper2[i] = v + mult2*sd
+				lower2[i] = v - mult2*sd
+			}
+		}
+		if de > ds {
+			lastDayVWAP = vwap[de-1]
+		}
+	}
+	return
+}
+
 // ========== Diamond Signals Indicators ==========
 
 // findLocalExtrema identifies local peaks and troughs in a data series.
@@ -15331,6 +15959,7 @@ type IndicatorSeries struct {
 	Type  string           `json:"type"` // "histogram", "line"
 	Color string           `json:"color"`
 	Data  []IndicatorPoint `json:"data"`
+	Panel int              `json:"panel,omitempty"` // 0=default, 1+=separate sub-charts
 }
 
 type IndicatorPoint struct {
@@ -17386,6 +18015,801 @@ type OverlayProvider interface {
 	ComputeOverlays(ohlcv []OHLCV) []OverlaySeries
 }
 
+// ========== VWAP Day Trading Strategy ==========
+
+type VWAPDayTradingStrategy struct {
+	BandMult1       float64 `json:"band_mult_1"`
+	BandMult2       float64 `json:"band_mult_2"`
+	PullbackEnabled int     `json:"pullback_enabled"`
+	ReversalEnabled int     `json:"reversal_enabled"`
+	SkipBars        int     `json:"skip_bars"`
+	TrendBars       int     `json:"trend_bars"`
+	BodyPct         float64 `json:"body_pct"`
+	RiskReward      float64 `json:"risk_reward"`
+	SLLookback      int     `json:"sl_lookback"`
+	SLBuffer        float64 `json:"sl_buffer"`
+	PrevVWAPFilter  int     `json:"prev_vwap_filter"`
+	HybridFilter    bool    `json:"hybrid_filter"`
+	HybridLongTh    float64 `json:"hybrid_long_thresh"`
+	HybridShortTh   float64 `json:"hybrid_short_thresh"`
+	// cache
+	cachedVWAP, cachedU1, cachedL1, cachedU2, cachedL2, cachedPrevVWAP []float64
+	cachedDayStarts                                                    []int
+	cachedLen                                                          int
+}
+
+func (s *VWAPDayTradingStrategy) defaults() {
+	if s.BandMult1 <= 0 {
+		s.BandMult1 = 2.0
+	}
+	if s.BandMult2 <= 0 {
+		s.BandMult2 = 3.0
+	}
+	if s.PullbackEnabled == 0 && s.ReversalEnabled == 0 {
+		s.PullbackEnabled = 1
+		s.ReversalEnabled = 1
+	}
+	if s.SkipBars <= 0 {
+		s.SkipBars = 12
+	}
+	if s.TrendBars <= 0 {
+		s.TrendBars = 6
+	}
+	if s.BodyPct <= 0 {
+		s.BodyPct = 50
+	}
+	if s.RiskReward <= 0 {
+		s.RiskReward = 2.0
+	}
+	if s.SLLookback <= 0 {
+		s.SLLookback = 10
+	}
+	if s.SLBuffer <= 0 {
+		s.SLBuffer = 0.3
+	}
+}
+
+func (s *VWAPDayTradingStrategy) Name() string        { return "vwap_day_trading" }
+func (s *VWAPDayTradingStrategy) RequiredBars() int    { s.defaults(); return 50 }
+
+func (s *VWAPDayTradingStrategy) compute(ohlcv []OHLCV) {
+	n := len(ohlcv)
+	if s.cachedLen == n {
+		return
+	}
+	s.cachedVWAP, s.cachedU1, s.cachedL1, s.cachedU2, s.cachedL2, s.cachedDayStarts, s.cachedPrevVWAP =
+		calculateVWAPBands(ohlcv, s.BandMult1, s.BandMult2)
+	s.cachedLen = n
+}
+
+func (s *VWAPDayTradingStrategy) Analyze(ohlcv []OHLCV) []StrategySignal {
+	s.defaults()
+	n := len(ohlcv)
+	if n < 50 {
+		return nil
+	}
+	s.compute(ohlcv)
+
+	vw := s.cachedVWAP
+	u1 := s.cachedU1
+	l1 := s.cachedL1
+	dayStarts := s.cachedDayStarts
+	prevVWAP := s.cachedPrevVWAP
+
+	// hybrid filter
+	var hybrid []float64
+	if s.HybridFilter {
+		closes := extractCloses(ohlcv)
+		hybrid = calculateHybridEMA(closes, 8, 21, 5, 100, 50)
+	}
+
+	// build day index lookup: for each bar, which day index & day start
+	barDay := make([]int, n)
+	barDayStart := make([]int, n)
+	for d, ds := range dayStarts {
+		de := n
+		if d+1 < len(dayStarts) {
+			de = dayStarts[d+1]
+		}
+		for i := ds; i < de; i++ {
+			barDay[i] = d
+			barDayStart[i] = ds
+		}
+	}
+
+	var signals []StrategySignal
+	lastSignalBar := -4 // cooldown tracker
+
+	for i := 1; i < n-1; i++ {
+		ds := barDayStart[i]
+		barsIntoDay := i - ds
+
+		// cooldown: 3 bars between signals
+		if i-lastSignalBar < 3 {
+			continue
+		}
+
+		// === PULLBACK MODE ===
+		if s.PullbackEnabled == 1 && barsIntoDay >= s.TrendBars {
+			dir := s.checkPullback(ohlcv, vw, i, ds)
+			if dir != "" {
+				// prev VWAP confluence filter
+				if s.PrevVWAPFilter == 1 && prevVWAP[i] > 0 {
+					dist := math.Abs(vw[i]-prevVWAP[i]) / vw[i]
+					if dist > 0.02 {
+						dir = ""
+					}
+				}
+				// hybrid filter
+				if dir != "" && s.HybridFilter && hybrid != nil {
+					if dir == "LONG" && hybrid[i] < s.HybridLongTh {
+						dir = ""
+					}
+					if dir == "SHORT" && hybrid[i] > s.HybridShortTh {
+						dir = ""
+					}
+				}
+				if dir != "" {
+					sig := s.buildPullbackSignal(ohlcv, i, dir)
+					if sig != nil {
+						signals = append(signals, *sig)
+						lastSignalBar = i
+						continue
+					}
+				}
+			}
+		}
+
+		// === REVERSAL MODE ===
+		if s.ReversalEnabled == 1 && barsIntoDay >= s.SkipBars {
+			dir := s.checkReversal(ohlcv, vw, u1, l1, i, ds)
+			if dir != "" {
+				// hybrid filter
+				if s.HybridFilter && hybrid != nil {
+					if dir == "LONG" && hybrid[i] < s.HybridLongTh {
+						dir = ""
+					}
+					if dir == "SHORT" && hybrid[i] > s.HybridShortTh {
+						dir = ""
+					}
+				}
+				if dir != "" {
+					sig := s.buildReversalSignal(ohlcv, vw, i, dir)
+					if sig != nil {
+						signals = append(signals, *sig)
+						lastSignalBar = i
+					}
+				}
+			}
+		}
+	}
+
+	return signals
+}
+
+func (s *VWAPDayTradingStrategy) checkPullback(ohlcv []OHLCV, vw []float64, i, ds int) string {
+	tb := s.TrendBars
+	if i-tb < ds {
+		return ""
+	}
+	// count bars above/below VWAP in trend window (excluding current bar)
+	above, below := 0, 0
+	for j := i - tb; j < i; j++ {
+		if ohlcv[j].Close > vw[j] {
+			above++
+		} else {
+			below++
+		}
+	}
+	vwapSlope := vw[i] - vw[i-tb]
+	threshold := int(float64(tb) * 0.75)
+
+	bodyRange := math.Abs(ohlcv[i].Close - ohlcv[i].Open)
+	candleRange := ohlcv[i].High - ohlcv[i].Low
+	if candleRange < 1e-10 {
+		return ""
+	}
+	bodyPct := bodyRange / candleRange * 100
+
+	// LONG: uptrend + pullback to VWAP + bullish confirmation
+	if above >= threshold && vwapSlope > 0 {
+		if ohlcv[i].Low <= vw[i]*1.002 && ohlcv[i-1].Close > vw[i-1] {
+			if ohlcv[i].Close > ohlcv[i].Open && bodyPct >= s.BodyPct && ohlcv[i].Close > vw[i] {
+				return "LONG"
+			}
+		}
+	}
+
+	// SHORT: downtrend + pullback to VWAP + bearish confirmation
+	if below >= threshold && vwapSlope < 0 {
+		if ohlcv[i].High >= vw[i]*0.998 && ohlcv[i-1].Close < vw[i-1] {
+			if ohlcv[i].Close < ohlcv[i].Open && bodyPct >= s.BodyPct && ohlcv[i].Close < vw[i] {
+				return "SHORT"
+			}
+		}
+	}
+
+	return ""
+}
+
+func (s *VWAPDayTradingStrategy) checkReversal(ohlcv []OHLCV, vw, u1, l1 []float64, i, ds int) string {
+	// sideways check: count above/below VWAP for the day so far
+	barsInDay := i - ds + 1
+	above, below := 0, 0
+	for j := ds; j <= i; j++ {
+		if ohlcv[j].Close > vw[j] {
+			above++
+		} else {
+			below++
+		}
+	}
+	// must be sideways: neither side > 75%
+	threshold := float64(barsInDay) * 0.75
+	if float64(above) > threshold || float64(below) > threshold {
+		return ""
+	}
+
+	bodyRange := math.Abs(ohlcv[i].Close - ohlcv[i].Open)
+	candleRange := ohlcv[i].High - ohlcv[i].Low
+	if candleRange < 1e-10 {
+		return ""
+	}
+	bodyPct := bodyRange / candleRange * 100
+
+	// SHORT: touch upper band + bearish candle
+	if ohlcv[i].High >= u1[i] {
+		if ohlcv[i].Close < ohlcv[i].Open && bodyPct >= s.BodyPct {
+			return "SHORT"
+		}
+	}
+
+	// LONG: touch lower band + bullish candle
+	if ohlcv[i].Low <= l1[i] {
+		if ohlcv[i].Close > ohlcv[i].Open && bodyPct >= s.BodyPct {
+			return "LONG"
+		}
+	}
+
+	return ""
+}
+
+func (s *VWAPDayTradingStrategy) buildPullbackSignal(ohlcv []OHLCV, i int, dir string) *StrategySignal {
+	entry := ohlcv[i+1].Open
+	lb := s.SLLookback
+	bufferMult := s.SLBuffer / 100.0
+
+	var sl, tp float64
+	if dir == "LONG" {
+		swingLow := ohlcv[i].Low
+		start := i - lb
+		if start < 0 {
+			start = 0
+		}
+		for j := start; j <= i; j++ {
+			if ohlcv[j].Low < swingLow {
+				swingLow = ohlcv[j].Low
+			}
+		}
+		sl = swingLow * (1 - bufferMult)
+		risk := entry - sl
+		if risk <= 0 {
+			return nil
+		}
+		tp = entry + s.RiskReward*risk
+	} else {
+		swingHigh := ohlcv[i].High
+		start := i - lb
+		if start < 0 {
+			start = 0
+		}
+		for j := start; j <= i; j++ {
+			if ohlcv[j].High > swingHigh {
+				swingHigh = ohlcv[j].High
+			}
+		}
+		sl = swingHigh * (1 + bufferMult)
+		risk := sl - entry
+		if risk <= 0 {
+			return nil
+		}
+		tp = entry - s.RiskReward*risk
+	}
+
+	color := "#22c55e"
+	shape := "arrowUp"
+	text := "PB▲"
+	if dir == "SHORT" {
+		color = "#ef4444"
+		shape = "arrowDown"
+		text = "PB▼"
+	}
+
+	return &StrategySignal{
+		Index:      i,
+		Direction:  dir,
+		EntryPrice: entry,
+		StopLoss:   sl,
+		TakeProfit: tp,
+		Shape:      shape,
+		Text:       text,
+		Color:      color,
+	}
+}
+
+func (s *VWAPDayTradingStrategy) buildReversalSignal(ohlcv []OHLCV, vw []float64, i int, dir string) *StrategySignal {
+	entry := ohlcv[i+1].Open
+	bufferMult := s.SLBuffer / 100.0
+
+	var sl, tp float64
+	if dir == "LONG" {
+		// SL: candle low or lower band2, whichever is farther
+		candleSL := ohlcv[i].Low * (1 - bufferMult)
+		if s.cachedL2[i] < candleSL {
+			candleSL = s.cachedL2[i]
+		}
+		sl = candleSL
+		// TP: VWAP (mean reversion target)
+		tp = vw[i]
+		// min R/R check
+		risk := entry - sl
+		reward := tp - entry
+		if risk <= 0 || reward/risk < 0.8 {
+			return nil
+		}
+	} else {
+		candleSL := ohlcv[i].High * (1 + bufferMult)
+		if s.cachedU2[i] > candleSL {
+			candleSL = s.cachedU2[i]
+		}
+		sl = candleSL
+		tp = vw[i]
+		risk := sl - entry
+		reward := entry - tp
+		if risk <= 0 || reward/risk < 0.8 {
+			return nil
+		}
+	}
+
+	color := "#86efac"
+	shape := "arrowUp"
+	text := "RV▲"
+	if dir == "SHORT" {
+		color = "#fca5a5"
+		shape = "arrowDown"
+		text = "RV▼"
+	}
+
+	return &StrategySignal{
+		Index:      i,
+		Direction:  dir,
+		EntryPrice: entry,
+		StopLoss:   sl,
+		TakeProfit: tp,
+		Shape:      shape,
+		Text:       text,
+		Color:      color,
+	}
+}
+
+func (s *VWAPDayTradingStrategy) ComputeOverlays(ohlcv []OHLCV) []OverlaySeries {
+	s.defaults()
+	n := len(ohlcv)
+	if n < 10 {
+		return nil
+	}
+	s.compute(ohlcv)
+
+	vwData := make([]OverlayPoint, n)
+	u1Data := make([]OverlayPoint, n)
+	l1Data := make([]OverlayPoint, n)
+	u2Data := make([]OverlayPoint, n)
+	l2Data := make([]OverlayPoint, n)
+	pvData := make([]OverlayPoint, n)
+
+	for i, bar := range ohlcv {
+		vwData[i] = OverlayPoint{Time: bar.Time, Value: s.cachedVWAP[i]}
+		u1Data[i] = OverlayPoint{Time: bar.Time, Value: s.cachedU1[i]}
+		l1Data[i] = OverlayPoint{Time: bar.Time, Value: s.cachedL1[i]}
+		u2Data[i] = OverlayPoint{Time: bar.Time, Value: s.cachedU2[i]}
+		l2Data[i] = OverlayPoint{Time: bar.Time, Value: s.cachedL2[i]}
+		pvData[i] = OverlayPoint{Time: bar.Time, Value: s.cachedPrevVWAP[i]}
+	}
+
+	return []OverlaySeries{
+		{Name: "VWAP", Type: "line", Color: "#3b82f6", Data: vwData, Style: 0},
+		{Name: "Upper 2σ", Type: "line", Color: "#f97316", Data: u1Data, Style: 2, FillColor: "rgba(249,115,22,0.08)"},
+		{Name: "Lower 2σ", Type: "line", Color: "#f97316", Data: l1Data, Style: 2, FillColor: "rgba(249,115,22,0.08)", InvertFill: true},
+		{Name: "Upper 3σ", Type: "line", Color: "#ef4444", Data: u2Data, Style: 2},
+		{Name: "Lower 3σ", Type: "line", Color: "#ef4444", Data: l2Data, Style: 2},
+		{Name: "Prev VWAP", Type: "line", Color: "#9ca3af", Data: pvData, Style: 2},
+	}
+}
+
+func (s *VWAPDayTradingStrategy) ComputeIndicators(ohlcv []OHLCV) []IndicatorSeries {
+	s.defaults()
+	n := len(ohlcv)
+	if n < 10 {
+		return nil
+	}
+	s.compute(ohlcv)
+
+	histData := make([]IndicatorPoint, n)
+	for i, bar := range ohlcv {
+		val := 0.0
+		if s.cachedVWAP[i] > 0 {
+			// compute stddev at this bar for normalization
+			sd := s.cachedU1[i] - s.cachedVWAP[i]
+			if s.BandMult1 > 0 {
+				sd /= s.BandMult1
+			}
+			if sd > 1e-10 {
+				val = (bar.Close - s.cachedVWAP[i]) / sd
+			}
+		}
+		color := "#22c55e"
+		if val < 0 {
+			color = "#ef4444"
+		}
+		histData[i] = IndicatorPoint{Time: bar.Time, Value: val, Color: color}
+	}
+
+	return []IndicatorSeries{
+		{Name: "VWAP Dist (σ)", Type: "histogram", Color: "#22c55e", Data: histData},
+	}
+}
+
+// ========== Gaussian + RSI + MACD Strategy ==========
+
+type GaussianTrendStrategy struct {
+	Period           int     `json:"period"`
+	Poles            int     `json:"poles"`
+	FilterPeriod     int     `json:"filter_period"`
+	FilterDeviations float64 `json:"filter_deviations"`
+	RSIPeriod        int     `json:"rsi_period"`
+	MACDFast         int     `json:"macd_fast"`
+	MACDSlow         int     `json:"macd_slow"`
+	MACDSignal       int     `json:"macd_signal"`
+	SLBuffer         float64 `json:"sl_buffer"`
+	RiskReward       float64 `json:"risk_reward"`
+	SLLookback       int     `json:"sl_lookback"`
+}
+
+func (s *GaussianTrendStrategy) defaults() {
+	if s.Period <= 0 {
+		s.Period = 25
+	}
+	if s.Poles <= 0 || s.Poles > 9 {
+		s.Poles = 5
+	}
+	if s.FilterPeriod <= 0 {
+		s.FilterPeriod = 10
+	}
+	if s.FilterDeviations <= 0 {
+		s.FilterDeviations = 1.0
+	}
+	if s.RSIPeriod <= 0 {
+		s.RSIPeriod = 30
+	}
+	if s.MACDFast <= 0 {
+		s.MACDFast = 24
+	}
+	if s.MACDSlow <= 0 {
+		s.MACDSlow = 52
+	}
+	if s.MACDSignal <= 0 {
+		s.MACDSignal = 9
+	}
+	if s.SLBuffer <= 0 {
+		s.SLBuffer = 0.5
+	}
+	if s.RiskReward <= 0 {
+		s.RiskReward = 1.5
+	}
+	if s.SLLookback <= 0 {
+		s.SLLookback = 10
+	}
+}
+
+func (s *GaussianTrendStrategy) Name() string      { return "gaussian_trend" }
+func (s *GaussianTrendStrategy) RequiredBars() int  { s.defaults(); return s.MACDSlow + s.MACDSignal + s.Period + 20 }
+
+// calcNPoleGaussianFilter computes Ehlers N-Pole Gaussian filter with STD-filter.
+func calcNPoleGaussianFilter(closes []float64, period, poles, filterPeriod int, filterDeviations float64) []float64 {
+	n := len(closes)
+	result := make([]float64, n)
+	if n == 0 || period < 2 || poles < 1 {
+		return result
+	}
+	if poles > 9 {
+		poles = 9
+	}
+
+	// Alpha calculation (Ehlers)
+	w := 2.0 * math.Pi / float64(period)
+	beta := (1.0 - math.Cos(w)) / (math.Pow(math.Sqrt(2.0), 2.0/float64(poles)) - 1.0)
+	alpha := -beta + math.Sqrt(beta*beta+2.0*beta)
+
+	// Binomial coefficients C(poles, k) for k=0..poles
+	binom := make([]float64, poles+1)
+	binom[0] = 1
+	for k := 1; k <= poles; k++ {
+		binom[k] = binom[k-1] * float64(poles-k+1) / float64(k)
+	}
+
+	// Alpha^N
+	alphaN := math.Pow(alpha, float64(poles))
+
+	// Raw recursive Gaussian filter (without STD-filter)
+	raw := make([]float64, n)
+	for i := 0; i < n; i++ {
+		if i < poles {
+			raw[i] = closes[i]
+			continue
+		}
+		val := alphaN * closes[i]
+		for k := 1; k <= poles; k++ {
+			sign := 1.0
+			if k%2 == 0 {
+				sign = -1.0 // (-1)^(k+1): k=1→+, k=2→-, k=3→+, ...
+			}
+			coeff := sign * binom[k] * math.Pow(1.0-alpha, float64(k))
+			val += coeff * raw[i-k]
+		}
+		raw[i] = val
+	}
+
+	// STD-filter: only update when |src - filter| > deviations * stdev(src, filterPeriod)
+	result[0] = raw[0]
+	for i := 1; i < n; i++ {
+		// Calculate standard deviation of raw over filterPeriod
+		start := i - filterPeriod + 1
+		if start < 0 {
+			start = 0
+		}
+		cnt := i - start + 1
+		sum := 0.0
+		for j := start; j <= i; j++ {
+			sum += closes[j]
+		}
+		mean := sum / float64(cnt)
+		variance := 0.0
+		for j := start; j <= i; j++ {
+			d := closes[j] - mean
+			variance += d * d
+		}
+		variance /= float64(cnt)
+		stdev := math.Sqrt(variance)
+
+		threshold := filterDeviations * stdev
+		if math.Abs(raw[i]-result[i-1]) > threshold {
+			result[i] = raw[i]
+		} else {
+			result[i] = result[i-1]
+		}
+	}
+
+	return result
+}
+
+func (s *GaussianTrendStrategy) Analyze(ohlcv []OHLCV) []StrategySignal {
+	s.defaults()
+	var signals []StrategySignal
+	n := len(ohlcv)
+	minBars := s.MACDSlow + s.MACDSignal + 5
+	if n < minBars {
+		return signals
+	}
+
+	closes := extractCloses(ohlcv)
+
+	// Gaussian filter
+	gf := calcNPoleGaussianFilter(closes, s.Period, s.Poles, s.FilterPeriod, s.FilterDeviations)
+
+	// RSI
+	rsi := calculateRSIServer(closes, s.RSIPeriod)
+
+	// MACD
+	emaFast := calculateEMAServer(closes, s.MACDFast)
+	emaSlow := calculateEMAServer(closes, s.MACDSlow)
+	macdLine := make([]float64, n)
+	for i := 0; i < n; i++ {
+		macdLine[i] = emaFast[i] - emaSlow[i]
+	}
+	signalLine := calculateEMAServer(macdLine, s.MACDSignal)
+	histogram := make([]float64, n)
+	for i := 0; i < n; i++ {
+		histogram[i] = macdLine[i] - signalLine[i]
+	}
+
+	// Gaussian color: green if rising, red if falling
+	// Flat filter (same value) = keep previous color (STD-filter holds value constant often)
+	isGreen := make([]bool, n)
+	for i := 1; i < n; i++ {
+		if gf[i] > gf[i-1] {
+			isGreen[i] = true
+		} else if gf[i] < gf[i-1] {
+			isGreen[i] = false
+		} else {
+			isGreen[i] = isGreen[i-1] // flat = keep previous color
+		}
+	}
+
+	for i := 1; i < n-1; i++ {
+		// Color change detection
+		if i < 1 {
+			continue
+		}
+
+		// LONG: Gaussian turns green (was red) + RSI > 50 + MACD histogram > 0
+		if isGreen[i] && !isGreen[i-1] && rsi[i] > 50 && histogram[i] > 0 {
+			entry := ohlcv[i+1].Open
+			sl := gf[i] * (1.0 - s.SLBuffer/100.0)
+			// Also check swing low as alternative SL
+			swingLow := entry
+			lb := s.SLLookback
+			for j := i; j >= 0 && j > i-lb; j-- {
+				if ohlcv[j].Low < swingLow {
+					swingLow = ohlcv[j].Low
+				}
+			}
+			if swingLow*(1.0-s.SLBuffer/100.0) < sl {
+				sl = swingLow * (1.0 - s.SLBuffer/100.0)
+			}
+			if sl >= entry {
+				continue
+			}
+			risk := entry - sl
+			tp := entry + s.RiskReward*risk
+			signals = append(signals, StrategySignal{
+				Index:      i + 1,
+				Direction:  "LONG",
+				EntryPrice: entry,
+				StopLoss:   sl,
+				TakeProfit: tp,
+			})
+		}
+
+		// SHORT: Gaussian turns red (was green) + RSI < 50 + MACD histogram < 0
+		if !isGreen[i] && isGreen[i-1] && rsi[i] < 50 && histogram[i] < 0 {
+			entry := ohlcv[i+1].Open
+			sl := gf[i] * (1.0 + s.SLBuffer/100.0)
+			// Also check swing high
+			swingHigh := entry
+			lb := s.SLLookback
+			for j := i; j >= 0 && j > i-lb; j-- {
+				if ohlcv[j].High > swingHigh {
+					swingHigh = ohlcv[j].High
+				}
+			}
+			if swingHigh*(1.0+s.SLBuffer/100.0) > sl {
+				sl = swingHigh * (1.0 + s.SLBuffer/100.0)
+			}
+			if sl <= entry {
+				continue
+			}
+			risk := sl - entry
+			tp := entry - s.RiskReward*risk
+			signals = append(signals, StrategySignal{
+				Index:      i + 1,
+				Direction:  "SHORT",
+				EntryPrice: entry,
+				StopLoss:   sl,
+				TakeProfit: tp,
+			})
+		}
+	}
+
+	return signals
+}
+
+func (s *GaussianTrendStrategy) ComputeIndicators(ohlcv []OHLCV) []IndicatorSeries {
+	s.defaults()
+	n := len(ohlcv)
+	if n < s.MACDSlow+s.MACDSignal {
+		return nil
+	}
+
+	closes := extractCloses(ohlcv)
+
+	// RSI
+	rsi := calculateRSIServer(closes, s.RSIPeriod)
+	rsiData := make([]IndicatorPoint, n)
+	refData := make([]IndicatorPoint, n)
+	for i, bar := range ohlcv {
+		rsiData[i] = IndicatorPoint{Time: bar.Time, Value: rsi[i]}
+		refData[i] = IndicatorPoint{Time: bar.Time, Value: 50}
+	}
+
+	// MACD histogram
+	emaFast := calculateEMAServer(closes, s.MACDFast)
+	emaSlow := calculateEMAServer(closes, s.MACDSlow)
+	macdLine := make([]float64, n)
+	for i := 0; i < n; i++ {
+		macdLine[i] = emaFast[i] - emaSlow[i]
+	}
+	signalLine := calculateEMAServer(macdLine, s.MACDSignal)
+	histData := make([]IndicatorPoint, n)
+	for i, bar := range ohlcv {
+		val := macdLine[i] - signalLine[i]
+		color := "#22c55e"
+		if val < 0 {
+			color = "#ef4444"
+		}
+		histData[i] = IndicatorPoint{Time: bar.Time, Value: val, Color: color}
+	}
+
+	// MACD + Signal lines
+	macdLineData := make([]IndicatorPoint, n)
+	sigLineData := make([]IndicatorPoint, n)
+	for i, bar := range ohlcv {
+		macdLineData[i] = IndicatorPoint{Time: bar.Time, Value: macdLine[i]}
+		sigLineData[i] = IndicatorPoint{Time: bar.Time, Value: signalLine[i]}
+	}
+
+	return []IndicatorSeries{
+		{Name: fmt.Sprintf("RSI(%d)", s.RSIPeriod), Type: "line", Color: "#a855f7", Data: rsiData, Panel: 0},
+		{Name: "RSI 50", Type: "line", Color: "#6b7280", Data: refData, Panel: 0},
+		{Name: "MACD Hist", Type: "histogram", Color: "#22c55e", Data: histData, Panel: 1},
+		{Name: "MACD", Type: "line", Color: "#3b82f6", Data: macdLineData, Panel: 1},
+		{Name: "Signal", Type: "line", Color: "#f97316", Data: sigLineData, Panel: 1},
+	}
+}
+
+func (s *GaussianTrendStrategy) ComputeOverlays(ohlcv []OHLCV) []OverlaySeries {
+	s.defaults()
+	n := len(ohlcv)
+	if n < s.Period+s.Poles {
+		return nil
+	}
+
+	closes := extractCloses(ohlcv)
+	gf := calcNPoleGaussianFilter(closes, s.Period, s.Poles, s.FilterPeriod, s.FilterDeviations)
+
+	// Gaussian color: flat = keep previous color (consistent with Analyze)
+	isGreen := make([]bool, n)
+	for i := 1; i < n; i++ {
+		if gf[i] > gf[i-1] {
+			isGreen[i] = true
+		} else if gf[i] < gf[i-1] {
+			isGreen[i] = false
+		} else {
+			isGreen[i] = isGreen[i-1]
+		}
+	}
+
+	// Create two series: rising (green) and falling (red) for colored overlay.
+	// At color transitions, BOTH series include the transition point so lines connect seamlessly.
+	greenData := make([]OverlayPoint, n)
+	redData := make([]OverlayPoint, n)
+	for i, bar := range ohlcv {
+		pt := OverlayPoint{Time: bar.Time, Value: gf[i]}
+		nan := OverlayPoint{Time: bar.Time, Value: math.NaN()}
+
+		isTransition := i > 0 && isGreen[i] != isGreen[i-1]
+
+		if isGreen[i] {
+			greenData[i] = pt
+			if isTransition {
+				redData[i] = pt // overlap at transition so red line connects to this point
+			} else {
+				redData[i] = nan
+			}
+		} else {
+			redData[i] = pt
+			if isTransition {
+				greenData[i] = pt // overlap at transition so green line connects to this point
+			} else {
+				greenData[i] = nan
+			}
+		}
+	}
+
+	return []OverlaySeries{
+		{Name: "Gaussian Filter ↑", Type: "line", Color: "#22c55e", Data: greenData},
+		{Name: "Gaussian Filter ↓", Type: "line", Color: "#ef4444", Data: redData},
+	}
+}
+
 // BacktestResult holds all results of a backtest run
 type ArenaBacktestResult struct {
 	Metrics    ArenaBacktestMetrics `json:"metrics"`
@@ -18008,6 +19432,7 @@ func calculateBXtrenderQuantServer(ohlcv []OHLCV, config BXtrenderQuantConfig, n
 	if tslPercent == 0 {
 		tslPercent = 20.0
 	}
+	tslEnabled := config.TslEnabled
 
 	minLen := shortL2
 	if longL1 > minLen {
@@ -18081,7 +19506,7 @@ func calculateBXtrenderQuantServer(ohlcv []OHLCV, config BXtrenderQuantConfig, n
 
 		// Check trailing stop loss
 		tslTriggered := false
-		if inPosition && highestPrice > 0 {
+		if tslEnabled && inPosition && highestPrice > 0 {
 			stopPrice := highestPrice * (1 - tslPercent/100)
 			if price <= stopPrice {
 				tslTriggered = true
@@ -18664,6 +20089,7 @@ func getBXtrenderDitzConfigPublic(c *gin.Context) {
 			MaLength:   200,
 			MaType:     "EMA",
 			TslPercent: 20.0,
+			TslEnabled: true,
 		}
 	}
 
@@ -18686,6 +20112,7 @@ func getBXtrenderDitzConfig(c *gin.Context) {
 			MaLength:   200,
 			MaType:     "EMA",
 			TslPercent: 20.0,
+			TslEnabled: true,
 		}
 	}
 
@@ -18732,7 +20159,7 @@ func updateBXtrenderDitzConfig(c *gin.Context) {
 			TslEnabled: tslEnabled,
 			UpdatedAt:  time.Now(),
 		}
-		db.Create(&config)
+		db.Select("*").Create(&config)
 	} else {
 		config.ShortL1 = req.ShortL1
 		config.ShortL2 = req.ShortL2
@@ -18747,7 +20174,7 @@ func updateBXtrenderDitzConfig(c *gin.Context) {
 			config.TslEnabled = *req.TslEnabled
 		}
 		config.UpdatedAt = time.Now()
-		db.Save(&config)
+		db.Select("*").Save(&config)
 	}
 
 	c.JSON(http.StatusOK, config)
@@ -20816,6 +22243,7 @@ func getBXtrenderTraderConfigPublic(c *gin.Context) {
 			MaLength:   200,
 			MaType:     "EMA",
 			TslPercent: 20.0,
+			TslEnabled: true,
 		}
 	}
 
@@ -20838,6 +22266,7 @@ func getBXtrenderTraderConfig(c *gin.Context) {
 			MaLength:   200,
 			MaType:     "EMA",
 			TslPercent: 20.0,
+			TslEnabled: true,
 		}
 	}
 
@@ -20884,7 +22313,7 @@ func updateBXtrenderTraderConfig(c *gin.Context) {
 			TslEnabled: tslEnabled,
 			UpdatedAt:  time.Now(),
 		}
-		db.Create(&config)
+		db.Select("*").Create(&config)
 	} else {
 		config.ShortL1 = req.ShortL1
 		config.ShortL2 = req.ShortL2
@@ -20899,7 +22328,7 @@ func updateBXtrenderTraderConfig(c *gin.Context) {
 			config.TslEnabled = *req.TslEnabled
 		}
 		config.UpdatedAt = time.Now()
-		db.Save(&config)
+		db.Select("*").Save(&config)
 	}
 
 	c.JSON(http.StatusOK, config)
@@ -22865,6 +24294,7 @@ func calculateBXtrenderDitzServer(ohlcv []OHLCV, config BXtrenderDitzConfig, nex
 	if tslPercent == 0 {
 		tslPercent = 20.0
 	}
+	tslEnabled := config.TslEnabled
 
 	minLen := shortL2
 	if longL1 > minLen {
@@ -22938,7 +24368,7 @@ func calculateBXtrenderDitzServer(ohlcv []OHLCV, config BXtrenderDitzConfig, nex
 
 		// Check trailing stop loss
 		tslTriggered := false
-		if inPosition && highestPrice > 0 {
+		if tslEnabled && inPosition && highestPrice > 0 {
 			stopPrice := highestPrice * (1 - tslPercent/100)
 			if price <= stopPrice {
 				tslTriggered = true
@@ -23126,6 +24556,7 @@ func calculateBXtrenderTraderServer(ohlcv []OHLCV, config BXtrenderTraderConfig,
 	if tslPercent == 0 {
 		tslPercent = 20.0
 	}
+	tslEnabled := config.TslEnabled
 
 	minLen := shortL2
 	if longL1 > minLen {
@@ -23187,7 +24618,7 @@ func calculateBXtrenderTraderServer(ohlcv []OHLCV, config BXtrenderTraderConfig,
 
 		// Check trailing stop loss
 		tslTriggered := false
-		if inPosition && highestPrice > 0 {
+		if tslEnabled && inPosition && highestPrice > 0 {
 			stopPrice := highestPrice * (1 - tslPercent/100)
 			if price <= stopPrice {
 				tslTriggered = true
@@ -23201,8 +24632,8 @@ func calculateBXtrenderTraderServer(ohlcv []OHLCV, config BXtrenderTraderConfig,
 		// Buy signal: signal line turns from falling to rising (Red→Green)
 		buySignal := signalRising && !signalRisingPrev
 
-		// Sell signal: signal line turns from rising to falling (Green→Red) OR TSL
-		sellSignal := (!signalRising && signalRisingPrev) || tslTriggered
+		// Sell signal: T3 signal line crosses from positive to negative (Green→Red) or TSL hit
+		sellSignal := (signalLine[i-1] > 0 && signalLine[i] <= 0) || tslTriggered
 
 		if buySignal && !inPosition {
 			var execPrice float64
@@ -24103,6 +25534,27 @@ func instantiateStrategy(strategyName string, params map[string]interface{}) (Tr
 			RiskReward: pFloat("risk_reward", 0), SLBuffer: pFloat("sl_buffer", 0),
 			MinTrendBars: pInt("min_trend_bars", 0),
 		}, nil
+	case "vwap_day_trading":
+		return &VWAPDayTradingStrategy{
+			BandMult1: pFloat("band_mult_1", 0), BandMult2: pFloat("band_mult_2", 0),
+			PullbackEnabled: pInt("pullback_enabled", 1), ReversalEnabled: pInt("reversal_enabled", 1),
+			SkipBars: pInt("skip_bars", 0), TrendBars: pInt("trend_bars", 0),
+			BodyPct: pFloat("body_pct", 0), RiskReward: pFloat("risk_reward", 0),
+			SLLookback: pInt("sl_lookback", 0), SLBuffer: pFloat("sl_buffer", 0),
+			PrevVWAPFilter: pInt("prev_vwap_filter", 0),
+			HybridFilter: pInt("hybrid_filter", 0) == 1,
+			HybridLongTh: pFloat("hybrid_long_thresh", 0),
+			HybridShortTh: pFloat("hybrid_short_thresh", 0),
+		}, nil
+	case "gaussian_trend":
+		return &GaussianTrendStrategy{
+			Period: pInt("period", 0), Poles: pInt("poles", 0),
+			FilterPeriod: pInt("filter_period", 0), FilterDeviations: pFloat("filter_deviations", 0),
+			RSIPeriod: pInt("rsi_period", 0), MACDFast: pInt("macd_fast", 0),
+			MACDSlow: pInt("macd_slow", 0), MACDSignal: pInt("macd_signal", 0),
+			SLBuffer: pFloat("sl_buffer", 0), RiskReward: pFloat("risk_reward", 0),
+			SLLookback: pInt("sl_lookback", 0),
+		}, nil
 	default:
 		return nil, fmt.Errorf("unbekannte Strategie: %s", strategyName)
 	}
@@ -24135,7 +25587,7 @@ func runBacktestHandler(c *gin.Context) {
 		return
 	}
 
-	ohlcv, err := getOHLCVCached(symbol, interval, 24*time.Hour)
+	ohlcv, err := getArenaOHLCVCached(symbol, interval, 24*time.Hour)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "Daten konnten nicht geladen werden: " + err.Error()})
 		return
@@ -24152,15 +25604,8 @@ func runBacktestHandler(c *gin.Context) {
 	}
 
 	result := runArenaBacktest(ohlcv, strategy)
-	// Recalculate metrics from closed trades only (open trades still shown in chart)
-	closedTrades := make([]ArenaBacktestTrade, 0)
-	for _, t := range result.Trades {
-		if !t.IsOpen {
-			closedTrades = append(closedTrades, t)
-		}
-	}
-	result.Metrics = recalcMetrics(closedTrades)
-	log.Printf("[Arena-Single] %s: bars=%d trades=%d closed=%d winrate=%.1f%% interval=%s", symbol, len(ohlcv), len(result.Trades), len(closedTrades), result.Metrics.WinRate, interval)
+	result.Metrics = recalcMetrics(result.Trades)
+	log.Printf("[Arena-Single] %s: bars=%d trades=%d winrate=%.1f%% interval=%s", symbol, len(ohlcv), len(result.Trades), result.Metrics.WinRate, interval)
 	result.ChartData = ohlcv
 
 	// Compute indicators if strategy supports it
@@ -24226,106 +25671,10 @@ func getBacktestResultsHandler(c *gin.Context) {
 	c.JSON(200, out)
 }
 
-var arenaBatchMutex sync.Mutex
-var arenaBatchRunning bool
-
-// Watchlist batch: cancel-previous-run mechanism (used by backtestWatchlistHandler)
-var wlBatchMu sync.Mutex
-var wlBatchCancelFn context.CancelFunc
-var wlBatchGen uint64
-
 // V2 batch: cancel-previous-run mechanism
 var arenaV2BatchMu sync.Mutex
 var arenaV2CancelFn context.CancelFunc
 var arenaV2BatchGen uint64
-
-func backtestBatchHandler(c *gin.Context) {
-	arenaBatchMutex.Lock()
-	if arenaBatchRunning {
-		arenaBatchMutex.Unlock()
-		c.JSON(429, gin.H{"error": "Batch bereits aktiv"})
-		return
-	}
-	arenaBatchRunning = true
-	arenaBatchMutex.Unlock()
-
-	var stocks []Stock
-	db.Select("symbol").Find(&stocks)
-
-	strategies := []string{"regression_scalping", "hybrid_ai_trend", "smart_money_flow", "hann_trend", "macd_sr", "trippa_trade"}
-	count := len(stocks) * len(strategies)
-
-	go func() {
-		defer func() {
-			arenaBatchMutex.Lock()
-			arenaBatchRunning = false
-			arenaBatchMutex.Unlock()
-		}()
-
-		interval := "4h"
-
-		for _, stock := range stocks {
-			ohlcv, err := getOHLCVCached(stock.Symbol, interval, 24*time.Hour)
-			if err != nil || len(ohlcv) < 50 {
-				continue
-			}
-
-			for _, stratName := range strategies {
-				var strategy TradingStrategy
-				switch stratName {
-				case "regression_scalping":
-					strategy = &RegressionScalpingStrategy{}
-				case "hybrid_ai_trend":
-					strategy = &HybridAITrendStrategy{}
-				case "smart_money_flow":
-					strategy = &SmartMoneyFlowStrategy{}
-				case "hann_trend":
-					strategy = &HannTrendStrategy{}
-				case "gmma_pullback":
-					strategy = &GMMAPullbackStrategy{}
-				case "macd_sr":
-					strategy = &MACDSRStrategy{}
-				case "trippa_trade":
-					strategy = &TrippaTrade{}
-				}
-
-				result := runArenaBacktest(ohlcv, strategy)
-				if provider, ok := strategy.(IndicatorProvider); ok {
-					result.Indicators = provider.ComputeIndicators(ohlcv)
-				}
-
-				metricsJSON, _ := json.Marshal(result.Metrics)
-				tradesJSON, _ := json.Marshal(result.Trades)
-				markersJSON, _ := json.Marshal(result.Markers)
-
-				var existing ArenaBacktestHistory
-				if db.Where("symbol = ? AND strategy = ? AND interval = ?", stock.Symbol, stratName, interval).First(&existing).Error == nil {
-					existing.MetricsJSON = string(metricsJSON)
-					existing.TradesJSON = string(tradesJSON)
-					existing.MarkersJSON = string(markersJSON)
-					existing.UpdatedAt = time.Now()
-					db.Save(&existing)
-				} else {
-					db.Create(&ArenaBacktestHistory{
-						Symbol:      stock.Symbol,
-						Strategy:    stratName,
-						Interval:    interval,
-						MetricsJSON: string(metricsJSON),
-						TradesJSON:  string(tradesJSON),
-						MarkersJSON: string(markersJSON),
-						CreatedAt:   time.Now(),
-						UpdatedAt:   time.Now(),
-					})
-				}
-			}
-		}
-		log.Printf("[Arena] Batch backtest completed for %d stocks", len(stocks))
-	}()
-
-	c.JSON(200, gin.H{"status": "started", "count": count})
-}
-
-// --- Watchlist Batch Backtest ---
 
 type WatchlistBacktestTrade struct {
 	Symbol     string  `json:"symbol"`
@@ -24372,7 +25721,7 @@ func backtestDebugHandler(c *gin.Context) {
 	}
 
 	// Path A: exactly like runBacktestHandler (single backtest)
-	ohlcvSingle, errA := getOHLCVCached(symbol, interval, 24*time.Hour)
+	ohlcvSingle, errA := getArenaOHLCVCached(symbol, interval, 24*time.Hour)
 	var singleTrades int
 	var singleClosed int
 	var singleMetrics ArenaBacktestMetrics
@@ -24401,8 +25750,8 @@ func backtestDebugHandler(c *gin.Context) {
 		singleMetrics = recalcMetrics(closedOnly)
 	}
 
-	// Path B: exactly like backtestWatchlistHandler (batch backtest)
-	ohlcvBatch, errB := getOHLCVCached(symbol, interval, 24*time.Hour)
+	// Path B: same OHLCV + strategy, independent run for comparison
+	ohlcvBatch, errB := getArenaOHLCVCached(symbol, interval, 24*time.Hour)
 	var batchTrades int
 	var batchClosed int
 	var batchMetrics ArenaBacktestMetrics
@@ -24535,364 +25884,6 @@ func recalcMetrics(trades []ArenaBacktestTrade) ArenaBacktestMetrics {
 	return m
 }
 
-func backtestWatchlistHandler(c *gin.Context) {
-	// Cancel any previous running batch (prevents parallel Yahoo fetches / 429 errors)
-	wlBatchMu.Lock()
-	if wlBatchCancelFn != nil {
-		wlBatchCancelFn()
-	}
-	ctx, cancel := context.WithCancel(c.Request.Context())
-	wlBatchCancelFn = cancel
-	wlBatchGen++
-	myGen := wlBatchGen
-	wlBatchMu.Unlock()
-	defer func() {
-		wlBatchMu.Lock()
-		if wlBatchGen == myGen {
-			wlBatchCancelFn = nil
-		}
-		wlBatchMu.Unlock()
-		cancel()
-	}()
-
-	var req struct {
-		Strategy   string                 `json:"strategy"`
-		Interval   string                 `json:"interval"`
-		Params     map[string]interface{} `json:"params"`
-		USOnly     bool                   `json:"us_only"`
-		DataSource string                 `json:"data_source"` // "alpaca" (default) or "yahoo"
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": "Ungültige Anfrage"})
-		return
-	}
-
-	periodMap := map[string]string{
-		"5m": "60d", "15m": "60d", "60m": "2y", "1h": "2y",
-		"2h": "2y", "4h": "2y", "1d": "2y", "1wk": "10y",
-	}
-	interval := req.Interval
-	if interval == "" {
-		interval = "4h"
-	}
-	if _, ok := periodMap[interval]; !ok {
-		c.JSON(400, gin.H{"error": "Ungültiges Interval"})
-		return
-	}
-
-	// Validate strategy
-	if _, err := instantiateStrategy(req.Strategy, req.Params); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Get trading watchlist symbols
-	var allWatchlist []TradingWatchlistItem
-	db.Find(&allWatchlist)
-	var watchlist []TradingWatchlistItem
-	for _, w := range allWatchlist {
-		if req.USOnly && isNonUSStock(w.Symbol) {
-			continue
-		}
-		watchlist = append(watchlist, w)
-	}
-	if len(watchlist) == 0 {
-		c.JSON(400, gin.H{"error": "Trading Watchlist ist leer"})
-		return
-	}
-
-	type stockResult struct {
-		Symbol  string
-		Trades  []ArenaBacktestTrade
-		Metrics ArenaBacktestMetrics
-	}
-
-	// SSE streaming for progress
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.Flush()
-
-	total := len(watchlist)
-
-	// Send init event immediately
-	initJSON, _ := json.Marshal(gin.H{
-		"type": "init", "total": total,
-	})
-	fmt.Fprintf(c.Writer, "data: %s\n\n", initJSON)
-	c.Writer.Flush()
-
-	// === Pre-warm cache: fetch uncached symbols via Yahoo (fast, no rate-limit) ===
-	cacheInterval := interval
-	switch interval {
-	case "1h":
-		cacheInterval = "60m"
-	case "1D":
-		cacheInterval = "1d"
-	case "1W":
-		cacheInterval = "1wk"
-	}
-
-	// Bulk-check which symbols are already cached (single query)
-	var cacheEntries []OHLCVCache
-	db.Select("symbol, updated_at").Where("interval = ?", cacheInterval).Find(&cacheEntries)
-	cacheMap := make(map[string]time.Time, len(cacheEntries))
-	for _, ce := range cacheEntries {
-		cacheMap[ce.Symbol] = ce.UpdatedAt
-	}
-
-	var uncached []string
-	for _, w := range watchlist {
-		if updatedAt, ok := cacheMap[w.Symbol]; ok && time.Since(updatedAt) < 24*time.Hour {
-			continue
-		}
-		uncached = append(uncached, w.Symbol)
-	}
-
-	if len(uncached) > 0 {
-		log.Printf("[Arena-Batch] Pre-warming %d uncached symbols via Yahoo", len(uncached))
-		prefetchJSON, _ := json.Marshal(gin.H{
-			"type": "prefetch", "uncached": len(uncached), "total": total, "source": "Yahoo",
-		})
-		fmt.Fprintf(c.Writer, "data: %s\n\n", prefetchJSON)
-		c.Writer.Flush()
-
-		yahooPeriod := backtestPeriodMap[cacheInterval]
-		if yahooPeriod == "" {
-			yahooPeriod = "60d"
-		}
-		var ywg sync.WaitGroup
-		ysem := make(chan struct{}, 20)
-		var yahooDone int64
-		var yahooFailed int64
-		var prefetchErrors sync.Map // symbol → reason string
-		type yahooProgress struct{ Symbol string }
-		yCh := make(chan yahooProgress, len(uncached))
-		for _, sym := range uncached {
-			if ctx.Err() != nil {
-				break
-			}
-			ywg.Add(1)
-			go func(s string) {
-				defer ywg.Done()
-				select {
-				case ysem <- struct{}{}:
-				case <-ctx.Done():
-					return
-				}
-				defer func() { <-ysem }()
-				if ctx.Err() != nil {
-					return
-				}
-				var ohlcv []OHLCV
-				var lastErr error
-				for attempt := 0; attempt < 3; attempt++ {
-					if ctx.Err() != nil {
-						return
-					}
-					if attempt > 0 {
-						time.Sleep(time.Duration(attempt) * 2 * time.Second)
-					}
-					ohlcv, lastErr = fetchOHLCVFromYahoo(s, yahooPeriod, cacheInterval)
-					if lastErr == nil && len(ohlcv) > 0 {
-						break
-					}
-					if lastErr != nil && !strings.Contains(lastErr.Error(), "status 4") {
-						break
-					}
-				}
-				if lastErr == nil && len(ohlcv) > 0 {
-					saveOHLCVCache(s, cacheInterval, ohlcv)
-				} else {
-					atomic.AddInt64(&yahooFailed, 1)
-					reason := "Keine Daten"
-					if lastErr != nil {
-						errStr := lastErr.Error()
-						if strings.Contains(errStr, "status 404") || strings.Contains(errStr, "status 400") {
-							reason = "Symbol nicht gefunden"
-						} else if strings.Contains(errStr, "status 429") {
-							reason = "Yahoo Rate-Limit"
-						} else if strings.Contains(errStr, "Timeout") || strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline") {
-							reason = "Timeout"
-						} else if strings.Contains(errStr, "status 4") || strings.Contains(errStr, "status 5") {
-							reason = fmt.Sprintf("HTTP-Fehler (%s)", errStr)
-						} else {
-							reason = errStr
-						}
-					} else if len(ohlcv) == 0 {
-						reason = "Leere Antwort (0 Bars)"
-					}
-					prefetchErrors.Store(s, reason)
-				}
-				yCh <- yahooProgress{Symbol: s}
-			}(sym)
-		}
-		go func() { ywg.Wait(); close(yCh) }()
-		for range yCh {
-			done := atomic.AddInt64(&yahooDone, 1)
-			pJSON, _ := json.Marshal(gin.H{
-				"type": "prefetch_progress", "current": done, "total": len(uncached), "source": "Yahoo",
-			})
-			fmt.Fprintf(c.Writer, "data: %s\n\n", pJSON)
-			c.Writer.Flush()
-		}
-		if yahooFailed > 0 {
-			log.Printf("[Arena-Batch] Yahoo Prefetch: %d/%d fehlgeschlagen", yahooFailed, len(uncached))
-			failEvt, _ := json.Marshal(gin.H{"type": "prefetch_warning", "yahoo_failed": yahooFailed, "yahoo_total": len(uncached)})
-			fmt.Fprintf(c.Writer, "data: %s\n\n", failEvt)
-			c.Writer.Flush()
-		}
-		log.Printf("[Arena-Batch] Pre-warm complete")
-	}
-
-	var completed int64
-	results := make([]stockResult, total)
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 50) // CPU-only with in-memory cache
-
-	// Progress channel
-	type progressMsg struct {
-		Index      int
-		Symbol     string
-		Skipped    bool
-		SkipReason string
-	}
-	progressCh := make(chan progressMsg, total)
-
-	for idx, item := range watchlist {
-		if ctx.Err() != nil {
-			break
-		}
-		wg.Add(1)
-		go func(i int, symbol string) {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("[Arena] Batch panic for %s: %v", symbol, r)
-					progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true, SkipReason: "Interner Fehler (Panic)"}
-				}
-			}()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				return
-			}
-			defer func() { <-sem }()
-			if ctx.Err() != nil {
-				return
-			}
-
-			ohlcv, err := getOHLCVCached(symbol, interval, 0) // cache only — pre-warm already fetched
-			if err != nil || len(ohlcv) < 50 {
-				reason := "Nicht im Cache"
-				if err != nil {
-					reason = err.Error()
-				} else if len(ohlcv) < 50 {
-					reason = fmt.Sprintf("Zu wenig Daten (%d Bars, min. 50)", len(ohlcv))
-				}
-				progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true, SkipReason: reason}
-				return
-			}
-			strategy, _ := instantiateStrategy(req.Strategy, req.Params)
-			result := runArenaBacktest(ohlcv, strategy)
-			closedTrades := make([]ArenaBacktestTrade, 0)
-			for _, t := range result.Trades {
-				if !t.IsOpen {
-					closedTrades = append(closedTrades, t)
-				}
-			}
-			// Recalculate metrics from closed trades only (consistent with single backtest display)
-			metrics := recalcMetrics(closedTrades)
-			log.Printf("[Arena-Batch] %s: bars=%d trades=%d closed=%d winrate=%.1f%% interval=%s", symbol, len(ohlcv), len(result.Trades), len(closedTrades), metrics.WinRate, interval)
-			results[i] = stockResult{Symbol: symbol, Trades: closedTrades, Metrics: metrics}
-			progressCh <- progressMsg{Index: i, Symbol: symbol}
-		}(idx, item.Symbol)
-	}
-
-	// Drain progress in background, close channel when all done
-	go func() {
-		wg.Wait()
-		close(progressCh)
-	}()
-
-	var skippedSymbols []SkippedSymbolEntry
-	for msg := range progressCh {
-		if ctx.Err() != nil {
-			continue // drain without writing
-		}
-		completed++
-		if msg.Skipped {
-			skippedSymbols = append(skippedSymbols, SkippedSymbolEntry{Symbol: msg.Symbol, Reason: msg.SkipReason})
-		}
-		progressJSON, _ := json.Marshal(gin.H{
-			"type":    "progress",
-			"current": completed,
-			"total":   total,
-			"symbol":  msg.Symbol,
-		})
-		fmt.Fprintf(c.Writer, "data: %s\n\n", progressJSON)
-		c.Writer.Flush()
-	}
-
-	if ctx.Err() != nil {
-		return
-	}
-
-	// Aggregate
-	var allTrades []WatchlistBacktestTrade
-	var allArena []ArenaBacktestTrade
-	perStock := make(map[string]ArenaBacktestMetrics)
-
-	for _, sr := range results {
-		if sr.Symbol == "" {
-			continue
-		}
-		for _, t := range sr.Trades {
-			allTrades = append(allTrades, WatchlistBacktestTrade{
-				Symbol: sr.Symbol, Direction: t.Direction,
-				EntryPrice: t.EntryPrice, EntryTime: t.EntryTime,
-				ExitPrice: t.ExitPrice, ExitTime: t.ExitTime,
-				ReturnPct: t.ReturnPct, ExitReason: t.ExitReason, IsOpen: t.IsOpen,
-			})
-			allArena = append(allArena, t)
-		}
-		// Use metrics directly from runArenaBacktest (identical to single backtest)
-		perStock[sr.Symbol] = sr.Metrics
-	}
-
-	aggregated := calculateBacktestLabMetrics(allArena)
-
-	// Fetch market caps for all symbols
-	symbols := make([]string, 0, len(perStock))
-	for sym := range perStock {
-		symbols = append(symbols, sym)
-	}
-	marketCaps := make(map[string]int64)
-	if len(symbols) > 0 {
-		var stocks []Stock
-		db.Where("symbol IN ?", symbols).Select("symbol, market_cap").Find(&stocks)
-		for _, s := range stocks {
-			if s.MarketCap > 0 {
-				marketCaps[s.Symbol] = s.MarketCap
-			}
-		}
-	}
-
-	resultJSON, _ := json.Marshal(gin.H{
-		"type": "result",
-		"data": WatchlistBacktestResult{
-			Metrics:        aggregated,
-			Trades:         allTrades,
-			PerStock:       perStock,
-			MarketCaps:     marketCaps,
-			SkippedSymbols: skippedSymbols,
-		},
-	})
-	fmt.Fprintf(c.Writer, "data: %s\n\n", resultJSON)
-	c.Writer.Flush()
-}
-
 // ==================== Arena v2 Handlers ====================
 
 func arenaV2BatchHandler(c *gin.Context) {
@@ -24971,9 +25962,14 @@ func arenaV2BatchHandler(c *gin.Context) {
 
 	total := len(watchlist)
 
+	// Send init IMMEDIATELY so frontend exits "Verbinde..." state
+	initEvt, _ := json.Marshal(gin.H{"type": "init", "total": total})
+	fmt.Fprintf(c.Writer, "data: %s\n\n", initEvt)
+	c.Writer.Flush()
+
 	bulkCacheInterval := interval
 	switch interval {
-	case "1h":
+	case "1h", "2h", "4h":
 		bulkCacheInterval = "60m"
 	case "1D":
 		bulkCacheInterval = "1d"
@@ -24981,42 +25977,41 @@ func arenaV2BatchHandler(c *gin.Context) {
 		bulkCacheInterval = "1wk"
 	}
 
-	// Use in-memory cache to determine cached vs uncached symbols
+	// Use arena in-memory cache to determine cached vs uncached symbols
 	// Validate that cached data has enough bars (≥50), otherwise re-fetch
-	cachedSymbols := getOHLCVMemCacheSymbols(bulkCacheInterval)
+	cachedSymbols := getArenaOHLCVMemCacheSymbols(bulkCacheInterval)
 
 	var uncachedSymbols []string
 	validCached := 0
 	for _, w := range watchlist {
 		if cachedSymbols[w.Symbol] {
-			if bars, ok := getOHLCVFromMemCache(w.Symbol, bulkCacheInterval); ok && len(bars) >= 50 {
+			if bars, ok := getArenaOHLCVFromMemCache(w.Symbol, bulkCacheInterval); ok && len(bars) >= 50 {
 				validCached++
-			} else {
-				uncachedSymbols = append(uncachedSymbols, w.Symbol)
+				continue
 			}
-		} else {
-			uncachedSymbols = append(uncachedSymbols, w.Symbol)
 		}
+		uncachedSymbols = append(uncachedSymbols, w.Symbol)
 	}
 
+	toFetch := len(uncachedSymbols)
 	cacheEvt, _ := json.Marshal(gin.H{
-		"type": "cache_loaded", "cached": validCached, "total": total, "uncached": len(uncachedSymbols),
+		"type": "cache_loaded", "cached": validCached, "total": total, "uncached": toFetch,
 	})
 	fmt.Fprintf(c.Writer, "data: %s\n\n", cacheEvt)
 	c.Writer.Flush()
 
 	var prefetchErrors sync.Map // symbol → reason string (shared between prefetch + backtest)
-	if len(uncachedSymbols) > 0 {
+	if toFetch > 0 {
 		var sseMu sync.Mutex
 		var prewarmDone int64
 
-		prefetchEvt, _ := json.Marshal(gin.H{"type": "prefetch", "uncached": len(uncachedSymbols)})
+		prefetchEvt, _ := json.Marshal(gin.H{"type": "prefetch", "uncached": toFetch, "total": total, "source": "Yahoo"})
 		fmt.Fprintf(c.Writer, "data: %s\n\n", prefetchEvt)
 		c.Writer.Flush()
 
 		sendProgress := func(done int64) {
 			sseMu.Lock()
-			pJSON, _ := json.Marshal(gin.H{"type": "prefetch_progress", "current": done, "total": len(uncachedSymbols)})
+			pJSON, _ := json.Marshal(gin.H{"type": "prefetch_progress", "current": done, "total": toFetch, "source": "Yahoo"})
 			fmt.Fprintf(c.Writer, "data: %s\n\n", pJSON)
 			c.Writer.Flush()
 			sseMu.Unlock()
@@ -25026,6 +26021,28 @@ func arenaV2BatchHandler(c *gin.Context) {
 		var yahooWg sync.WaitGroup
 		yahooSem := make(chan struct{}, 20)
 		var yahooFailed int64
+
+		yahooErrorReason := func(lastErr error, ohlcv []OHLCV) string {
+			if lastErr != nil {
+				errStr := lastErr.Error()
+				if strings.Contains(errStr, "status 404") || strings.Contains(errStr, "status 400") {
+					return "Symbol nicht gefunden"
+				} else if strings.Contains(errStr, "status 429") {
+					return "Yahoo Rate-Limit"
+				} else if strings.Contains(errStr, "Timeout") || strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline") {
+					return "Timeout"
+				} else if strings.Contains(errStr, "status 4") || strings.Contains(errStr, "status 5") {
+					return fmt.Sprintf("HTTP-Fehler (%s)", errStr)
+				}
+				return errStr
+			}
+			if len(ohlcv) == 0 {
+				return "Leere Antwort (0 Bars)"
+			}
+			return "Keine Daten"
+		}
+
+		// Full fetch for uncached symbols (2y)
 		for _, sym := range uncachedSymbols {
 			if ctx.Err() != nil {
 				break
@@ -25065,32 +26082,16 @@ func arenaV2BatchHandler(c *gin.Context) {
 					}
 				}
 				if lastErr == nil && len(ohlcv) > 0 {
-					saveOHLCVCache(s, bulkCacheInterval, ohlcv)
+					saveArenaOHLCVCache(s, bulkCacheInterval, ohlcv)
 				} else {
 					atomic.AddInt64(&yahooFailed, 1)
-					reason := "Keine Daten"
-					if lastErr != nil {
-						errStr := lastErr.Error()
-						if strings.Contains(errStr, "status 404") || strings.Contains(errStr, "status 400") {
-							reason = "Symbol nicht gefunden"
-						} else if strings.Contains(errStr, "status 429") {
-							reason = "Yahoo Rate-Limit"
-						} else if strings.Contains(errStr, "Timeout") || strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline") {
-							reason = "Timeout"
-						} else if strings.Contains(errStr, "status 4") || strings.Contains(errStr, "status 5") {
-							reason = fmt.Sprintf("HTTP-Fehler (%s)", errStr)
-						} else {
-							reason = errStr
-						}
-					} else if len(ohlcv) == 0 {
-						reason = "Leere Antwort (0 Bars)"
-					}
-					prefetchErrors.Store(s, reason)
+					prefetchErrors.Store(s, yahooErrorReason(lastErr, ohlcv))
 				}
 				done := atomic.AddInt64(&prewarmDone, 1)
 				sendProgress(done)
 			}(sym)
 		}
+
 		yahooWg.Wait()
 		if yahooFailed > 0 {
 			log.Printf("[Arena Batch] Yahoo Prefetch: %d/%d fehlgeschlagen", yahooFailed, len(uncachedSymbols))
@@ -25160,7 +26161,7 @@ func arenaV2BatchHandler(c *gin.Context) {
 			}
 
 			// Read directly from in-memory cache (no JSON unmarshal, no DB hit)
-			ohlcv, ok := getOHLCVFromMemCache(symbol, bulkCacheInterval)
+			ohlcv, ok := getArenaOHLCVFromMemCache(symbol, bulkCacheInterval)
 			if !ok || len(ohlcv) < 50 {
 				reason := "Nicht im Cache"
 				if prefetchReason, found := prefetchErrors.Load(symbol); found {
@@ -25171,31 +26172,34 @@ func arenaV2BatchHandler(c *gin.Context) {
 				progressCh <- progressMsg{Index: i, Symbol: symbol, Skipped: true, SkipReason: reason}
 				return
 			}
+			if interval == "2h" {
+				ohlcv = aggregateOHLCV(ohlcv, 2)
+			} else if interval == "4h" {
+				ohlcv = aggregateOHLCV(ohlcv, 4)
+			}
 			strategy, _ := instantiateStrategy(req.Strategy, req.Params)
 			result := runArenaBacktest(ohlcv, strategy)
 
-			closedTrades := make([]ArenaBacktestTrade, 0)
+			filteredTrades := make([]ArenaBacktestTrade, 0)
 			for _, t := range result.Trades {
-				if !t.IsOpen {
-					if req.TradesFrom > 0 && t.EntryTime < req.TradesFrom {
-						continue
-					}
-					closedTrades = append(closedTrades, t)
+				if req.TradesFrom > 0 && t.EntryTime < req.TradesFrom {
+					continue
 				}
+				filteredTrades = append(filteredTrades, t)
 			}
 
 			if req.LongOnly {
-				filtered := make([]ArenaBacktestTrade, 0, len(closedTrades))
-				for _, t := range closedTrades {
-					if t.Direction == "long" {
+				filtered := make([]ArenaBacktestTrade, 0, len(filteredTrades))
+				for _, t := range filteredTrades {
+					if t.Direction == "LONG" {
 						filtered = append(filtered, t)
 					}
 				}
-				closedTrades = filtered
+				filteredTrades = filtered
 			}
 
-			metrics := recalcMetrics(closedTrades)
-			results[i] = stockResult{Symbol: symbol, Trades: closedTrades, Metrics: metrics}
+			metrics := recalcMetrics(filteredTrades)
+			results[i] = stockResult{Symbol: symbol, Trades: filteredTrades, Metrics: metrics}
 			progressCh <- progressMsg{Index: i, Symbol: symbol}
 		}(idx, item.Symbol)
 	}
@@ -26330,7 +27334,7 @@ func runTradingScan() {
 	}
 
 	for _, item := range items {
-		ohlcv, err := getOHLCVCached(item.Symbol, "5m", 10*time.Minute)
+		ohlcv, err := getBotOHLCVCached(item.Symbol, "5m", 10*time.Minute)
 		if err != nil {
 			fmt.Printf("[TradingScheduler] Error fetching %s: %v\n", item.Symbol, err)
 			continue
@@ -26454,6 +27458,8 @@ type liveSessionState struct {
 	ohlcvData  map[string][]OHLCV
 	ohlcvDirty map[string]bool
 	ohlcvMu    sync.RWMutex
+	// Signal-gating for 2h/4h aggregation: track last processed aggregated candle per symbol
+	lastProcessedCandleTime map[string]int64
 }
 
 var (
@@ -26579,6 +27585,29 @@ func processCandleEvent(state *liveSessionState, evt candleEvent, config LiveTra
 	symSets := state.cachedSymSets
 	state.cacheMu.RUnlock()
 
+	// For 2h/4h: aggregate 1h bars with aggregateOHLCV (same as backtest) + signal-gating
+	analysisBars := ohlcvCopy
+	if isLiveAggregateInterval(sess.Interval) {
+		factor := liveAggregationFactor(sess.Interval)
+		aggregated := aggregateOHLCV(ohlcvCopy, factor)
+		if len(aggregated) == 0 {
+			return
+		}
+		lastAggTime := aggregated[len(aggregated)-1].Time
+
+		// Signal-gating: only process when a new aggregated candle appears
+		state.ohlcvMu.Lock()
+		prevTime := state.lastProcessedCandleTime[evt.symbol]
+		if lastAggTime <= prevTime {
+			state.ohlcvMu.Unlock()
+			return // no new aggregated candle yet
+		}
+		state.lastProcessedCandleTime[evt.symbol] = lastAggTime
+		state.ohlcvMu.Unlock()
+
+		analysisBars = aggregated
+	}
+
 	// Run each strategy for this symbol
 	for _, s := range strats {
 		if !symSets[s.ID][evt.symbol] {
@@ -26590,11 +27619,11 @@ func processCandleEvent(state *liveSessionState, evt candleEvent, config LiveTra
 			logLiveEvent(sess.ID, "SKIP", evt.symbol, fmt.Sprintf("Strategie-Engine konnte nicht erstellt werden: %s", s.Name), s.Name)
 			continue
 		}
-		if len(ohlcvCopy) < engine.RequiredBars() {
-			logLiveEvent(sess.ID, "SKIP", evt.symbol, fmt.Sprintf("Zu wenig Bars: %d/%d benötigt", len(ohlcvCopy), engine.RequiredBars()), s.Name)
+		if len(analysisBars) < engine.RequiredBars() {
+			logLiveEvent(sess.ID, "SKIP", evt.symbol, fmt.Sprintf("Zu wenig Bars: %d/%d benötigt", len(analysisBars), engine.RequiredBars()), s.Name)
 			continue
 		}
-		processLiveSymbolWithData(sess, evt.symbol, engine, ohlcvCopy, config, s)
+		processLiveSymbolWithData(sess, evt.symbol, engine, analysisBars, config, s)
 	}
 }
 
@@ -26735,6 +27764,24 @@ func intervalToDuration(iv string) time.Duration {
 	}
 }
 
+// isLiveAggregateInterval returns true if the interval needs 1h-heartbeat aggregation
+// to align live trading candle boundaries with backtest (which uses aggregateOHLCV).
+func isLiveAggregateInterval(interval string) bool {
+	return interval == "2h" || interval == "4h"
+}
+
+// liveAggregationFactor returns how many 1h bars to aggregate (2 for 2h, 4 for 4h)
+func liveAggregationFactor(interval string) int {
+	switch interval {
+	case "2h":
+		return 2
+	case "4h":
+		return 4
+	default:
+		return 1
+	}
+}
+
 func createStrategyFromJSON(strategyName, paramsJSON string) TradingStrategy {
 	var params map[string]interface{}
 	if paramsJSON != "" {
@@ -26846,6 +27893,27 @@ func createStrategyFromJSON(strategyName, paramsJSON string) TradingStrategy {
 			EMAFast: pInt("ema_fast", 5), EMASlow: pInt("ema_slow", 13),
 			RiskReward: pFloat("risk_reward", 2.0), SLBuffer: pFloat("sl_buffer", 0.5),
 			MinTrendBars: pInt("min_trend_bars", 3),
+		}
+	case "vwap_day_trading":
+		return &VWAPDayTradingStrategy{
+			BandMult1: pFloat("band_mult_1", 2.0), BandMult2: pFloat("band_mult_2", 3.0),
+			PullbackEnabled: pInt("pullback_enabled", 1), ReversalEnabled: pInt("reversal_enabled", 1),
+			SkipBars: pInt("skip_bars", 12), TrendBars: pInt("trend_bars", 6),
+			BodyPct: pFloat("body_pct", 50), RiskReward: pFloat("risk_reward", 2.0),
+			SLLookback: pInt("sl_lookback", 10), SLBuffer: pFloat("sl_buffer", 0.3),
+			PrevVWAPFilter: pInt("prev_vwap_filter", 0),
+			HybridFilter: pInt("hybrid_filter", 0) == 1,
+			HybridLongTh: pFloat("hybrid_long_thresh", 75),
+			HybridShortTh: pFloat("hybrid_short_thresh", 25),
+		}
+	case "gaussian_trend":
+		return &GaussianTrendStrategy{
+			Period: pInt("period", 25), Poles: pInt("poles", 5),
+			FilterPeriod: pInt("filter_period", 10), FilterDeviations: pFloat("filter_deviations", 1.0),
+			RSIPeriod: pInt("rsi_period", 30), MACDFast: pInt("macd_fast", 24),
+			MACDSlow: pInt("macd_slow", 52), MACDSignal: pInt("macd_signal", 9),
+			SLBuffer: pFloat("sl_buffer", 0.5), RiskReward: pFloat("risk_reward", 1.5),
+			SLLookback: pInt("sl_lookback", 10),
 		}
 	default:
 		return nil
@@ -28548,7 +29616,8 @@ func resumeLiveTrading(c *gin.Context) {
 
 	// Start scheduler
 	state := &liveSessionState{
-		StopChan: make(chan struct{}),
+		StopChan:                make(chan struct{}),
+		lastProcessedCandleTime: make(map[string]int64),
 	}
 	liveSchedulerMu.Lock()
 	liveSchedulers[session.ID] = state
@@ -28577,9 +29646,15 @@ func runLiveWebSocket(state *liveSessionState, sessionID uint, config LiveTradin
 	json.Unmarshal([]byte(session.Symbols), &symbols)
 	dur := intervalToDuration(session.Interval)
 
+	// For 2h/4h: use 1h-heartbeat aggregation to match backtest candle boundaries
+	cacheInterval := session.Interval
+	if isLiveAggregateInterval(session.Interval) {
+		dur = time.Hour       // aggregate 1h bars from WS
+		cacheInterval = "60m" // cache as 1h bars
+	}
+
 	logLiveEvent(sessionID, "INFO", "-", fmt.Sprintf("WebSocket-Modus: %d Symbole, Interval %s", len(symbols), session.Interval))
 
-	cacheInterval := session.Interval
 	ivMap := map[string]string{"1h": "60m", "1D": "1d", "1W": "1wk"}
 	if mapped, ok := ivMap[cacheInterval]; ok {
 		cacheInterval = mapped
@@ -28769,6 +29844,10 @@ func runLiveScheduler(state *liveSessionState, sessionID uint) {
 	}
 
 	dur := intervalToDuration(session.Interval)
+	// For 2h/4h: poll every 1h to match backtest aggregation boundaries
+	if isLiveAggregateInterval(session.Interval) {
+		dur = time.Hour
+	}
 	const buffer = 1500 * time.Millisecond // wait 1.5s after candle close for Yahoo to finalize
 
 	// Ensure persistent cache has data for all symbols
@@ -28776,7 +29855,7 @@ func runLiveScheduler(state *liveSessionState, sessionID uint) {
 	json.Unmarshal([]byte(session.Symbols), &symbols)
 
 	yahooInterval := session.Interval
-	intervalMap := map[string]string{"1h": "60m", "1D": "1d", "1W": "1wk"}
+	intervalMap := map[string]string{"1h": "60m", "2h": "60m", "4h": "60m", "1D": "1d", "1W": "1wk"}
 	if mapped, ok := intervalMap[yahooInterval]; ok {
 		yahooInterval = mapped
 	}
@@ -28811,7 +29890,7 @@ func runLiveScheduler(state *liveSessionState, sessionID uint) {
 // This replaces the background worker's responsibility for these symbols during active sessions.
 func refreshLiveSymbols(symbols []string, interval string, sessionID uint) {
 	yahooInterval := interval
-	intervalMap := map[string]string{"1h": "60m", "1D": "1d", "1W": "1wk"}
+	intervalMap := map[string]string{"1h": "60m", "2h": "60m", "4h": "60m", "1D": "1d", "1W": "1wk"}
 	if mapped, ok := intervalMap[yahooInterval]; ok {
 		yahooInterval = mapped
 	}
@@ -28839,7 +29918,7 @@ func refreshLiveSymbols(symbols []string, interval string, sessionID uint) {
 			var err error
 			useAlpaca := alpacaDataKey != "" && !isNonUSStock(symbol)
 			if useAlpaca {
-				freshBars, err = fetchOHLCVFromAlpaca(symbol, interval)
+				freshBars, err = fetchOHLCVFromAlpaca(symbol, yahooInterval)
 			}
 			if !useAlpaca || err != nil || len(freshBars) == 0 {
 				freshBars, err = fetchOHLCVFromYahoo(symbol, deltaPeriod, yahooInterval)
@@ -28849,12 +29928,8 @@ func refreshLiveSymbols(symbols []string, interval string, sessionID uint) {
 				return
 			}
 
-			var cache OHLCVCache
-			if db.Where("symbol = ? AND interval = ?", symbol, yahooInterval).First(&cache).Error == nil && cache.DataJSON != "" {
-				var cached []OHLCV
-				if json.Unmarshal([]byte(cache.DataJSON), &cached) == nil && len(cached) > 0 {
-					freshBars = mergeOHLCV(cached, freshBars)
-				}
+			if cached, ok := getOHLCVFromMemCache(symbol, yahooInterval); ok && len(cached) > 0 {
+				freshBars = mergeOHLCV(cached, freshBars)
 			}
 
 			saveOHLCVCache(symbol, yahooInterval, freshBars)
@@ -28960,10 +30035,10 @@ func runLiveScan(sessionID uint) {
 	priceMap := map[string]float64{}
 	skipped := 0
 
-	// Map interval to cache key
+	// Map interval to cache key (2h/4h → fetch 60m, aggregate later)
 	liveCacheInterval := session.Interval
 	switch liveCacheInterval {
-	case "1h":
+	case "1h", "2h", "4h":
 		liveCacheInterval = "60m"
 	case "1D":
 		liveCacheInterval = "1d"
@@ -28982,6 +30057,11 @@ func runLiveScan(sessionID uint) {
 				logLiveEvent(sessionID, "SKIP", sym, "Keine OHLCV-Daten im Cache — übersprungen")
 				continue
 			}
+		}
+
+		// For 2h/4h: aggregate 1h bars to match backtest candle boundaries
+		if isLiveAggregateInterval(session.Interval) && len(ohlcv) > 0 {
+			ohlcv = aggregateOHLCV(ohlcv, liveAggregationFactor(session.Interval))
 		}
 
 		// Run each active strategy for this symbol
@@ -29021,6 +30101,10 @@ func runLiveScan(sessionID uint) {
 	// Update session poll stats + symbol prices
 	now := time.Now()
 	dur := intervalToDuration(session.Interval)
+	// For 2h/4h: next poll is in 1h (matching heartbeat interval)
+	if isLiveAggregateInterval(session.Interval) {
+		dur = time.Hour
+	}
 	durSec := int64(dur.Seconds())
 	nextAligned := ((now.Unix() / durSec) + 1) * durSec
 	next := time.Unix(nextAligned, 0).Add(1500 * time.Millisecond)
@@ -29054,13 +30138,28 @@ func processLiveSymbolWithData(session LiveTradingSession, symbol string, strate
 	// Strip incomplete (still open) candle — only analyze fully closed bars
 	// Keep lastPrice from the latest bar (even if open) for P&L updates
 	lastPrice := ohlcv[len(ohlcv)-1].Close
-	ivDur := intervalToDuration(session.Interval)
 	if len(ohlcv) > 1 {
-		lastBar := ohlcv[len(ohlcv)-1]
-		candleEnd := lastBar.Time + int64(ivDur.Seconds())
-		if candleEnd > time.Now().Unix() {
-			// Last candle is still open → remove it for signal analysis
-			ohlcv = ohlcv[:len(ohlcv)-1]
+		if isLiveAggregateInterval(session.Interval) {
+			// For aggregated 2h/4h: check if last candle is still open based on
+			// market close (16:00 ET) — remainder candles have variable duration
+			loc, _ := time.LoadLocation("America/New_York")
+			lastBar := ohlcv[len(ohlcv)-1]
+			lastBarET := time.Unix(lastBar.Time, 0).In(loc)
+			nowET := time.Now().In(loc)
+			// Same trading day and market still open → last aggregated candle is incomplete
+			if lastBarET.Format("2006-01-02") == nowET.Format("2006-01-02") &&
+				nowET.Hour() < 16 {
+				ohlcv = ohlcv[:len(ohlcv)-1]
+			}
+		} else {
+			// Standard intervals (5m/15m/1h): fixed-duration check
+			ivDur := intervalToDuration(session.Interval)
+			lastBar := ohlcv[len(ohlcv)-1]
+			candleEnd := lastBar.Time + int64(ivDur.Seconds())
+			if candleEnd > time.Now().Unix() {
+				// Last candle is still open → remove it for signal analysis
+				ohlcv = ohlcv[:len(ohlcv)-1]
+			}
 		}
 	}
 
@@ -29708,27 +30807,27 @@ func runBacktestLabHandler(c *gin.Context) {
 	case "defensive":
 		db.Where("mode = ?", "defensive").First(&defConfig)
 		if defConfig.ID == 0 {
-			defConfig = BXtrenderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15}
+			defConfig = BXtrenderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, TslPercent: 20.0, TslEnabled: true}
 		}
 	case "aggressive":
 		db.Where("mode = ?", "aggressive").First(&aggConfig)
 		if aggConfig.ID == 0 {
-			aggConfig = BXtrenderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15}
+			aggConfig = BXtrenderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, TslPercent: 20.0, TslEnabled: true}
 		}
 	case "quant":
 		db.First(&quantConfig)
 		if quantConfig.ID == 0 {
-			quantConfig = BXtrenderQuantConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: true, MaLength: 200, MaType: "EMA", TslPercent: 20.0}
+			quantConfig = BXtrenderQuantConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: true, MaLength: 200, MaType: "EMA", TslPercent: 20.0, TslEnabled: true}
 		}
 	case "ditz":
 		db.First(&ditzConfig)
 		if ditzConfig.ID == 0 {
-			ditzConfig = BXtrenderDitzConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: true, MaLength: 200, MaType: "EMA", TslPercent: 20.0}
+			ditzConfig = BXtrenderDitzConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: true, MaLength: 200, MaType: "EMA", TslPercent: 20.0, TslEnabled: true}
 		}
 	case "trader":
 		db.First(&traderConfig)
 		if traderConfig.ID == 0 {
-			traderConfig = BXtrenderTraderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: false, MaLength: 200, MaType: "EMA", TslPercent: 20.0}
+			traderConfig = BXtrenderTraderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: false, MaLength: 200, MaType: "EMA", TslPercent: 20.0, TslEnabled: true}
 		}
 	default:
 		c.JSON(400, gin.H{"error": "Unbekannter Base Mode: " + req.BaseMode})
@@ -29742,8 +30841,8 @@ func runBacktestLabHandler(c *gin.Context) {
 		return
 	}
 
-	// Fetch weekly OHLCV from cache
-	weeklyOHLCV, err := getOHLCVCached(symbol, "1wk", 24*time.Hour)
+	// Fetch weekly OHLCV from bot cache
+	weeklyOHLCV, err := getBotOHLCVCached(symbol, "1wk", 24*time.Hour)
 	if err != nil || len(weeklyOHLCV) < 50 {
 		c.JSON(500, gin.H{"error": "Weekly-Daten konnten nicht geladen werden"})
 		return
@@ -29877,6 +30976,11 @@ func convertServerTradesToArena(serverTrades []ServerTrade) ([]ArenaBacktestTrad
 }
 
 func calculateBacktestLabMetrics(trades []ArenaBacktestTrade) ArenaBacktestMetrics {
+	// Sort by entry time for correct equity curve / MaxDD calculation
+	sorted := make([]ArenaBacktestTrade, len(trades))
+	copy(sorted, trades)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].EntryTime < sorted[j].EntryTime })
+
 	wins, losses := 0, 0
 	totalReturn := 0.0
 	var winReturns, lossReturns []float64
@@ -29884,7 +30988,7 @@ func calculateBacktestLabMetrics(trades []ArenaBacktestTrade) ArenaBacktestMetri
 	peak := equity
 	maxDD := 0.0
 
-	for _, t := range trades {
+	for _, t := range sorted {
 		// Include open trades (same as runArenaBacktest)
 		totalReturn += t.ReturnPct
 		if t.ReturnPct >= 0 {
@@ -30471,8 +31575,15 @@ func getOHLCVDeltaPeriod(interval string) string {
 	}
 }
 
+// testMarketOpenOverride can be set in tests to bypass real market-hours check.
+// nil = use real check, non-nil = return *testMarketOpenOverride
+var testMarketOpenOverride *bool
+
 // isUSMarketOpen returns true during US market hours (9:30-16:00 ET, weekdays)
 func isUSMarketOpen() bool {
+	if testMarketOpenOverride != nil {
+		return *testMarketOpenOverride
+	}
 	loc, err := time.LoadLocation("America/New_York")
 	if err != nil {
 		return true // assume open if timezone fails
@@ -30559,17 +31670,17 @@ func arenaPrefetchHandler(c *gin.Context) {
 			}
 		}
 	} else {
+		const prefetchFreshness = 4 * time.Hour
 		for _, ivp := range ivPairs {
-			var cacheEntries []OHLCVCache
-			db.Select("symbol, updated_at").Where("interval = ?", ivp.cache).Find(&cacheEntries)
-			cacheMap := make(map[string]time.Time, len(cacheEntries))
-			for _, ce := range cacheEntries {
-				cacheMap[ce.Symbol] = ce.UpdatedAt
-			}
+			cachedSymbols := getArenaOHLCVMemCacheSymbols(ivp.cache)
 			for _, sym := range symbols {
-				if updatedAt, ok := cacheMap[sym]; ok && time.Since(updatedAt) < 24*time.Hour {
-					totalCached++
-					continue
+				if cachedSymbols[sym] {
+					if bars, ok := getArenaOHLCVFromMemCache(sym, ivp.cache); ok && len(bars) >= 50 {
+						if _, modTime, err := readArenaOHLCVFile(sym, ivp.cache); err == nil && time.Since(modTime) < prefetchFreshness {
+							totalCached++
+							continue
+						}
+					}
 				}
 				jobs = append(jobs, fetchJob{Symbol: sym, CacheIv: ivp.cache, YahooIv: ivp.cache, AlpacaIv: ivp.raw})
 			}
@@ -30625,7 +31736,7 @@ func arenaPrefetchHandler(c *gin.Context) {
 					}
 					ohlcv, err := fetchOHLCVFromYahoo(j.Symbol, period, j.YahooIv)
 					if err == nil && len(ohlcv) > 0 {
-						saveOHLCVCache(j.Symbol, j.CacheIv, ohlcv)
+						saveArenaOHLCVCache(j.Symbol, j.CacheIv, ohlcv)
 						atomic.AddInt64(&fetched, 1)
 						progressCh <- prefetchProgress{Symbol: j.Symbol, Source: "yahoo"}
 					} else {
@@ -30733,10 +31844,9 @@ func startOHLCVCacheWorker() {
 					continue
 				}
 
-				// Check if cache is still fresh
-				var cache OHLCVCache
-				if db.Where("symbol = ? AND interval = ?", symbol, iv).First(&cache).Error == nil {
-					if time.Since(cache.UpdatedAt) < maxAge {
+				// Check if cache is still fresh (bot file cache)
+				if _, modTime, err := readBotOHLCVFile(symbol, iv); err == nil {
+					if time.Since(modTime) < maxAge {
 						continue // still fresh
 					}
 				}
@@ -30751,15 +31861,12 @@ func startOHLCVCacheWorker() {
 					continue
 				}
 
-				if cache.DataJSON != "" {
-					var cached []OHLCV
-					if json.Unmarshal([]byte(cache.DataJSON), &cached) == nil && len(cached) > 0 {
-						freshBars = mergeOHLCV(cached, freshBars)
-					}
+				if cached, ok := getBotOHLCVFromMemCache(symbol, iv); ok && len(cached) > 0 {
+					freshBars = mergeOHLCV(cached, freshBars)
 				}
 
 				if len(freshBars) > 0 {
-					saveOHLCVCache(symbol, iv, freshBars)
+					saveBotOHLCVCache(symbol, iv, freshBars)
 					updated++
 				}
 			}
@@ -30922,8 +32029,8 @@ func runBacktestLabBatchHandler(c *gin.Context) {
 			continue
 		}
 
-		// Fetch weekly OHLCV from persistent cache
-		weeklyOHLCV, err := getOHLCVCached(symbol, "1wk", 24*time.Hour)
+		// Fetch weekly OHLCV from bot cache
+		weeklyOHLCV, err := getBotOHLCVCached(symbol, "1wk", 24*time.Hour)
 		if err != nil {
 			reason := "Weekly-Daten nicht verfügbar: " + err.Error()
 			skippedStocks = append(skippedStocks, BacktestLabSkippedStock{
@@ -31213,19 +32320,19 @@ func loadAllConfigs() (BXtrenderConfig, BXtrenderConfig, BXtrenderQuantConfig, B
 	db.First(&traderConfig)
 
 	if defConfig.ID == 0 {
-		defConfig = BXtrenderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15}
+		defConfig = BXtrenderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, TslPercent: 20.0, TslEnabled: true}
 	}
 	if aggConfig.ID == 0 {
-		aggConfig = BXtrenderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15}
+		aggConfig = BXtrenderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, TslPercent: 20.0, TslEnabled: true}
 	}
 	if quantConfig.ID == 0 {
-		quantConfig = BXtrenderQuantConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: true, MaLength: 200, MaType: "EMA", TslPercent: 20.0}
+		quantConfig = BXtrenderQuantConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: true, MaLength: 200, MaType: "EMA", TslPercent: 20.0, TslEnabled: true}
 	}
 	if ditzConfig.ID == 0 {
-		ditzConfig = BXtrenderDitzConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: true, MaLength: 200, MaType: "EMA", TslPercent: 20.0}
+		ditzConfig = BXtrenderDitzConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: true, MaLength: 200, MaType: "EMA", TslPercent: 20.0, TslEnabled: true}
 	}
 	if traderConfig.ID == 0 {
-		traderConfig = BXtrenderTraderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: false, MaLength: 200, MaType: "EMA", TslPercent: 20.0}
+		traderConfig = BXtrenderTraderConfig{ShortL1: 5, ShortL2: 20, ShortL3: 15, LongL1: 20, LongL2: 15, MaFilterOn: false, MaLength: 200, MaType: "EMA", TslPercent: 20.0, TslEnabled: true}
 	}
 	return defConfig, aggConfig, quantConfig, ditzConfig, traderConfig
 }

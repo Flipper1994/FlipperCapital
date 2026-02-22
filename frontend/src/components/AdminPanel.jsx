@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { Link, Navigate } from 'react-router-dom'
 import { useTradingMode } from '../context/TradingModeContext'
 import { useCurrency } from '../context/CurrencyContext'
-import { processStock } from '../utils/bxtrender'
+import { processStock, processStockWithConfigs, fetchBXtrenderConfig, fetchBXtrenderQuantConfig, fetchBXtrenderDitzConfig, fetchBXtrenderTraderConfig } from '../utils/bxtrender'
 import PortfolioChart from './PortfolioChart'
 import StockDetailOverlay from './StockDetailOverlay'
 
@@ -685,7 +685,8 @@ function AdminPanel() {
         })
       })
       if (res.ok) {
-        // Clear config cache in bxtrender.js
+        const saved = await res.json()
+        setBxtrenderConfig(prev => ({ ...prev, [mode]: saved }))
         const { clearConfigCache } = await import('../utils/bxtrender')
         clearConfigCache()
         alert(`${mode === 'defensive' ? 'Defensiv' : 'Aggressiv'} Konfiguration gespeichert!`)
@@ -747,6 +748,8 @@ function AdminPanel() {
         })
       })
       if (res.ok) {
+        const saved = await res.json()
+        setQuantConfig(saved)
         const { clearQuantConfigCache } = await import('../utils/bxtrender')
         clearQuantConfigCache()
         alert('Quant Konfiguration gespeichert!')
@@ -903,6 +906,8 @@ function AdminPanel() {
         })
       })
       if (res.ok) {
+        const saved = await res.json()
+        setDitzConfig(saved)
         const { clearDitzConfigCache } = await import('../utils/bxtrender')
         clearDitzConfigCache()
         alert('Ditz Konfiguration gespeichert!')
@@ -1020,6 +1025,8 @@ function AdminPanel() {
         })
       })
       if (res.ok) {
+        const saved = await res.json()
+        setTraderConfig(saved)
         const { clearTraderConfigCache } = await import('../utils/bxtrender')
         clearTraderConfigCache()
         alert('Trader Konfiguration gespeichert!')
@@ -2030,6 +2037,7 @@ function AdminPanel() {
   }
 
   const handleUpdateAllStocks = async () => {
+    const PREFETCH_BATCH = 50
     if (!confirm(`Alle Watchlist-Aktien aktualisieren?${forceUpdate ? ' (FORCE — alle werden aktualisiert)' : ' Bereits heute aktualisierte werden übersprungen.'}`)) {
       return
     }
@@ -2060,45 +2068,164 @@ function AdminPanel() {
       total = stocks.length
       const todayStr = new Date().toISOString().slice(0, 10)
 
-      setUpdateProgress({ current: 0, total, status: 'Verarbeite Aktien...' })
+      // Configs einmal laden statt pro Aktie
+      setUpdateProgress({ current: 0, total, status: 'Lade Configs...' })
+      const [configData, quantConfig, ditzConfig, traderConfig] = await Promise.all([
+        fetchBXtrenderConfig(),
+        fetchBXtrenderQuantConfig(),
+        fetchBXtrenderDitzConfig(),
+        fetchBXtrenderTraderConfig()
+      ])
 
-      // Process each stock
-      for (let i = 0; i < stocks.length; i++) {
-        const stock = stocks[i]
-
-        // Skip if already updated today (unless force)
+      // Aktien filtern (skip already updated)
+      const toProcess = []
+      for (const stock of stocks) {
         if (!forceUpdate && lastUpdates[stock.symbol]) {
           const updatedDate = lastUpdates[stock.symbol].slice(0, 10)
           if (updatedDate === todayStr) {
             skippedCount++
-            setUpdateProgress({
-              current: i + 1,
-              total,
-              status: `${stock.symbol} übersprungen (heute bereits aktualisiert)`,
-              currentStock: `${stock.symbol} — skipped`
-            })
             continue
           }
         }
+        toProcess.push(stock)
+      }
+
+      const processTotal = toProcess.length
+      let prefetchWorked = false
+
+      // Phase 1: Backend-Prefetch — Yahoo-Daten serverseitig mit Crumb-Auth+Semaphore laden
+      setUpdateProgress({
+        current: 0,
+        total,
+        status: `Phase 1: Yahoo-Daten vorladen (${processTotal} Aktien)...`,
+        currentStock: 'Backend lädt Yahoo-Daten mit Auth...'
+      })
+
+      let prefetchOK = 0
+      let prefetchFail = 0
+      const allSymbols = toProcess.map(s => s.symbol)
+
+      for (let i = 0; i < allSymbols.length; i += PREFETCH_BATCH) {
+        const batch = allSymbols.slice(i, i + PREFETCH_BATCH)
+        const batchNum = Math.floor(i / PREFETCH_BATCH) + 1
+        const totalBatches = Math.ceil(allSymbols.length / PREFETCH_BATCH)
 
         setUpdateProgress({
-          current: i,
+          current: skippedCount + prefetchOK + prefetchFail,
           total,
-          status: `Verarbeite ${stock.symbol}...`,
-          currentStock: `${stock.symbol} - ${stock.name}`
+          status: `Phase 1: Prefetch ${batchNum}/${totalBatches} (${batch.length} Symbole, 5 parallel)...`,
+          currentStock: batch.slice(0, 10).join(', ') + (batch.length > 10 ? ` +${batch.length - 10}` : '')
         })
 
-        const result = await processStock(stock.symbol, stock.name)
-
-        if (result.success) {
-          successCount++
-        } else {
-          errorCount++
-          console.warn(`Failed to process ${stock.symbol}:`, result.error)
+        try {
+          const pfRes = await fetch('/api/admin/prefetch-monthly-ohlcv', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ symbols: batch })
+          })
+          if (pfRes.ok) {
+            const pfData = await pfRes.json()
+            prefetchOK += pfData.ok || 0
+            prefetchFail += pfData.failed || 0
+          } else {
+            console.warn('Prefetch returned', pfRes.status)
+            prefetchFail += batch.length
+          }
+        } catch (err) {
+          console.warn('Prefetch batch failed:', err)
+          prefetchFail += batch.length
         }
+      }
 
-        // Delay between stocks to avoid Yahoo Finance rate limiting
-        await new Promise(r => setTimeout(r, 1000))
+      // Prüfe ob Prefetch erfolgreich war (>50% OK)
+      prefetchWorked = prefetchOK > 0 && prefetchOK > prefetchFail
+
+      if (prefetchWorked) {
+        setUpdateProgress({
+          current: skippedCount,
+          total,
+          status: `Phase 1 OK: ${prefetchOK} im Cache, ${prefetchFail} fehlgeschlagen. Starte Berechnung (10er Batches)...`,
+          currentStock: null
+        })
+      } else {
+        setUpdateProgress({
+          current: skippedCount,
+          total,
+          status: `Prefetch fehlgeschlagen (${prefetchFail} Fehler). Fallback: einzeln verarbeiten...`,
+          currentStock: null
+        })
+      }
+
+      // Phase 2: BXtrender-Berechnung
+      let processed = 0
+
+      if (prefetchWorked) {
+        // FAST PATH: Daten sind im Cache — 10er Batches parallel
+        const CALC_BATCH = 10
+        for (let batchStart = 0; batchStart < toProcess.length; batchStart += CALC_BATCH) {
+          const batch = toProcess.slice(batchStart, batchStart + CALC_BATCH)
+          const batchNum = Math.floor(batchStart / CALC_BATCH) + 1
+          const totalBatches = Math.ceil(toProcess.length / CALC_BATCH)
+
+          setUpdateProgress({
+            current: processed + skippedCount,
+            total,
+            status: `Phase 2: Batch ${batchNum}/${totalBatches} — ${batch.map(s => s.symbol).join(', ')}`,
+            currentStock: `Batch ${batchNum} — ${batch.length} Aktien parallel`
+          })
+
+          const results = await Promise.all(
+            batch.map(stock =>
+              processStockWithConfigs(stock.symbol, stock.name, configData, quantConfig, ditzConfig, traderConfig)
+                .then(result => ({ stock, result }))
+                .catch(err => ({ stock, result: { success: false, error: err.message } }))
+            )
+          )
+
+          for (const { stock, result } of results) {
+            processed++
+            if (result.success) {
+              successCount++
+            } else {
+              errorCount++
+              console.warn(`Failed: ${stock.symbol}:`, result.error)
+            }
+          }
+        }
+      } else {
+        // SLOW PATH: Kein Cache — einzeln verarbeiten (sicher, kein Rate-Limit)
+        for (let i = 0; i < toProcess.length; i++) {
+          const stock = toProcess[i]
+
+          setUpdateProgress({
+            current: i + skippedCount,
+            total,
+            status: `Verarbeite ${stock.symbol} (${i + 1}/${toProcess.length})...`,
+            currentStock: `${stock.symbol} — ${stock.name}`
+          })
+
+          try {
+            const result = await processStockWithConfigs(stock.symbol, stock.name, configData, quantConfig, ditzConfig, traderConfig)
+            if (result.success) {
+              successCount++
+            } else {
+              errorCount++
+              console.warn(`Failed: ${stock.symbol}:`, result.error)
+            }
+          } catch (err) {
+            errorCount++
+            console.warn(`Failed: ${stock.symbol}:`, err.message)
+          }
+          processed++
+
+          // 1.5s Delay um Yahoo-Rate-Limit zu vermeiden
+          if (i < toProcess.length - 1) {
+            await new Promise(r => setTimeout(r, 1500))
+          }
+        }
       }
 
       setUpdateProgress({

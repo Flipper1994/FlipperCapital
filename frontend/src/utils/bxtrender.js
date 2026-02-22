@@ -576,6 +576,7 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
   let entryPrice = 0
   let entryDate = null
   let highestPrice = 0
+  const tslEnabled = cfg.tslEnabled !== undefined ? cfg.tslEnabled : cfg.tsl_enabled !== undefined ? cfg.tsl_enabled : true
   const tslPercent = cfg.tslPercent || cfg.tsl_percent || 20.0
 
   for (let i = startIdx; i < closes.length; i++) {
@@ -595,7 +596,7 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
 
     // Check trailing stop loss
     let tslTriggered = false
-    if (inPosition && highestPrice > 0) {
+    if (tslEnabled && inPosition && highestPrice > 0) {
       const stopPrice = highestPrice * (1 - tslPercent / 100)
       if (price <= stopPrice) {
         tslTriggered = true
@@ -683,16 +684,17 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
           exitDate: times[i + 1],
           exitPrice: exitPrice,
           returnPct: returnPct,
-          isOpen: false
+          isOpen: false,
+          exitReason: tslTriggered ? 'TSL' : 'SIGNAL'
         })
 
         const returnText = returnPct >= 0 ? `+${returnPct.toFixed(1)}%` : `${returnPct.toFixed(1)}%`
         markers.push({
           time: times[i + 1],
           position: 'aboveBar',
-          color: '#FF0000',
+          color: tslTriggered ? '#FFA500' : '#FF0000',
           shape: 'arrowDown',
-          text: `SELL $${exitPrice.toFixed(2)} ${returnText}`
+          text: `${tslTriggered ? 'TSL' : 'SELL'} $${exitPrice.toFixed(2)} ${returnText}`
         })
 
         inPosition = false
@@ -710,16 +712,17 @@ export function calculateBXtrenderQuant(ohlcv, config = null, mode = 'quant', ne
           exitDate: nextOpen.time,
           exitPrice: exitPrice,
           returnPct: returnPct,
-          isOpen: false
+          isOpen: false,
+          exitReason: tslTriggered ? 'TSL' : 'SIGNAL'
         })
 
         const returnText = returnPct >= 0 ? `+${returnPct.toFixed(1)}%` : `${returnPct.toFixed(1)}%`
         markers.push({
           time: nextOpen.time,
           position: 'aboveBar',
-          color: '#FF0000',
+          color: tslTriggered ? '#FFA500' : '#FF0000',
           shape: 'arrowDown',
-          text: `SELL $${exitPrice.toFixed(2)} ${returnText}`
+          text: `${tslTriggered ? 'TSL' : 'SELL'} $${exitPrice.toFixed(2)} ${returnText}`
         })
 
         inPosition = false
@@ -1304,6 +1307,61 @@ export async function fetchMarketCap(symbol) {
     return data.market_cap_raw || 0
   } catch {
     return 0
+  }
+}
+
+// Process a single stock with pre-fetched configs (for batch mode)
+export async function processStockWithConfigs(symbol, name, configData, quantConfig, ditzConfig, traderConfig) {
+  try {
+    const [historyData, marketCap] = await Promise.all([
+      fetchHistoricalData(symbol),
+      fetchMarketCap(symbol)
+    ])
+
+    const data = historyData.data
+    if (!data || data.length === 0) {
+      return { success: false, error: 'No data' }
+    }
+
+    const currentPrice = data[data.length - 1].close
+
+    const now = new Date()
+    let monthlyData = data.filter(d => {
+      const t = new Date(d.time * 1000)
+      return !(t.getUTCFullYear() === now.getUTCFullYear() && t.getUTCMonth() === now.getUTCMonth())
+    })
+
+    const strippedCandles = data.filter(d => {
+      const t = new Date(d.time * 1000)
+      return t.getUTCFullYear() === now.getUTCFullYear() && t.getUTCMonth() === now.getUTCMonth()
+    })
+    const nextOpen = strippedCandles.length > 0
+      ? { time: strippedCandles[0].time, open: strippedCandles[0].open, close: strippedCandles[strippedCandles.length - 1].close }
+      : null
+
+    const defensiveResult = calculateBXtrender(monthlyData, false, configData.defensive, nextOpen)
+    const defensiveMetrics = calculateMetrics(defensiveResult.trades)
+    await savePerformanceToBackend(symbol, name, defensiveMetrics, defensiveResult.trades, defensiveResult.short, currentPrice, false, marketCap)
+
+    const aggressiveResult = calculateBXtrender(monthlyData, true, configData.aggressive, nextOpen)
+    const aggressiveMetrics = calculateMetrics(aggressiveResult.trades)
+    await savePerformanceToBackend(symbol, name, aggressiveMetrics, aggressiveResult.trades, aggressiveResult.short, currentPrice, true, marketCap)
+
+    const quantResult = calculateBXtrenderQuant(monthlyData, quantConfig, 'quant', nextOpen)
+    const quantMetrics = calculateMetrics(quantResult.trades)
+    await saveQuantPerformanceToBackend(symbol, name, quantMetrics, quantResult.trades, quantResult.short, quantResult.long, currentPrice, marketCap)
+
+    const ditzResult = calculateBXtrenderQuant(monthlyData, ditzConfig, 'ditz', nextOpen)
+    const ditzMetrics = calculateMetrics(ditzResult.trades)
+    await saveDitzPerformanceToBackend(symbol, name, ditzMetrics, ditzResult.trades, ditzResult.signal, currentPrice, marketCap)
+
+    const traderResult = calculateBXtrenderQuant(monthlyData, traderConfig, 'trader', nextOpen)
+    const traderMetrics = calculateMetrics(traderResult.trades)
+    await saveTraderPerformanceToBackend(symbol, name, traderMetrics, traderResult.trades, traderResult.signal, currentPrice, marketCap)
+
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err.message }
   }
 }
 

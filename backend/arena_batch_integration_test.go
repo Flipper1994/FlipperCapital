@@ -52,6 +52,13 @@ func setupArenaTestDB(t *testing.T) func() {
 	}
 	ohlcvMemCacheMu.Unlock()
 
+	// arenaOHLCVMemCache initialisieren falls nil
+	arenaOHLCVMemCacheMu.Lock()
+	if arenaOHLCVMemCache == nil {
+		arenaOHLCVMemCache = make(map[string]map[string]*ohlcvCacheEntry)
+	}
+	arenaOHLCVMemCacheMu.Unlock()
+
 	return func() {
 		db = origDB
 	}
@@ -140,7 +147,7 @@ func TestArenaBatch_SmallWatchlist(t *testing.T) {
 				t.Logf("  PREFETCH %s: FEHLER nach %v — %v", s, dur, err)
 			} else {
 				atomic.AddInt64(&fetched, 1)
-				saveOHLCVCache(s, "60m", ohlcv)
+				saveArenaOHLCVCache(s, "60m", ohlcv)
 			}
 		}(sym)
 	}
@@ -167,7 +174,7 @@ func TestArenaBatch_SmallWatchlist(t *testing.T) {
 	var totalTrades int64
 
 	for _, sym := range symbols {
-		ohlcv, ok := getOHLCVFromMemCache(sym, "60m")
+		ohlcv, ok := getArenaOHLCVFromMemCache(sym, "60m")
 		if !ok || len(ohlcv) < 50 {
 			continue
 		}
@@ -251,7 +258,7 @@ func TestArenaBatch_FullWatchlist(t *testing.T) {
 
 			if lastErr == nil && len(ohlcv) > 0 {
 				atomic.AddInt64(&prefetched, 1)
-				saveOHLCVCache(s, "60m", ohlcv)
+				saveArenaOHLCVCache(s, "60m", ohlcv)
 			} else {
 				atomic.AddInt64(&prefetchFailed, 1)
 			}
@@ -292,7 +299,7 @@ func TestArenaBatch_FullWatchlist(t *testing.T) {
 			btSem <- struct{}{}
 			defer func() { <-btSem }()
 
-			ohlcv, ok := getOHLCVFromMemCache(s, "60m")
+			ohlcv, ok := getArenaOHLCVFromMemCache(s, "60m")
 			if !ok || len(ohlcv) < 50 {
 				atomic.AddInt64(&skipped, 1)
 				return
@@ -820,7 +827,7 @@ func TestArenaBatch_HannTrend(t *testing.T) {
 			defer func() { <-sem }()
 			ohlcv, err := fetchOHLCVFromYahoo(s, "2y", "60m")
 			if err == nil && len(ohlcv) > 0 {
-				saveOHLCVCache(s, "60m", ohlcv)
+				saveArenaOHLCVCache(s, "60m", ohlcv)
 				atomic.AddInt64(&fetched, 1)
 			}
 		}(sym)
@@ -835,7 +842,7 @@ func TestArenaBatch_HannTrend(t *testing.T) {
 
 	start := time.Now()
 	for _, sym := range symbols {
-		ohlcv, ok := getOHLCVFromMemCache(sym, "60m")
+		ohlcv, ok := getArenaOHLCVFromMemCache(sym, "60m")
 		if !ok || len(ohlcv) < 50 {
 			continue
 		}

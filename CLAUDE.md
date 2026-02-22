@@ -24,6 +24,15 @@ node frontend/src/tests/performance.test.mjs  # Tests
 - Nur relevante Dateien ändern — keine "Sicherheits-Refactors"
 - Nach Code-Änderungen: `npx vite build` prüfen
 - Commit nur wenn explizit verlangt
+- **Nach jedem Plan-Ausführung:** Alle relevanten Tests ausführen (siehe `TESTS.md`):
+  ```
+  cd backend && go build -o /dev/null .
+  cd frontend && npx vite build
+  cd backend && go test -v -run "TestArenaBatch" -timeout 300s
+  cd backend && go test -v -run "TestInteg_" -timeout 60s
+  ```
+  Bei Frontend-Logik-Änderungen zusätzlich die betroffenen Node-Tests ausführen.
+- **TESTS.md pflegen:** Nach **jeder** Code-Änderung oder Test-Ausführung `TESTS.md` **automatisch aktualisieren** — nicht nachfragen, direkt machen. Neue Features, geänderte Erwartungen, neue Tests sofort dokumentieren.
 
 ---
 
@@ -274,6 +283,13 @@ BUY=frisch (≤1 Monat), HOLD=Position>1 Monat, SELL=frisch (≤1 Monat), WAIT=k
 ### Async DB-Writes
 `livePositionWriteCh` (chan func(), 256 Buffer) — serialisiert Position-Writes, verhindert SQLite-Lock-Contention
 
+### Live 2h/4h Aggregation (Backtest-Alignment)
+Für 2h/4h-Intervals nutzt Live Trading **1h-Heartbeat-Aggregation** statt UTC-Epoch-Alignment:
+- WS-Modus: `BarAggregator` mit 1h-Duration → `aggregateOHLCV(1h-bars, factor)` → Signal-Gating via `lastProcessedCandleTime`
+- Polling-Modus: Timer feuert stündlich, fetcht 60m-Bars, aggregiert mit `aggregateOHLCV`
+- Open-Candle-Stripping: Market-aware (16:00 ET) statt fixer Duration (Remainder-Kerzen haben variable Länge)
+- Helper: `isLiveAggregateInterval(interval)`, `liveAggregationFactor(interval)`
+
 ---
 
 ## Bot-Trading-Regeln
@@ -306,6 +322,8 @@ BUY=frisch (≤1 Monat), HOLD=Position>1 Monat, SELL=frisch (≤1 Monat), WAIT=k
 | `gmma_pullback` | GMMA Pullback | 1h | GMMA-Osc Crossover + S/R-Zonen |
 | `macd_sr` | MACD + S/R | 1h | MACD + Fractal S/R-Filter + Hybrid-Option |
 | `trippa_trade` | TrippaTrade RSO [BETA] | 1h | Dual-MACD State-Machine + Choppy-Filter |
+| `vwap_day_trading` | VWAP Day Trading [BETA] | 5m | VWAP + σ-Bänder → Pullback + Reversal |
+| `gaussian_trend` | Gaussian + RSI + MACD [BETA] | 1h | N-Pole Gaussian Filter + RSI(30) + MACD(24,52,9) |
 
 Alle implementieren: `TradingStrategy` (Analyze), `IndicatorProvider` (Sub-Chart), `OverlayProvider` (Price-Chart)
 

@@ -417,6 +417,10 @@ func TestSignalNoLookAhead_DiamondSignals(t *testing.T) {
 
 func TestProcessLiveSymbol_OpensPosition(t *testing.T) {
 	setupLiveTestDB(t)
+	marketOpen := true
+	testMarketOpenOverride = &marketOpen
+	t.Cleanup(func() { testMarketOpenOverride = nil })
+	go livePositionWriter()
 
 	// Create session
 	session := LiveTradingSession{
@@ -428,7 +432,7 @@ func TestProcessLiveSymbol_OpensPosition(t *testing.T) {
 		Currency:    "USD",
 		LongOnly:    false,
 		IsActive:    true,
-		StartedAt:   time.Unix(1000, 0), // very early start
+		StartedAt:   time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), // very early start
 	}
 	db.Create(&session)
 
@@ -440,8 +444,9 @@ func TestProcessLiveSymbol_OpensPosition(t *testing.T) {
 	strategy := &RegressionScalpingStrategy{}
 	strategy.defaults()
 
-	// Generate enough data for signals
-	data := generateOHLCV(300, 100, 1000, 300)
+	// Generate enough data for signals (start after session StartedAt)
+	dataStart := time.Date(2025, 1, 1, 1, 0, 0, 0, time.UTC).Unix()
+	data := generateOHLCV(300, 100, dataStart, 300)
 	signals := strategy.Analyze(data)
 	if len(signals) == 0 {
 		t.Skip("no signals generated with test data — data pattern doesn't trigger strategy")
@@ -452,6 +457,7 @@ func TestProcessLiveSymbol_OpensPosition(t *testing.T) {
 	if !ok {
 		t.Fatal("processLiveSymbolWithData returned ok=false")
 	}
+	time.Sleep(50 * time.Millisecond) // wait for async writer
 
 	// Check DB positions
 	var positions []LiveTradingPosition
@@ -506,7 +512,7 @@ func TestProcessLiveSymbol_NoDuplicateSignals(t *testing.T) {
 		TradeAmount: 500,
 		Currency:    "USD",
 		IsActive:    true,
-		StartedAt:   time.Unix(1000, 0),
+		StartedAt:   time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 	db.Create(&session)
 
@@ -547,7 +553,7 @@ func TestProcessLiveSymbol_SLTPCloses(t *testing.T) {
 		TradeAmount: 500,
 		Currency:    "USD",
 		IsActive:    true,
-		StartedAt:   time.Unix(1000, 0),
+		StartedAt:   time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 	db.Create(&session)
 
@@ -610,7 +616,7 @@ func TestProcessLiveSymbol_LongOnlyFilter(t *testing.T) {
 		Currency:    "USD",
 		LongOnly:    true,
 		IsActive:    true,
-		StartedAt:   time.Unix(1000, 0),
+		StartedAt:   time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 	db.Create(&session)
 
@@ -635,6 +641,10 @@ func TestProcessLiveSymbol_LongOnlyFilter(t *testing.T) {
 
 func TestAlpacaOrderFlow_NoAlpaca_StillCreatesDB(t *testing.T) {
 	setupLiveTestDB(t)
+	marketOpen := true
+	testMarketOpenOverride = &marketOpen
+	t.Cleanup(func() { testMarketOpenOverride = nil })
+	go livePositionWriter()
 
 	session := LiveTradingSession{
 		UserID:      1,
@@ -644,7 +654,7 @@ func TestAlpacaOrderFlow_NoAlpaca_StillCreatesDB(t *testing.T) {
 		TradeAmount: 500,
 		Currency:    "USD",
 		IsActive:    true,
-		StartedAt:   time.Unix(1000, 0),
+		StartedAt:   time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 	db.Create(&session)
 
@@ -657,13 +667,15 @@ func TestAlpacaOrderFlow_NoAlpaca_StillCreatesDB(t *testing.T) {
 	strategy := &RegressionScalpingStrategy{}
 	strategy.defaults()
 
-	data := generateOHLCV(300, 100, 1000, 300)
+	dataStart := time.Date(2025, 1, 1, 1, 0, 0, 0, time.UTC).Unix()
+	data := generateOHLCV(300, 100, dataStart, 300)
 	signals := strategy.Analyze(data)
 	if len(signals) == 0 {
 		t.Skip("no signals generated")
 	}
 
 	processLiveSymbolWithData(session, "NOALP", strategy, data, config)
+	time.Sleep(50 * time.Millisecond) // wait for async writer
 
 	var count int64
 	db.Model(&LiveTradingPosition{}).Where("session_id = ? AND symbol = ?", session.ID, "NOALP").Count(&count)
@@ -841,7 +853,7 @@ func TestTradeHistory_CompleteLifecycle(t *testing.T) {
 		TradeAmount: 1000,
 		Currency:    "USD",
 		IsActive:    true,
-		StartedAt:   time.Unix(1000, 0),
+		StartedAt:   time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 	db.Create(&session)
 

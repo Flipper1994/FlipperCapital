@@ -116,9 +116,10 @@ function ArenaIndicatorChart({ indicators, markers, strategyName }) {
       }
     })
 
-    // Zero line
+    // Zero line (only for panels with histogram)
+    const hasHistogram = indicators.some(s => s.type === 'histogram')
     const firstData = indicators[0]?.data
-    if (firstData?.length) {
+    if (hasHistogram && firstData?.length) {
       const zeroLine = chart.addLineSeries({
         color: '#4b5563',
         lineWidth: 1,

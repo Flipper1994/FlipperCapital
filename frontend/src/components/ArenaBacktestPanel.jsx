@@ -26,11 +26,10 @@ function ArenaBacktestPanel({ metrics, trades, formatPrice, symbol, timeRange, t
     TSL: 'bg-red-500/20 text-red-400',
   }
 
-  // Portfolio return with equal position sizing (compounding)
-  const closedTrades = trades.filter(t => !t.is_open)
-  const sortedClosed = [...closedTrades].sort((a, b) => a.entry_time - b.entry_time)
+  // Portfolio return with equal position sizing (compounding) — includes open trades (mark-to-market)
+  const sortedTrades = [...trades].sort((a, b) => a.entry_time - b.entry_time)
   let equity = 1.0
-  for (const t of sortedClosed) {
+  for (const t of sortedTrades) {
     equity *= (1 + t.return_pct / 100)
   }
   const portfolioReturn = (equity - 1) * 100

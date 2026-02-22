@@ -100,8 +100,13 @@ function BacktestPanel({ trades, metrics, symbol }) {
                     </div>
                   ) : (
                     <div>
-                      <div className="text-gray-400">{formatDate(trade.exitDate)}</div>
-                      <div className="text-red-400 font-medium">{fmtPrice(trade.exitPrice)}</div>
+                      <div className="text-gray-400 flex items-center gap-1">
+                        {formatDate(trade.exitDate)}
+                        {trade.exitReason === 'TSL' && (
+                          <span className="px-1 py-0.5 rounded bg-orange-500/20 text-orange-400 text-[10px] leading-none">TSL</span>
+                        )}
+                      </div>
+                      <div className={`font-medium ${trade.exitReason === 'TSL' ? 'text-orange-400' : 'text-red-400'}`}>{fmtPrice(trade.exitPrice)}</div>
                     </div>
                   )}
                 </td>
